@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: mc_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: mcuser
+      POSTGRES_PASSWORD: mcpassword
+      POSTGRES_DB: mcmanager
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  web:
+    image: retr0xwx/mc-hosting:web
+    container_name: mc_web_panel
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "postgresql://mcuser:mcpassword@db:5432/mcmanager?schema=public"
+      JWT_SECRET: "super-secret-local-testing-jwt-key"
+      PORT: 3000
+    depends_on:
+      - db
+
+  daemon:
+    image: retr0xwx/mc-hosting:daemon
+    container_name: mc_daemon_node
+    restart: always
+    ports:
+      - "3500:3500"
+    environment:
+      DAEMON_API_KEY: "local-daemon-testing-bearer-key"
+      DAEMON_PORT: 3500
+      FRP_SERVER_ADDR: "mc_frps"
+      FRP_SERVER_PORT: 7000
+      FRP_TOKEN: "craftcontrol-tunnel-secret"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - daemon_data:/app/apps/daemon/data
+
+  frps:
+    image: fatedier/frps:v0.58.0
+    container_name: mc_frps
+    restart: always
+    command: -c /etc/frp/frps.toml
+    ports:
+      - "7000:7000"
+      - "25000-25010:25000-25010" # Reduced range for docker compose compatibility/performance
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml
+
+volumes:
+  pgdata:
+  daemon_data:

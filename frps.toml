@@ -1,0 +1,9 @@
+bindPort = 7000
+
+[auth]
+method = "token"
+token = "craftcontrol-tunnel-secret"
+
+[log]
+to = "console"
+level = "info"

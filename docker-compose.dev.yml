@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mc_manager_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: mcuser
+      POSTGRES_PASSWORD: mcpassword
+      POSTGRES_DB: mcmanager
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

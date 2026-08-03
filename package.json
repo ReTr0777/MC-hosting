@@ -1,0 +1,19 @@
+{
+  "name": "mc-server-manager-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:daemon": "npm --prefix apps/daemon run dev",
+    "build:web": "npm --prefix apps/web run build",
+    "build:daemon": "npm --prefix apps/daemon run build",
+    "prisma:generate": "npm --prefix apps/web run prisma:generate",
+    "prisma:migrate": "npm --prefix apps/web run prisma:migrate"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>CraftControl-WebPanel</Name>
+  <Repository>craftcontrol/web:latest</Repository>
+  <Registry>https://hub.docker.com/r/craftcontrol/web</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mc-server-manager/craftcontrol</Support>
+  <Project>https://github.com/mc-server-manager/craftcontrol</Project>
+  <Overview>CraftControl Centralized Web Panel Control Plane for Minecraft server &amp; daemon node management.</Overview>
+  <Category>Tools: System: Management:</Category>
+  <WebUI>http://[IP]:[PORT:3000]</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/mc-server-manager/craftcontrol/main/logo.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <!-- Container Port Mapping -->
+  <Config Name="Web Panel Port" Target="3000" Default="3000" Mode="tcp" Description="HTTP Web UI Port" Type="Port" Display="always" Required="true" Mask="false">3000</Config>
+
+  <!-- Environment Variables -->
+  <Config Name="Database Connection String" Target="DATABASE_URL" Default="postgresql://mcuser:mcpassword@postgres-ip:5432/mcmanager?schema=public" Description="PostgreSQL Database Connection URI" Type="Variable" Display="always" Required="true" Mask="false">postgresql://mcuser:mcpassword@postgres-ip:5432/mcmanager?schema=public</Config>
+
+  <Config Name="JWT Secret Token" Target="JWT_SECRET" Default="change-me-secret-jwt-key" Description="Secret key used for signing user session JWT tokens" Type="Variable" Display="always" Required="true" Mask="true">change-me-secret-jwt-key</Config>
+
+  <Config Name="Port Environment Variable" Target="PORT" Default="3000" Description="Internal application listening port" Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
+</Container>

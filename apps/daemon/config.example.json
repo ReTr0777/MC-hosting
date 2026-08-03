@@ -1,0 +1,6 @@
+{
+  "port": 3500,
+  "apiKey": "change-this-daemon-bearer-key-in-production",
+  "dataDir": "./data/servers",
+  "dockerSocket": "/var/run/docker.sock"
+}

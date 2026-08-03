@@ -1,0 +1,125 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+enum GlobalRole {
+  GLOBAL_ADMIN
+  USER
+}
+
+enum ServerRole {
+  OWNER
+  ADMIN
+  VIEWER
+}
+
+enum ServerStatus {
+  OFFLINE
+  STARTING
+  RUNNING
+  STOPPING
+  INSTALLING
+  ERROR
+}
+
+enum ServerType {
+  VANILLA
+  FABRIC
+  FORGE
+  PAPER
+  PURPUR
+  MODRINTH
+  CURSEFORGE
+}
+
+model User {
+  id           String             @id @default(uuid())
+  email        String             @unique
+  username     String             @unique
+  passwordHash String
+  globalRole   GlobalRole         @default(USER)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  permissions  ServerPermission[]
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Node {
+  id              String   @id @default(uuid())
+  name            String
+  host            String   // IP address or FQDN of daemon
+  port            Int      @default(3500)
+  apiKey          String   // Encrypted/Hashed Bearer token used to authenticate calls to daemon
+  isOnline        Boolean  @default(false)
+  totalMemory     Int      // MB
+  totalCpu        Int      // Cores / Percentage
+  offloadPriority Int      @default(0) // Higher value = higher offload priority (e.g. Secondary PC = 10, Main Server = 1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  servers         Server[]
+
+  @@map("nodes")
+}
+
+model Server {
+  id                String             @id @default(uuid())
+  uuid              String             @unique @default(uuid())
+  name              String
+  description       String?
+  nodeId            String
+  node              Node               @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  containerId       String?            // Docker container ID on daemon node
+  status            ServerStatus       @default(OFFLINE)
+  
+  // Game Configuration
+  serverType        ServerType         @default(FABRIC)
+  mcVersion         String             @default("1.20.1")
+  serverPort        Int                @default(25565)
+  modpackSlug       String?            // Modrinth modpack slug/project_id (used when serverType == MODRINTH)
+  eulaAccepted      Boolean            @default(false) // User must check EULA box in Web Panel before container launch
+  
+  // Resource Limits
+  memoryMb          Int                @default(2048)
+  cpuLimit          Float              @default(1.0) // CPU cores limit
+
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  permissions       ServerPermission[]
+
+  @@map("servers")
+}
+
+model ServerPermission {
+  id        String     @id @default(uuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId  String
+  server    Server     @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  role      ServerRole @default(VIEWER)
+  createdAt DateTime   @default(now())
+
+  @@unique([userId, serverId])
+  @@map("server_permissions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // e.g., "SERVER_START", "MODPACK_INSTALL", "EULA_ACCEPT"
+  details   String?  // JSON stringified details
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}

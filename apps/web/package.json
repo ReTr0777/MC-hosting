@@ -1,0 +1,36 @@
+{
+  "name": "@mc-manager/web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
+  },
+  "dependencies": {
+    "@mc-manager/shared": "*",
+    "@prisma/client": "^5.12.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "bcryptjs": "^2.4.3",
+    "jose": "^5.2.3",
+    "lucide-react": "^0.365.0",
+    "next": "^14.1.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "xterm": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.11.30",
+    "@types/react": "^18.2.67",
+    "@types/react-dom": "^18.2.22",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "prisma": "^5.12.1",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.4.0"
+  }
+}

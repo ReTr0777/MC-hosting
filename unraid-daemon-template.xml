@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>CraftControl-Daemon</Name>
+  <Repository>craftcontrol/daemon:latest</Repository>
+  <Registry>https://hub.docker.com/r/craftcontrol/daemon</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mc-server-manager/craftcontrol</Support>
+  <Project>https://github.com/mc-server-manager/craftcontrol</Project>
+  <Overview>CraftControl Worker Daemon Node Agent for managing containerized Minecraft instances on unRAID.</Overview>
+  <Category>Tools: System: Management:</Category>
+  <WebUI>http://[IP]:[PORT:3500]/ping</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/mc-server-manager/craftcontrol/main/logo.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <!-- Container Port Mapping -->
+  <Config Name="Daemon Port" Target="3500" Default="3500" Mode="tcp" Description="HTTP REST API and WebSocket Port for CraftControl Panel communication" Type="Port" Display="always" Required="true" Mask="false">3500</Config>
+
+  <!-- Docker Socket Volume Mapping -->
+  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw" Description="Mount host Docker socket to enable Minecraft server container management" Type="Path" Display="always" Required="true" Mask="false">/var/run/docker.sock</Config>
+
+  <!-- Persistent Data Volume Mapping -->
+  <Config Name="Minecraft Server Data Directory" Target="/app/apps/daemon/data" Default="/mnt/user/appdata/craftcontrol-daemon/data" Mode="rw" Description="Host directory for persistent Minecraft server worlds, configs, and modpack files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol-daemon/data</Config>
+
+  <!-- Daemon Secret API Key -->
+  <Config Name="Daemon Bearer API Key" Target="DAEMON_API_KEY" Default="change-me-secret-bearer-key" Description="Bearer Token Key for Web Panel authentication" Type="Variable" Display="always" Required="true" Mask="true">change-me-secret-bearer-key</Config>
+
+  <!-- Daemon Port Variable -->
+  <Config Name="Daemon Port Env" Target="DAEMON_PORT" Default="3500" Description="Internal environment variable for daemon server port" Type="Variable" Display="advanced" Required="false" Mask="false">3500</Config>
+</Container>
