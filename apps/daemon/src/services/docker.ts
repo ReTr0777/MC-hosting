@@ -208,82 +208,90 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
   }
 
   if (dto.serverType === 'MODRINTH' && dto.modpackSlug) {
-    console.log(`[Daemon] Triggering ServerPackCreator CLI workflow for Modrinth modpack '${dto.modpackSlug}'...`);
-    let spcSuccess = false;
-    try {
-      await buildServerWithServerPackCreator({
-        serverId: dto.serverId,
-        slug: dto.modpackSlug,
-        mcVersion: dto.mcVersion,
-        targetServerDir: serverDir,
-      });
-      spcSuccess = true;
-    } catch (e: any) {
-      console.warn(`[Daemon] ServerPackCreator CLI workflow returned fallback: ${e.message}`);
-    }
-
-    if (spcSuccess) {
-      console.log(`[Daemon] ServerPackCreator pack generated. Launching container with TYPE=FABRIC.`);
-      envVars.push(`TYPE=FABRIC`);
-      if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
-        envVars.push(`VERSION=${dto.mcVersion}`);
-      }
-    } else {
-      envVars.push(`TYPE=MODRINTH`);
-      envVars.push(`MODRINTH_MODPACK=${dto.modpackSlug}`);
-      if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
-        envVars.push(`VERSION=${dto.mcVersion}`);
-      }
-      envVars.push(`MODRINTH_SIDE=server`);
-      envVars.push(`MODRINTH_EXCLUDE_FILES=${CLIENT_ONLY_DENYLIST.join(',')}`);
-      envVars.push(`MODRINTH_OVERRIDES_EXCLUSIONS=mods/missingmodschecker*,mods/*missingmods*,mods/modmenu*,mods/*crashexploitfixer*,mods/*crash*,mods/inventorytabs*`);
-      envVars.push(`MODRINTH_FORCE_SYNCHRONIZE=true`);
-    }
-  } else if (dto.serverType === 'CURSEFORGE') {
-    console.log(`[Daemon] Triggering CurseForge modpack workflow for '${dto.modpackSlug}'...`);
-    let modId = dto.modId;
-    let fileId = dto.fileId;
-
-    if (!modId || !fileId) {
+    if (!dto.isMigration) {
+      console.log(`[Daemon] Triggering ServerPackCreator CLI workflow for Modrinth modpack '${dto.modpackSlug}'...`);
+      let spcSuccess = false;
       try {
-        const query = dto.modpackSlug || '';
-        const searchUrl = isNaN(Number(query))
-          ? `https://api.curse.tools/v1/cf/mods/search?gameId=432&searchFilter=${encodeURIComponent(query)}`
-          : `https://api.curse.tools/v1/cf/mods/${query}`;
-
-        const cfRes = await fetch(searchUrl);
-        if (cfRes.ok) {
-          const cfData = await cfRes.json();
-          const modObj = cfData.data ? (Array.isArray(cfData.data) ? cfData.data[0] : cfData.data) : null;
-          if (modObj) {
-            modId = modObj.id;
-            const filesRes = await fetch(`https://api.curse.tools/v1/cf/mods/${modId}/files`);
-            if (filesRes.ok) {
-              const filesData = await filesRes.json();
-              if (filesData.data && filesData.data.length > 0) {
-                fileId = filesData.data[0].id;
-              }
-            }
-          }
-        }
-      } catch (e: any) {
-        console.warn(`[Daemon CurseForge Auto-Resolve] ${e.message}`);
-      }
-    }
-
-    if (modId && fileId) {
-      console.log(`[Daemon CurseForge] Deploying CurseForge modpack with ModID ${modId}, FileID ${fileId}...`);
-      try {
-        await installCurseForgeModpack({
+        await buildServerWithServerPackCreator({
           serverId: dto.serverId,
-          modId,
-          fileId,
+          slug: dto.modpackSlug,
           mcVersion: dto.mcVersion,
           targetServerDir: serverDir,
         });
+        spcSuccess = true;
       } catch (e: any) {
-        console.warn(`[Daemon] CurseForge installer returned fallback: ${e.message}`);
+        console.warn(`[Daemon] ServerPackCreator CLI workflow returned fallback: ${e.message}`);
       }
+
+      if (spcSuccess) {
+        console.log(`[Daemon] ServerPackCreator pack generated. Launching container with TYPE=FABRIC.`);
+        envVars.push(`TYPE=FABRIC`);
+        if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
+          envVars.push(`VERSION=${dto.mcVersion}`);
+        }
+      } else {
+        envVars.push(`TYPE=MODRINTH`);
+        envVars.push(`MODRINTH_MODPACK=${dto.modpackSlug}`);
+        if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
+          envVars.push(`VERSION=${dto.mcVersion}`);
+        }
+        envVars.push(`MODRINTH_SIDE=server`);
+        envVars.push(`MODRINTH_EXCLUDE_FILES=${CLIENT_ONLY_DENYLIST.join(',')}`);
+        envVars.push(`MODRINTH_OVERRIDES_EXCLUSIONS=mods/missingmodschecker*,mods/*missingmods*,mods/modmenu*,mods/*crashexploitfixer*,mods/*crash*,mods/inventorytabs*`);
+        envVars.push(`MODRINTH_FORCE_SYNCHRONIZE=true`);
+      }
+    } else {
+      console.log(`[Daemon] Migration mode: skipping ServerPackCreator for Modrinth. Launching as standard fabric/forge based on original setup if possible, or letting standard MODRINTH env vars handle it.`);
+      envVars.push(`TYPE=MODRINTH`);
+      envVars.push(`MODRINTH_MODPACK=${dto.modpackSlug}`);
+      envVars.push(`MODRINTH_FORCE_SYNCHRONIZE=false`);
+    }
+  } else if (dto.serverType === 'CURSEFORGE') {
+    if (!dto.isMigration) {
+      console.log(`[Daemon] Triggering CurseForge modpack workflow for '${dto.modpackSlug}'...`);
+      let modId = dto.modId;
+      let fileId = dto.fileId;
+
+      if (!modId || !fileId) {
+        try {
+          const query = dto.modpackSlug || '';
+          const searchUrl = isNaN(Number(query)) 
+            ? `https://api.curseforge.com/v1/mods/search?gameId=432&classId=4471&searchFilter=${encodeURIComponent(query)}&sortField=2&sortOrder=desc`
+            : `https://api.curseforge.com/v1/mods/${query}`;
+            
+          const searchRes = await fetch(searchUrl, {
+            headers: { 'x-api-key': '$2a$10$wEee0b9l2r/F285sC/2ZseBifY4n4.aR5O.E7f3sR3e3nO6wUu.Xq' }
+          });
+          
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const mod = isNaN(Number(query)) ? searchData.data[0] : searchData.data;
+            if (mod) {
+              modId = mod.id;
+              fileId = mod.mainFileId;
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[Daemon CurseForge Auto-Resolve] ${e.message}`);
+        }
+      }
+
+      if (modId && fileId) {
+        console.log(`[Daemon CurseForge] Deploying CurseForge modpack with ModID ${modId}, FileID ${fileId}...`);
+        try {
+          await installCurseForgeModpack({
+            serverId: dto.serverId,
+            modId,
+            fileId,
+            mcVersion: dto.mcVersion,
+            targetServerDir: serverDir,
+          });
+        } catch (e: any) {
+          console.warn(`[Daemon] CurseForge installer returned fallback: ${e.message}`);
+        }
+      }
+    } else {
+      console.log(`[Daemon] Migration mode: skipping CurseForge installer.`);
     }
 
     envVars.push(`TYPE=CURSEFORGE`);
@@ -610,6 +618,26 @@ export async function stopServerContainer(containerId: string): Promise<void> {
   } catch (e) {
     await container.stop({ t: 15 });
   }
+}
+
+export async function gracefulStopWithCountdown(containerId: string, seconds: number = 10): Promise<void> {
+  const container = await getContainerByIdOrName(containerId);
+  
+  // Send warning messages
+  try {
+    const exec = await container.exec({
+      Cmd: ['rcli', `say [SYSTEM] SERVER MIGRATING! Shutting down in ${seconds} seconds...`],
+      AttachStdin: false,
+      AttachStdout: false,
+    });
+    await exec.start({});
+  } catch(e) {}
+
+  // Wait for countdown
+  await new Promise(r => setTimeout(r, seconds * 1000));
+  
+  // Stop server
+  await stopServerContainer(containerId);
 }
 
 export async function restartServerContainer(containerId: string): Promise<void> {

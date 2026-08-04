@@ -15,7 +15,7 @@ export class DaemonClient {
     this.apiKey = node.apiKey;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  public async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -53,6 +53,12 @@ export class DaemonClient {
 
   async stopServer(containerId: string): Promise<{ message: string }> {
     return this.request<{ message: string }>(`/servers/${containerId}/stop`, {
+      method: 'POST',
+    });
+  }
+
+  async gracefulStopServer(containerId: string, countdown: number): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/servers/${containerId}/stop?countdown=${countdown}`, {
       method: 'POST',
     });
   }

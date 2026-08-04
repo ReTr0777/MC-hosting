@@ -34,21 +34,32 @@ export default function ServerConsolePage() {
   const { user } = useAuth();
 
   const [server, setServer] = useState<ServerDetail | null>(null);
+  const [nodes, setNodes] = useState<any[]>([]);
   const [userRole, setUserRole] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [migrationDestId, setMigrationDestId] = useState('');
   const [error, setError] = useState('');
 
   const fetchServerDetails = async () => {
     try {
-      const res = await fetch(`/api/servers/${serverId}`);
-      if (res.ok) {
-        const data = await res.json();
+      const [serverRes, nodesRes] = await Promise.all([
+        fetch(`/api/servers/${serverId}`),
+        fetch(`/api/nodes`)
+      ]);
+      
+      if (serverRes.ok) {
+        const data = await serverRes.json();
         setServer(data.server);
         setUserRole(data.role);
       } else {
-        const errData = await res.json();
+        const errData = await serverRes.json();
         setError(errData.error || 'Failed to fetch server details');
+      }
+
+      if (nodesRes.ok) {
+        const data = await nodesRes.json();
+        setNodes(data.nodes || []);
       }
     } catch (e: any) {
       setError('Network error retrieving server instance');
@@ -62,6 +73,32 @@ export default function ServerConsolePage() {
       fetchServerDetails();
     }
   }, [serverId]);
+
+  const handleMigrate = async () => {
+    if (!migrationDestId) return alert('Select a destination node');
+    if (!confirm('WARNING: If the server is currently running, it will gracefully shut down with a 10 second countdown. Once it shuts down, it will migrate to the new node. Your server will be offline during the transfer. Are you sure you want to proceed?')) return;
+    
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/servers/${serverId}/migrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destinationNodeId: migrationDestId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Migration process has started! Your server is currently migrating in the background.');
+        // Force refresh
+        setTimeout(() => window.location.reload(), 2000);
+      } else {
+        alert(data.error || 'Failed to trigger migration');
+      }
+    } catch (e) {
+      alert('Network error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const handleAction = async (action: string) => {
     setActionLoading(true);
@@ -241,6 +278,44 @@ export default function ServerConsolePage() {
             apiKey={server.node.apiKey}
           />
         </div>
+
+        {/* Server Migration Block */}
+        <div className="mt-8 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+          <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
+            <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            </svg>
+            Server Migration
+          </h3>
+          <p className="text-sm text-slate-400 mb-6 max-w-3xl leading-relaxed">
+            Instantly transfer this server and all of its files to a different node. If the server is currently running, it will automatically perform a graceful 10-second shutdown countdown in-game before transferring.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+            <select
+              value={migrationDestId}
+              onChange={(e) => setMigrationDestId(e.target.value)}
+              className="bg-slate-950 border border-slate-700 text-white text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:max-w-xs p-3 transition"
+            >
+              <option value="">Select Destination Node...</option>
+              {nodes
+                .filter(n => n.id !== server.nodeId)
+                .map(n => (
+                  <option key={n.id} value={n.id}>
+                    {n.name} (Priority {n.offloadPriority}) {n.isOnline ? '' : '- OFFLINE'}
+                  </option>
+                ))}
+            </select>
+            <button
+              onClick={handleMigrate}
+              disabled={actionLoading || !migrationDestId}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-6 py-3 rounded-xl shadow-lg shadow-indigo-600/20 transition whitespace-nowrap"
+            >
+              {actionLoading ? 'Migrating...' : 'Start Migration'}
+            </button>
+          </div>
+        </div>
+
       </main>
     </div>
   );

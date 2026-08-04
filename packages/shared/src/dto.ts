@@ -11,6 +11,7 @@ export interface CreateServerContainerDto {
   memoryMb: number;
   cpuLimit: number;
   eulaAccepted: boolean;
+  isMigration?: boolean;
 }
 
 export interface DaemonHealthDto {

@@ -1,13 +1,14 @@
 import express, { Router, Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import AdmZip from 'adm-zip';
 import { loadConfig } from '../config';
 import {
   createServerContainer,
   startServerContainer,
   stopServerContainer,
+  gracefulStopWithCountdown,
   restartServerContainer,
   killServerContainer,
   removeServerContainer,
@@ -127,9 +128,20 @@ router.post('/:containerId/start', async (req: Request, res: Response) => {
 // POST /api/v1/servers/:containerId/stop
 router.post('/:containerId/stop', async (req: Request, res: Response) => {
   try {
+    const { countdown } = req.query;
     console.log('[Daemon API] Stopping server container:', req.params.containerId);
-    await stopServerContainer(req.params.containerId);
-    res.json({ message: 'Server stop signal dispatched' });
+    
+    if (countdown && !isNaN(Number(countdown))) {
+      const seconds = Number(countdown);
+      // Run it asynchronously so the HTTP request completes immediately
+      gracefulStopWithCountdown(req.params.containerId, seconds).catch(err => {
+        console.error(`[Daemon API Error] Graceful stop failed:`, err.message);
+      });
+      res.json({ message: `Server stopping gracefully with ${seconds}s countdown` });
+    } else {
+      await stopServerContainer(req.params.containerId);
+      res.json({ message: 'Server stopped' });
+    }
   } catch (err: any) {
     console.error('[Daemon API Error] Stop failed:', err.message);
     res.status(500).json({ error: 'Failed to stop server container', details: err.message });
@@ -171,6 +183,101 @@ router.delete('/:containerId', async (req: Request, res: Response) => {
     console.error('[Daemon API Error] Delete failed:', err.message);
     res.status(500).json({ error: 'Failed to remove server container', details: err.message });
   }
+});
+
+// GET /api/v1/servers/:serverId/export
+router.get('/:serverId/export', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const serverDir = path.join(config.dataDir, serverId);
+
+  if (!fs.existsSync(serverDir)) {
+    return res.status(404).json({ error: 'Server directory not found' });
+  }
+
+  console.log(`[Daemon API] Streaming export for server ${serverId}...`);
+
+  res.setHeader('Content-Type', 'application/gzip');
+  res.setHeader('Content-Disposition', `attachment; filename="${serverId}.tar.gz"`);
+
+  // tar -czf - -C /path/to/server .
+  const tar = spawn('tar', ['-czf', '-', '-C', serverDir, '.']);
+
+  tar.stdout.pipe(res);
+
+  tar.stderr.on('data', (data) => {
+    console.warn(`[tar export stderr] ${data}`);
+  });
+
+  tar.on('close', (code) => {
+    if (code !== 0) {
+      console.error(`[Daemon API] tar export failed with code ${code}`);
+      if (!res.headersSent) {
+        res.status(500).json({ error: `Export failed with code ${code}` });
+      } else {
+        res.end(); // Attempt to cleanly end the stream
+      }
+    } else {
+      console.log(`[Daemon API] Export complete for ${serverId}`);
+    }
+  });
+});
+
+// POST /api/v1/servers/import?serverId=xyz
+router.post('/import', (req: Request, res: Response) => {
+  const { serverId } = req.query;
+  if (!serverId || typeof serverId !== 'string') {
+    return res.status(400).json({ error: 'Missing serverId query parameter' });
+  }
+
+  const serverDir = path.join(config.dataDir, serverId);
+  if (!fs.existsSync(serverDir)) {
+    fs.mkdirSync(serverDir, { recursive: true });
+  }
+
+  console.log(`[Daemon API] Receiving import stream for server ${serverId}...`);
+
+  // tar -xzf - -C /path/to/server
+  const tar = spawn('tar', ['-xzf', '-', '-C', serverDir]);
+
+  req.pipe(tar.stdin);
+
+  tar.stderr.on('data', (data) => {
+    console.warn(`[tar import stderr] ${data}`);
+  });
+
+  tar.on('close', async (code) => {
+    if (code !== 0) {
+      console.error(`[Daemon API] tar import failed with code ${code}`);
+      return res.status(500).json({ error: `Import failed with code ${code}` });
+    }
+
+    console.log(`[Daemon API] Import complete for ${serverId}. Proceeding to create container...`);
+    
+    // We expect the original CreateServerContainerDto to be passed in a header because the body is the stream
+    const dtoHeader = req.headers['x-create-dto'];
+    if (dtoHeader && typeof dtoHeader === 'string') {
+      try {
+        const dto: CreateServerContainerDto = JSON.parse(dtoHeader);
+        
+        // Immediately respond 202, build container asynchronously
+        res.status(202).json({ message: 'Import successful, creating container...', serverId });
+        
+        provisioningManager.run(dto.serverId, async () => {
+          const containerId = await createServerContainer(dto);
+          // Do NOT automatically start it here so the user can review it first, or we can start it?
+          // Web Panel will manage the start if it wants.
+          console.log(`[Daemon] Migration container ${containerId} created successfully.`);
+        }).catch((err) => {
+          console.error(`[Daemon Migration Failed] ${dto.serverId}:`, err.message);
+        });
+
+      } catch (err: any) {
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to create container post-import', details: err.message });
+      }
+    } else {
+      if (!res.headersSent) res.status(200).json({ message: 'Import successful, but no DTO provided to create container.' });
+    }
+  });
 });
 
 export default router;

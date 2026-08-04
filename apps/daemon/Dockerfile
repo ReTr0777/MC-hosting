@@ -44,11 +44,11 @@ RUN curl -sSLf "https://github.com/fatedier/frp/releases/download/v0.58.0/frp_0.
     rm -rf frp_0.58.0_linux_amd64 frp.tar.gz
 
 # Copy workspace package manifests & compiled outputs
-COPY package.json ./
-COPY packages/shared/package.json ./packages/shared/
-COPY packages/shared/dist ./packages/shared/dist
-COPY apps/daemon/package.json ./apps/daemon/
-COPY apps/daemon/dist ./apps/daemon/dist
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/apps/daemon/package.json ./apps/daemon/
+COPY --from=builder /app/apps/daemon/dist ./apps/daemon/dist
 COPY apps/daemon/src/public ./apps/daemon/dist/public
 
 # Copy installed node_modules from builder
