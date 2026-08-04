@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 
@@ -8,9 +8,19 @@ export default function RegisterPage() {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const { login } = useAuth();
+
+  useEffect(() => {
+    // Check for ?invite= in URL
+    const searchParams = new URLSearchParams(window.location.search);
+    const inviteParam = searchParams.get('invite');
+    if (inviteParam) {
+      setInviteCode(inviteParam);
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,7 +31,7 @@ export default function RegisterPage() {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, username, password }),
+        body: JSON.stringify({ email, username, password, inviteCode }),
       });
 
       const data = await res.json();
@@ -93,6 +103,19 @@ export default function RegisterPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+              Invite Code (If Required)
+            </label>
+            <input
+              type="text"
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+              placeholder="e.g. SECRET123"
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition"
             />
           </div>

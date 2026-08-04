@@ -4,10 +4,33 @@ import { hashPassword, signJwtToken, COOKIE_NAME } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, username, password } = await req.json();
+    const { email, username, password, inviteCode } = await req.json();
 
     if (!email || !username || !password) {
       return NextResponse.json({ error: 'Email, username, and password are required' }, { status: 400 });
+    }
+
+    const userCount = await prisma.user.count();
+    const globalRole = userCount === 0 ? 'GLOBAL_ADMIN' : 'USER';
+
+    if (userCount > 0) {
+      if (!inviteCode) {
+        return NextResponse.json({ error: 'An invite code is required to register' }, { status: 403 });
+      }
+
+      const invite = await prisma.inviteCode.findUnique({
+        where: { code: inviteCode }
+      });
+
+      if (!invite) {
+        return NextResponse.json({ error: 'Invalid invite code' }, { status: 403 });
+      }
+
+      if (invite.maxUses && invite.uses >= invite.maxUses) {
+        return NextResponse.json({ error: 'This invite code has reached its maximum uses' }, { status: 403 });
+      }
+
+      // We will increment the uses after successfully creating the user
     }
 
     const existingUser = await prisma.user.findFirst({
@@ -20,9 +43,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'User with this email or username already exists' }, { status: 409 });
     }
 
-    const userCount = await prisma.user.count();
-    const globalRole = userCount === 0 ? 'GLOBAL_ADMIN' : 'USER';
-
     const passwordHash = await hashPassword(password);
     const user = await prisma.user.create({
       data: {
@@ -32,6 +52,13 @@ export async function POST(req: NextRequest) {
         globalRole,
       },
     });
+
+    if (userCount > 0 && inviteCode) {
+      await prisma.inviteCode.update({
+        where: { code: inviteCode },
+        data: { uses: { increment: 1 } }
+      });
+    }
 
     const token = await signJwtToken({
       userId: user.id,

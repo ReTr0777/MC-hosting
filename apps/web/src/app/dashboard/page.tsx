@@ -379,6 +379,15 @@ export default function DashboardPage() {
             {user.globalRole}
           </span>
 
+          {user.globalRole === 'GLOBAL_ADMIN' && (
+            <Link
+              href="/dashboard/users"
+              className="text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 px-3 py-1.5 rounded-lg font-medium transition"
+            >
+              Users & Invites
+            </Link>
+          )}
+
           <Link
             href="/modrinth"
             className="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-3 py-1.5 rounded-lg font-medium transition"
