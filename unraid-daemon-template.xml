@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>CraftControl-Daemon</Name>
-  <Repository>craftcontrol/daemon:latest</Repository>
-  <Registry>https://hub.docker.com/r/craftcontrol/daemon</Registry>
+  <Repository>retr0xwx/mc-hosting:daemon</Repository>
+  <Registry>https://hub.docker.com/r/retr0xwx/mc-hosting</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
@@ -36,4 +36,11 @@
 
   <!-- Daemon Port Variable -->
   <Config Name="Daemon Port Env" Target="DAEMON_PORT" Default="3500" Description="Internal environment variable for daemon server port" Type="Variable" Display="advanced" Required="false" Mask="false">3500</Config>
+
+  <!-- FRP Connection Settings -->
+  <Config Name="FRP Server Address" Target="FRP_SERVER_ADDR" Default="IP_OF_MAIN_SERVER" Description="The IP address of the main server hosting the FRP Server" Type="Variable" Display="always" Required="true" Mask="false">IP_OF_MAIN_SERVER</Config>
+  
+  <Config Name="FRP Server Port" Target="FRP_SERVER_PORT" Default="7000" Description="The port of the FRP Server" Type="Variable" Display="always" Required="true" Mask="false">7000</Config>
+  
+  <Config Name="FRP Token" Target="FRP_TOKEN" Default="craftcontrol-tunnel-secret" Description="The authentication token for the FRP tunnel" Type="Variable" Display="always" Required="true" Mask="true">craftcontrol-tunnel-secret</Config>
 </Container>
