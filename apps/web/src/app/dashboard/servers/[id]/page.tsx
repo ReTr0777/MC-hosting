@@ -10,6 +10,7 @@ interface ServerDetail {
   id: string;
   name: string;
   description?: string;
+  nodeId: string;
   containerId?: string;
   status: string;
   serverType: string;
