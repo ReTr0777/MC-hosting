@@ -1,11 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
+import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig } from './config';
 import { authenticateDaemonKey } from './middleware/auth';
 import systemRoutes from './routes/system';
 import serverRoutes from './routes/servers';
+import setupRoutes from './routes/setup';
 import { handleConsoleWebSocket } from './services/console';
 import { tunnelManager } from './services/frpc';
 
@@ -19,6 +21,10 @@ const wss = new WebSocketServer({ noServer: true });
 app.use(cors());
 app.use(express.json({ limit: '2gb' }));
 app.use(express.urlencoded({ extended: true, limit: '2gb' }));
+
+// Setup GUI routes
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/api/v1/setup', setupRoutes);
 
 // Public health ping (optional basic ping)
 app.get('/ping', (req, res) => res.send('pong'));

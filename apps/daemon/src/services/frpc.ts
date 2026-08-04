@@ -22,13 +22,21 @@ class TunnelManager {
   }
 
   public async init() {
-    const serverAddr = process.env.FRP_SERVER_ADDR;
-    const serverPort = process.env.FRP_SERVER_PORT || 7000;
-    const token = process.env.FRP_TOKEN;
+    // If a process is already running, kill it before restarting
+    if (this.frpcProcess) {
+      console.log('[TunnelManager] Killing existing frpc process...');
+      this.frpcProcess.kill('SIGTERM');
+      this.frpcProcess = null;
+    }
+
+    const config = getConfig();
+    const serverAddr = config.frpServerAddr;
+    const serverPort = config.frpServerPort || 7000;
+    const token = config.frpToken;
     const apiPort = process.env.FRP_DAEMON_API_PORT;
 
     if (!serverAddr) {
-      console.log('[TunnelManager] FRP_SERVER_ADDR not set, tunneling disabled.');
+      console.log('[TunnelManager] FRP Server Address not configured. Tunneling disabled.');
       return;
     }
 
