@@ -43,8 +43,10 @@ export function loadConfig(): DaemonConfig {
     } catch (err) {
       console.warn('[Daemon] Failed to read config.json, using defaults.');
     }
-  } else {
-    // Generate an initial random password for the setup GUI
+  }
+
+  // Ensure a setup password exists
+  if (!loadedConfig.setupPassword) {
     loadedConfig.setupPassword = crypto.randomBytes(8).toString('hex');
     console.log('\n======================================================');
     console.log('🎉 INITIAL DAEMON SETUP 🎉');
