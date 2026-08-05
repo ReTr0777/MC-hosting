@@ -101,8 +101,9 @@ export default function DashboardPage() {
   const [nodes, setNodes] = useState<NodeItem[]>([]);
   const [servers, setServers] = useState<ServerItem[]>([]);
 
-  // New Node Form State
+  // Node Form State
   const [showNodeModal, setShowNodeModal] = useState(false);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [nodeName, setNodeName] = useState('');
   const [nodeHost, setNodeHost] = useState('');
   const [nodePort, setNodePort] = useState(3500);
@@ -181,6 +182,29 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!loading && user) {
       fetchData();
+      
+      const intervalId = setInterval(async () => {
+        // Ping all nodes to update their online status in the database
+        try {
+          // fetch current nodes to avoid stale closure (or just use a ref, but fetching from api is fine since fetchData will be called right after anyway)
+          const res = await fetch('/api/nodes');
+          if (res.ok) {
+            const data = await res.json();
+            const currentNodes = data.nodes || [];
+            await Promise.all(
+              currentNodes.map((n: NodeItem) => 
+                fetch(`/api/nodes/${n.id}/ping`, { method: 'POST' }).catch(() => {})
+              )
+            );
+          }
+          // After pinging, refresh the data to show the new statuses
+          fetchData();
+        } catch (e) {
+          // ignore
+        }
+      }, 60000); // 60 seconds
+
+      return () => clearInterval(intervalId);
     }
   }, [loading, user]);
 
@@ -221,27 +245,64 @@ export default function DashboardPage() {
     e.preventDefault();
     setActionError('');
     try {
-      const res = await fetch('/api/nodes', {
-        method: 'POST',
+      const url = editingNodeId ? `/api/nodes/${editingNodeId}` : '/api/nodes';
+      const method = editingNodeId ? 'PUT' : 'POST';
+      
+      const payload: any = {
+        name: nodeName,
+        host: nodeHost,
+        port: nodePort,
+        offloadPriority: nodeOffloadPriority,
+      };
+
+      if (nodeApiKey) {
+        payload.apiKey = nodeApiKey;
+      } else if (!editingNodeId) {
+        throw new Error('API Key is required for new nodes');
+      }
+
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: nodeName,
-          host: nodeHost,
-          port: nodePort,
-          apiKey: nodeApiKey,
-          offloadPriority: nodeOffloadPriority,
-        }),
+        body: JSON.stringify(payload),
       });
+      
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to add node');
+      if (!res.ok) throw new Error(data.error || 'Failed to save node');
 
       setShowNodeModal(false);
+      setEditingNodeId(null);
       setNodeName('');
       setNodeHost('');
       setNodeApiKey('');
       fetchData();
     } catch (err: any) {
       setActionError(err.message);
+    }
+  };
+
+  const openEditNodeModal = (node: NodeItem) => {
+    setEditingNodeId(node.id);
+    setNodeName(node.name);
+    setNodeHost(node.host);
+    setNodePort(node.port);
+    setNodeOffloadPriority(node.offloadPriority);
+    setNodeApiKey(''); // Leave empty for edit
+    setShowNodeModal(true);
+  };
+
+  const handleDeleteNode = async (nodeId: string) => {
+    if (!confirm('Are you sure you want to delete this node? This cannot be undone.')) return;
+    try {
+      const res = await fetch(`/api/nodes/${nodeId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete node');
+      
+      fetchData();
+    } catch (err: any) {
+      alert(err.message);
     }
   };
 
@@ -419,9 +480,17 @@ export default function DashboardPage() {
               <h2 className="text-xl font-bold text-white">Remote Worker Nodes</h2>
               <p className="text-xs text-slate-400">Connected daemons managing containerized Minecraft instances</p>
             </div>
-            {user.globalRole === 'GLOBAL_ADMIN' && (
+            {user?.globalRole === 'GLOBAL_ADMIN' && (
               <button
-                onClick={() => setShowNodeModal(true)}
+                onClick={() => {
+                  setEditingNodeId(null);
+                  setNodeName('');
+                  setNodeHost('');
+                  setNodePort(3500);
+                  setNodeApiKey('');
+                  setNodeOffloadPriority(0);
+                  setShowNodeModal(true);
+                }}
                 className="bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold px-4 py-2 rounded-xl border border-slate-700 transition"
               >
                 + Register Daemon Node
@@ -439,15 +508,39 @@ export default function DashboardPage() {
                 <div key={node.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative overflow-hidden">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-semibold text-white">{node.name}</span>
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                        node.isOnline
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                          : 'bg-red-500/10 text-red-400 border border-red-500/20'
-                      }`}
-                    >
-                      {node.isOnline ? 'Online' : 'Offline'}
-                    </span>
+                    <div className="flex items-center space-x-2">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                          node.isOnline
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                        }`}
+                      >
+                        {node.isOnline ? 'Online' : 'Offline'}
+                      </span>
+                      {user?.globalRole === 'GLOBAL_ADMIN' && (
+                        <>
+                          <button
+                            onClick={() => openEditNodeModal(node)}
+                            className="text-slate-400 hover:text-blue-400 transition p-1"
+                            title="Edit Node"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteNode(node.id)}
+                            className="text-red-400 hover:text-red-300 transition p-1"
+                            title="Delete Node"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="text-xs text-slate-400 font-mono mb-3">
                     {node.host}:{node.port}
@@ -556,11 +649,13 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* Modal: Register Daemon Node */}
+      {/* Modal: Register/Edit Daemon Node */}
       {showNodeModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-1">Register Remote Daemon Node</h3>
+            <h3 className="text-lg font-bold text-white mb-1">
+              {editingNodeId ? 'Edit Remote Daemon Node' : 'Register Remote Daemon Node'}
+            </h3>
             <p className="text-xs text-amber-400 mb-4 bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-lg">
               Note: Daemon Port is <code className="font-bold font-mono">3500</code> (Not 25565, which is for Minecraft player connections).
             </p>
@@ -601,13 +696,15 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Daemon API Secret Key</label>
+                <label className="block text-xs text-slate-400 mb-1">
+                  Daemon API Secret Key {editingNodeId && '(Leave blank to keep unchanged)'}
+                </label>
                 <input
                   type="password"
-                  required
+                  required={!editingNodeId}
                   value={nodeApiKey}
                   onChange={(e) => setNodeApiKey(e.target.value)}
-                  placeholder="local-daemon-testing-bearer-key"
+                  placeholder={editingNodeId ? "Leave blank to keep current key" : "local-daemon-testing-bearer-key"}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
                 />
               </div>
@@ -631,7 +728,7 @@ export default function DashboardPage() {
                   Cancel
                 </button>
                 <button type="submit" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl">
-                  Register Node
+                  {editingNodeId ? 'Update Node' : 'Register Node'}
                 </button>
               </div>
             </form>
