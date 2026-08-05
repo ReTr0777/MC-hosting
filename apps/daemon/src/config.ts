@@ -6,6 +6,7 @@ export interface DaemonConfig {
   port: number;
   apiKey: string;
   dataDir: string;
+  hostDataDir?: string;
   dockerSocket?: string;
   setupPassword?: string;
   frpServerAddr?: string;
@@ -19,6 +20,7 @@ const defaultConfig: DaemonConfig = {
   port: parseInt(process.env.DAEMON_PORT || '3500', 10),
   apiKey: process.env.DAEMON_API_KEY || 'default-daemon-secret-key',
   dataDir: process.env.DAEMON_DATA_DIR || path.join(process.cwd(), 'data', 'servers'),
+  hostDataDir: process.env.HOST_DATA_DIR || undefined,
   frpServerAddr: process.env.FRP_SERVER_ADDR || '',
   frpServerPort: parseInt(process.env.FRP_SERVER_PORT || '7000', 10),
   frpToken: process.env.FRP_TOKEN || '',

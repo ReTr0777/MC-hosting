@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>CraftControl-WebPanel</Name>
-  <Repository>retr0xwx/mc-hosting:web</Repository>
-  <Registry>https://hub.docker.com/r/retr0xwx/mc-hosting</Registry>
+  <Repository>ghcr.io/retr0777/mc-hosting:web</Repository>
+  <Registry>https://ghcr.io/retr0777/mc-hosting</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
@@ -26,9 +26,11 @@
   <Config Name="Web Panel Port" Target="3000" Default="3000" Mode="tcp" Description="HTTP Web UI Port" Type="Port" Display="always" Required="true" Mask="false">3000</Config>
 
   <!-- Environment Variables -->
-  <Config Name="Database Connection String" Target="DATABASE_URL" Default="postgresql://mcuser:mcpassword@postgres-ip:5432/mcmanager?schema=public" Description="PostgreSQL Database Connection URI" Type="Variable" Display="always" Required="true" Mask="false">postgresql://mcuser:mcpassword@postgres-ip:5432/mcmanager?schema=public</Config>
+  <Config Name="Database Connection String" Target="DATABASE_URL" Default="postgresql://mcuser:mcpassword@192.168.50.220:5432/mcmanager?schema=public" Description="PostgreSQL Database Connection URI" Type="Variable" Display="always" Required="true" Mask="false">postgresql://mcuser:mcpassword@192.168.50.220:5432/mcmanager?schema=public</Config>
 
   <Config Name="JWT Secret Token" Target="JWT_SECRET" Default="change-me-secret-jwt-key" Description="Secret key used for signing user session JWT tokens" Type="Variable" Display="always" Required="true" Mask="true">change-me-secret-jwt-key</Config>
+
+  <Config Name="Web Panel Data Directory" Target="/app/data" Default="/mnt/user/appdata/craftcontrol-webpanel" Description="Host folder mounted into the web panel container for persistent data or custom files" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/craftcontrol-webpanel</Config>
 
   <Config Name="Port Environment Variable" Target="PORT" Default="3000" Description="Internal application listening port" Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
 </Container>

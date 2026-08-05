@@ -7,11 +7,12 @@ RUN apk add --no-cache openssl
 
 # Copy monorepo manifests
 COPY package.json ./
+COPY package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/web/package.json ./apps/web/
 
-# Install dependencies
-RUN npm install
+# Install dependencies from package-lock.json for reproducible builds
+RUN npm ci
 
 # Copy source code
 COPY packages/shared ./packages/shared
@@ -37,12 +38,16 @@ RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Copy standalone output from Next.js builder
+# Copy built app output from Next.js builder
 COPY --from=builder /app/apps/web/public ./apps/web/public
-COPY --from=builder /app/apps/web/.next/standalone ./
-COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder /app/apps/web/.next ./apps/web/.next
 COPY --from=builder /app/apps/web/prisma ./apps/web/prisma
+COPY --from=builder /app/apps/web/package.json ./apps/web/package.json
+COPY --from=builder /app/apps/web/server.js ./apps/web/server.js
+
+# Copy installed dependencies from builder so runtime can use the same Prisma version
+COPY --from=builder /app/node_modules ./node_modules
 
 EXPOSE 3000
 
-CMD ["node", "apps/web/server.js"]
+CMD ["sh", "-c", "cd apps/web && npx prisma db push --schema prisma/schema.prisma && npm run start"]

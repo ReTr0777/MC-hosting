@@ -18,7 +18,7 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    image: retr0xwx/mc-hosting:web
+    image: ghcr.io/retr0777/mc-hosting:web
     container_name: mc_web_panel
     restart: always
     ports:
@@ -31,7 +31,10 @@ services:
       - db
 
   daemon:
-    image: retr0xwx/mc-hosting:daemon
+    build:
+      context: .
+      dockerfile: apps/daemon/Dockerfile
+    image: ghcr.io/retr0777/mc-hosting:daemon
     container_name: mc_daemon_node
     restart: always
     ports:

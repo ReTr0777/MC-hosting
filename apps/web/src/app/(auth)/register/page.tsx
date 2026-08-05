@@ -36,7 +36,9 @@ export default function RegisterPage() {
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Registration failed');
+        const message = data.error || 'Registration failed';
+        const details = data.details ? `: ${data.details}` : '';
+        throw new Error(`${message}${details}`);
       }
 
       login(data.user);

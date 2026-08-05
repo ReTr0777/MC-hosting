@@ -64,17 +64,25 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         }
       } catch (e: any) {
         console.warn(`[Web API] Start/Restart failed (${e.message}). Auto-creating container for server ${server.id}...`);
-        await daemonClient.createServer({
-          serverId: server.id,
-          serverType: server.serverType as ServerType,
-          mcVersion: server.mcVersion,
-          modpackSlug: server.modpackSlug || undefined,
-          serverPort: server.serverPort,
-          memoryMb: server.memoryMb,
-          cpuLimit: server.cpuLimit,
-          eulaAccepted: true,
-        });
-        await daemonClient.startServer(targetContainerId);
+        try {
+          await daemonClient.createServer({
+            serverId: server.id,
+            serverType: server.serverType as ServerType,
+            mcVersion: server.mcVersion,
+            modpackSlug: server.modpackSlug || undefined,
+            serverPort: server.serverPort,
+            memoryMb: server.memoryMb,
+            cpuLimit: server.cpuLimit,
+            eulaAccepted: true,
+          });
+          // Note: startServerContainer is automatically called by the Daemon's background provisioning, so we don't need to manually call startServer here anymore if createServer succeeded
+        } catch (createErr: any) {
+          if (createErr.message.includes('409')) {
+            console.log(`[Web API] Provisioning already in progress for server ${server.id}`);
+            return NextResponse.json({ message: 'Server is currently provisioning', status: 'PROVISIONING' });
+          }
+          throw createErr;
+        }
       }
       await prisma.server.update({
         where: { id: server.id },

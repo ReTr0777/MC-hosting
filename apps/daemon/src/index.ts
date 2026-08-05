@@ -35,6 +35,7 @@ app.use('/api/v1/servers', authenticateDaemonKey, serverRoutes);
 
 // WebSocket upgrade handling for console streaming
 server.on('upgrade', (request, socket, head) => {
+  console.log(`[Daemon API] Received WebSocket upgrade request for ${request.url}`);
   const url = new URL(request.url || '', `http://${request.headers.host}`);
   const pathname = url.pathname;
 

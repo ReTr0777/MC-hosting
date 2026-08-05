@@ -89,6 +89,14 @@ export async function POST(req: NextRequest) {
 
     return response;
   } catch (err: any) {
-    return NextResponse.json({ error: 'Failed to register user', details: err.message }, { status: 500 });
+    console.error('[auth/register] Registration error:', err);
+    return NextResponse.json(
+      {
+        error: 'Failed to register user',
+        details: err.message,
+        ...(process.env.NODE_ENV !== 'production' ? { stack: err.stack } : {}),
+      },
+      { status: 500 }
+    );
   }
 }

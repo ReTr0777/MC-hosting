@@ -5,11 +5,12 @@ WORKDIR /app
 
 # Copy root and workspace package manifests
 COPY package.json ./
+COPY package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/daemon/package.json ./apps/daemon/
 
-# Install dependencies for monorepo
-RUN npm install
+# Install dependencies from package-lock.json for reproducible builds
+RUN npm ci
 
 # Copy source files
 COPY packages/shared ./packages/shared

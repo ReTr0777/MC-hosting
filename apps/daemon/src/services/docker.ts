@@ -54,15 +54,26 @@ export function getItzgImageTag(mcVersion?: string): string {
   if (!mcVersion || mcVersion === 'LATEST') return 'itzg/minecraft-server:latest';
   
   const parts = mcVersion.split('.');
+  const major = parseInt(parts[0] || '0', 10);
   const minor = parseInt(parts[1] || '0', 10);
   const patch = parseInt(parts[2] || '0', 10);
 
-  if (minor >= 21 || (minor === 20 && patch >= 5)) {
-    return 'itzg/minecraft-server:java21'; // or :latest
+  if (major >= 26) {
+    return 'itzg/minecraft-server:java25';
   }
-  if (minor >= 17) {
-    return 'itzg/minecraft-server:java17';
+
+  if (major === 1) {
+    if (minor >= 26) {
+      return 'itzg/minecraft-server:java25';
+    }
+    if (minor >= 21 || (minor === 20 && patch >= 5)) {
+      return 'itzg/minecraft-server:java21';
+    }
+    if (minor >= 17) {
+      return 'itzg/minecraft-server:java17';
+    }
   }
+
   return 'itzg/minecraft-server:java8';
 }
 
@@ -305,7 +316,9 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
     }
   }
 
-  const volumeBind = `mc_data_${dto.serverId}:/data`;
+  const volumeBind = config.hostDataDir
+    ? `${path.join(config.hostDataDir, dto.serverId)}:/data`
+    : `mc_data_${dto.serverId}:/data`;
 
   const containerName = `mc-server-${dto.serverId}`;
 
@@ -571,32 +584,31 @@ export async function startServerContainer(containerId: string, serverId?: strin
 
   try {
     await container.start();
-    
-    // Tunnel Manager Hook
-    if (targetServerId) {
-      try {
-        const inspect = await container.inspect();
-        const ipAddress = inspect.NetworkSettings.IPAddress;
-        const portBindings = inspect.HostConfig.PortBindings?.['25565/tcp'];
-        if (ipAddress && portBindings && portBindings.length > 0) {
-          const publicPort = parseInt(portBindings[0].HostPort, 10);
-          await tunnelManager.addTunnel(targetServerId, ipAddress, 25565, publicPort);
-        }
-      } catch (e: any) {
-        console.warn(`[Daemon Tunnel Manager] Failed to register tunnel for ${targetServerId}: ${e.message}`);
-      }
-
-      watchContainerStartup(container.id, targetServerId, expectedModCount).catch((e) => {
-        console.warn(`[Daemon Watchdog] Error watching startup for server ${targetServerId}:`, e.message);
-      });
-    }
   } catch (err: any) {
-    console.warn(`[Daemon] container.start() warning (${err.message}). Attempting container restart...`);
-    try {
-      await container.restart();
-    } catch (restartErr: any) {
-      console.error(`[Daemon] container restart failed:`, restartErr.message);
+    if (err.statusCode === 304) {
+      console.log(`[Docker] Container ${containerId} is already running.`);
+    } else {
+      throw err;
     }
+  }
+
+  // Tunnel Manager Hook
+  if (targetServerId) {
+    try {
+      const inspect = await container.inspect();
+      const ipAddress = inspect.NetworkSettings.IPAddress;
+      const portBindings = inspect.HostConfig.PortBindings?.['25565/tcp'];
+      if (ipAddress && portBindings && portBindings.length > 0) {
+        const publicPort = parseInt(portBindings[0].HostPort, 10);
+        await tunnelManager.addTunnel(targetServerId, ipAddress, 25565, publicPort);
+      }
+    } catch (e: any) {
+      console.warn(`[Daemon Tunnel Manager] Failed to register tunnel for ${targetServerId}: ${e.message}`);
+    }
+
+    watchContainerStartup(container.id, targetServerId, expectedModCount).catch((e) => {
+      console.warn(`[Daemon Watchdog] Error watching startup for server ${targetServerId}:`, e.message);
+    });
   }
 }
 

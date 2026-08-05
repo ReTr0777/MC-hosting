@@ -64,14 +64,9 @@ export const ConsoleViewer: React.FC<ConsoleViewerProps> = ({
         if (isUnmounted) return;
         term.writeln('\x1b[33m[CraftControl]\x1b[0m Connecting to Daemon node...');
 
-        // Determine client host & port for WebSocket connection from browser
-        const clientHost = (daemonHost === 'mc_daemon_node' || daemonHost === 'daemon' || !daemonHost)
-          ? window.location.hostname
-          : daemonHost;
-        const clientPort = (daemonPort === 25565 || !daemonPort) ? 3500 : daemonPort;
-
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${clientHost}:${clientPort}/api/v1/servers/${serverId}/console?containerId=${containerId}`;
+        // Connect to our Next.js WS proxy instead of directly to daemon
+        const wsUrl = `${wsProtocol}//${window.location.host}/api/ws/console?serverId=${serverId}&containerId=${containerId}`;
         setStatus('authenticating');
         
         if (wsRef.current) {

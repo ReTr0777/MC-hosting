@@ -11,7 +11,8 @@ export class DaemonClient {
   private apiKey: string;
 
   constructor(node: NodeCredentials) {
-    this.baseUrl = `http://${node.host}:${node.port}/api/v1`;
+    const protocol = node.port === 443 ? 'https' : 'http';
+    this.baseUrl = `${protocol}://${node.host}:${node.port}/api/v1`;
     this.apiKey = node.apiKey;
   }
 

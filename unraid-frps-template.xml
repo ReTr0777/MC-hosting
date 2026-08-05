@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>CraftControl-FRP-Server</Name>
+  <Repository>fatedier/frps:v0.58.0</Repository>
+  <Registry>https://hub.docker.com/r/fatedier/frps</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/fatedier/frp</Support>
+  <Project>https://github.com/fatedier/frp</Project>
+  <Overview>Fast Reverse Proxy (FRP) Server for CraftControl. Tunnels Minecraft server ports from daemon nodes to this central server so players can connect.</Overview>
+  <Category>Tools: Network:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/fatedier/frp/dev/assets/frps/static/favicon.ico</Icon>
+  <ExtraParams/>
+  <PostArgs>-c /etc/frp/frps.toml</PostArgs>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <!-- FRP Bind Port -->
+  <Config Name="FRP Bind Port" Target="7000" Default="7000" Mode="tcp" Description="FRP control port for daemon node connections" Type="Port" Display="always" Required="true" Mask="false">7000</Config>
+
+  <!-- Minecraft Tunnel Port Range -->
+  <Config Name="MC Tunnel Port Range Start" Target="25000" Default="25000" Mode="tcp" Description="Start of the port range for tunneled Minecraft servers" Type="Port" Display="always" Required="true" Mask="false">25000</Config>
+
+  <Config Name="MC Tunnel Port Range End" Target="25100" Default="25100" Mode="tcp" Description="End of the port range for tunneled Minecraft servers (supports up to 100 servers)" Type="Port" Display="always" Required="true" Mask="false">25100</Config>
+
+  <!-- FRP Config File Mount -->
+  <Config Name="FRP Config File" Target="/etc/frp/frps.toml" Default="/mnt/user/appdata/craftcontrol-frps/frps.toml" Mode="rw" Description="Path to your frps.toml configuration file on the host" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol-frps/frps.toml</Config>
+</Container>
