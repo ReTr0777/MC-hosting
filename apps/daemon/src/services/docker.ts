@@ -212,14 +212,11 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
 
   const envVars = [
     `EULA=TRUE`,
-    `ONLINE_MODE=FALSE`,
+    `ONLINE_MODE=${process.env.ONLINE_MODE || 'TRUE'}`,
     `ENFORCE_SECURE_PROFILE=FALSE`,
     `ENABLE_AUTOPAUSE=FALSE`,
     `AUTOPAUSE=FALSE`,
     `OVERRIDE_SERVER_PROPERTIES=TRUE`,
-    // `FABRIC_PROXY_SECRET=mcmanager-limbo-secret`,
-    // `FABRICPROXY_SECRET=mcmanager-limbo-secret`,
-    // `MODS=https://cdn.modrinth.com/data/P7dR8mSH/versions/3gT0I5vt/fabric-api-0.156.0%2B26.2.jar,https://cdn.modrinth.com/data/8dI2tmqs/versions/CsEpiziv/FabricProxy-Lite-2.12.0.jar`,
     `MEMORY=${dto.memoryMb}M`,
     `SERVER_PORT=25565`,
     `JVM_OPTS=-Djava.awt.headless=true`,
