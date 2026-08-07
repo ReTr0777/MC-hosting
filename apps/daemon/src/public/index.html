@@ -153,11 +153,12 @@
             if (validLan) displayIp = validLan;
           }
 
-          if (!displayIp) {
-            displayIp = window.location.hostname || 'Configure HOST_IP env var';
+          if (displayIp) {
+            headerIpText.textContent = displayIp;
+          } else {
+            headerIpText.textContent = 'localhost (Use Laptop LAN IP in Web Panel)';
           }
 
-          headerIpText.textContent = displayIp;
           document.getElementById('hostnameText').textContent = 'Hostname: ' + (info.hostname || 'Unknown');
           
           const validIps = (info.deviceIps || []).filter(ip => !isDockerOrLoopback(ip));
@@ -165,7 +166,14 @@
             validIps.unshift(displayIp);
           }
 
-          document.getElementById('detectedIpsText').textContent = validIps.length > 0 ? validIps.join(', ') : displayIp;
+          if (validIps.length > 0) {
+            document.getElementById('detectedIpsText').textContent = validIps.join(', ');
+          } else if (displayIp) {
+            document.getElementById('detectedIpsText').textContent = displayIp;
+          } else {
+            document.getElementById('detectedIpsText').textContent = 'Use your Laptop LAN IP (e.g. 192.168.x.x)';
+          }
+
           document.getElementById('daemonPortText').textContent = info.port || 3500;
         }
       } catch (err) {
