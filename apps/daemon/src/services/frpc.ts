@@ -45,9 +45,6 @@ serverAddr = "${serverAddr}"
 serverPort = ${serverPort}
 ${token ? `\n[auth]\nmethod = "token"\ntoken = "${token}"` : ''}
 
-[transport]
-loginFailExit = false
-
 ${apiPort ? `
 [[proxies]]
 name = "daemon-api-${apiPort}"
