@@ -611,14 +611,14 @@ export async function startServerContainer(containerId: string, serverId?: strin
   if (targetServerId) {
     try {
       const inspect = await container.inspect();
-      const ipAddress = inspect.NetworkSettings.IPAddress || Object.values(inspect.NetworkSettings.Networks || {})[0]?.IPAddress;
       const portBindings = inspect.HostConfig.PortBindings?.['25565/tcp'];
-      if (ipAddress && portBindings && portBindings.length > 0) {
+      if (portBindings && portBindings.length > 0) {
         const publicPort = parseInt(portBindings[0].HostPort, 10);
-        console.log(`[Daemon Tunnel Manager] Registering tunnel for server ${targetServerId}: ${ipAddress}:25565 -> remote:${publicPort}`);
-        await tunnelManager.addTunnel(targetServerId, ipAddress, 25565, publicPort);
+        const targetLocalIp = process.env.HOST_IP || 'host.docker.internal';
+        console.log(`[Daemon Tunnel Manager] Registering tunnel for server ${targetServerId}: ${targetLocalIp}:${publicPort} -> remote:${publicPort}`);
+        await tunnelManager.addTunnel(targetServerId, targetLocalIp, publicPort, publicPort);
       } else {
-        console.warn(`[Daemon Tunnel Manager] Missing IP or PortBinding for ${targetServerId}. IP: ${ipAddress}, PortBindings:`, portBindings);
+        console.warn(`[Daemon Tunnel Manager] Missing PortBinding for ${targetServerId}. PortBindings:`, portBindings);
       }
     } catch (e: any) {
       console.warn(`[Daemon Tunnel Manager] Failed to register tunnel for ${targetServerId}: ${e.message}`);
