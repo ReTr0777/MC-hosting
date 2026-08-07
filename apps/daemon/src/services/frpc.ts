@@ -64,7 +64,7 @@ remotePort = ${apiPort}
     });
 
     this.frpcProcess.stdout?.on('data', (data) => {
-      // console.log(`[frpc] ${data.toString().trim()}`);
+      console.log(`[frpc] ${data.toString().trim()}`);
     });
 
     this.frpcProcess.stderr?.on('data', (data) => {
@@ -93,28 +93,22 @@ remotePort = ${rule.remotePort}
   }
 
   public async addTunnel(serverId: string, localIp: string, localPort: number, remotePort: number) {
-    if (!this.frpcProcess) return;
-
     this.proxies.set(serverId, { serverId, localIp, localPort, remotePort });
     this.writeConfig();
-    this.reload();
+    await this.reload();
   }
 
   public async removeTunnel(serverId: string) {
-    if (!this.frpcProcess) return;
-    
     if (this.proxies.has(serverId)) {
       this.proxies.delete(serverId);
       this.writeConfig();
-      this.reload();
+      await this.reload();
     }
   }
 
-  private reload() {
-    if (this.frpcProcess) {
-      console.log('[TunnelManager] Reloading frpc configuration...');
-      spawn('frpc', ['reload', '-c', this.frpConfigPath]);
-    }
+  private async reload() {
+    console.log('[TunnelManager] Reloading frpc configuration by restarting tunnel process...');
+    await this.init();
   }
 }
 
