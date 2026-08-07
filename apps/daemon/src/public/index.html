@@ -136,15 +136,29 @@
         const res = await fetch('/api/v1/setup/info');
         if (res.ok) {
           const info = await res.json();
-          const primaryIp = info.internalIp || info.requestHostIp || (info.deviceIps && info.deviceIps[0]) || 'Unknown';
-          headerIpText.textContent = primaryIp;
+          const isRealIp = (ip) => ip && ip !== 'localhost' && ip !== '127.0.0.1' && !ip.startsWith('172.17.') && !ip.startsWith('172.18.');
+          
+          let displayIp = 'Unknown';
+          if (isRealIp(window.location.hostname)) {
+            displayIp = window.location.hostname;
+          } else if (isRealIp(info.internalIp)) {
+            displayIp = info.internalIp;
+          } else if (info.deviceIps && info.deviceIps.length > 0) {
+            displayIp = info.deviceIps.find(isRealIp) || info.deviceIps[0];
+          } else {
+            displayIp = window.location.hostname || info.requestHostIp || 'localhost';
+          }
+
+          headerIpText.textContent = displayIp;
           
           document.getElementById('hostnameText').textContent = 'Hostname: ' + (info.hostname || 'Unknown');
-          document.getElementById('detectedIpsText').textContent = (info.deviceIps || [primaryIp]).join(', ');
+          
+          const allIps = new Set([displayIp, ...(info.deviceIps || [])]);
+          document.getElementById('detectedIpsText').textContent = Array.from(allIps).filter(Boolean).join(', ');
           document.getElementById('daemonPortText').textContent = info.port || 3500;
         }
       } catch (err) {
-        headerIpText.textContent = window.location.hostname;
+        headerIpText.textContent = window.location.hostname || 'localhost';
       }
     }
 

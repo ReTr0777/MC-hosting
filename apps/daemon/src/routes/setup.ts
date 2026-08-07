@@ -8,34 +8,46 @@ const router = Router();
 // Helper to gather device network interfaces and IPs
 function getDeviceInfo(req: Request) {
   const interfaces = os.networkInterfaces();
-  const addresses: string[] = [];
+  const rawAddresses: string[] = [];
   
   for (const name of Object.keys(interfaces)) {
+    if (name.includes('docker') || name.includes('veth') || name.includes('br-')) continue;
     for (const iface of interfaces[name] || []) {
       if (!iface.internal && iface.family === 'IPv4') {
-        addresses.push(iface.address);
+        rawAddresses.push(iface.address);
       }
     }
   }
 
+  // Filter out internal Docker container subnet IPs (e.g. 172.17.x.x, 172.18.x.x)
+  const nonDockerLanIps = rawAddresses.filter(ip => !ip.startsWith('172.17.') && !ip.startsWith('172.18.') && !ip.startsWith('172.19.'));
+
   const hostHeader = (req.headers.host || '').split(':')[0];
-  const lanIpRegex = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/;
-  const lanIps = addresses.filter(ip => lanIpRegex.test(ip));
-  
-  let primaryInternalIp = hostHeader;
-  if (!lanIpRegex.test(primaryInternalIp)) {
-    if (lanIps.length > 0) {
-      primaryInternalIp = lanIps[0];
-    } else if (addresses.length > 0) {
-      primaryInternalIp = addresses[0];
-    }
+  const isIpAddress = (str: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(str);
+
+  let primaryInternalIp = process.env.HOST_IP || process.env.NODE_HOST || '';
+
+  if (!primaryInternalIp && isIpAddress(hostHeader) && hostHeader !== '127.0.0.1' && !hostHeader.startsWith('172.17.')) {
+    primaryInternalIp = hostHeader;
+  }
+
+  if (!primaryInternalIp && nonDockerLanIps.length > 0) {
+    primaryInternalIp = nonDockerLanIps[0];
+  }
+
+  if (!primaryInternalIp && rawAddresses.length > 0) {
+    primaryInternalIp = rawAddresses[0];
+  }
+
+  if (!primaryInternalIp) {
+    primaryInternalIp = hostHeader || 'localhost';
   }
 
   return {
     hostname: os.hostname(),
     internalIp: primaryInternalIp,
     requestHostIp: hostHeader || 'localhost',
-    deviceIps: addresses.length > 0 ? addresses : ['127.0.0.1'],
+    deviceIps: nonDockerLanIps.length > 0 ? nonDockerLanIps : rawAddresses,
   };
 }
 
