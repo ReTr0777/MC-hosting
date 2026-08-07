@@ -136,25 +136,36 @@
         const res = await fetch('/api/v1/setup/info');
         if (res.ok) {
           const info = await res.json();
-          const isRealIp = (ip) => ip && ip !== 'localhost' && ip !== '127.0.0.1' && !ip.startsWith('172.17.') && !ip.startsWith('172.18.');
-          
-          let displayIp = 'Unknown';
-          if (isRealIp(window.location.hostname)) {
+          const isDockerOrLoopback = (ip) => {
+            if (!ip || ip === 'localhost' || ip === '127.0.0.1' || ip === '::1') return true;
+            if (ip.startsWith('172.17.') || ip.startsWith('172.18.') || ip.startsWith('172.19.') || ip.startsWith('172.20.')) return true;
+            return false;
+          };
+
+          let displayIp = '';
+
+          if (!isDockerOrLoopback(window.location.hostname)) {
             displayIp = window.location.hostname;
-          } else if (isRealIp(info.internalIp)) {
+          } else if (!isDockerOrLoopback(info.internalIp)) {
             displayIp = info.internalIp;
           } else if (info.deviceIps && info.deviceIps.length > 0) {
-            displayIp = info.deviceIps.find(isRealIp) || info.deviceIps[0];
-          } else {
-            displayIp = window.location.hostname || info.requestHostIp || 'localhost';
+            const validLan = info.deviceIps.find(ip => !isDockerOrLoopback(ip));
+            if (validLan) displayIp = validLan;
+          }
+
+          if (!displayIp) {
+            displayIp = window.location.hostname || 'Configure HOST_IP env var';
           }
 
           headerIpText.textContent = displayIp;
-          
           document.getElementById('hostnameText').textContent = 'Hostname: ' + (info.hostname || 'Unknown');
           
-          const allIps = new Set([displayIp, ...(info.deviceIps || [])]);
-          document.getElementById('detectedIpsText').textContent = Array.from(allIps).filter(Boolean).join(', ');
+          const validIps = (info.deviceIps || []).filter(ip => !isDockerOrLoopback(ip));
+          if (displayIp && !validIps.includes(displayIp) && !isDockerOrLoopback(displayIp)) {
+            validIps.unshift(displayIp);
+          }
+
+          document.getElementById('detectedIpsText').textContent = validIps.length > 0 ? validIps.join(', ') : displayIp;
           document.getElementById('daemonPortText').textContent = info.port || 3500;
         }
       } catch (err) {

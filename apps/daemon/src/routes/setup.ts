@@ -19,15 +19,21 @@ function getDeviceInfo(req: Request) {
     }
   }
 
-  // Filter out internal Docker container subnet IPs (e.g. 172.17.x.x, 172.18.x.x)
-  const nonDockerLanIps = rawAddresses.filter(ip => !ip.startsWith('172.17.') && !ip.startsWith('172.18.') && !ip.startsWith('172.19.'));
+  // Filter out internal Docker container subnet IPs (e.g. 172.17.x.x - 172.31.x.x)
+  const isDockerOrLoopback = (ip: string) => {
+    if (!ip || ip === '127.0.0.1' || ip === 'localhost') return true;
+    if (ip.startsWith('172.17.') || ip.startsWith('172.18.') || ip.startsWith('172.19.') || ip.startsWith('172.20.')) return true;
+    return false;
+  };
+
+  const nonDockerLanIps = rawAddresses.filter(ip => !isDockerOrLoopback(ip));
 
   const hostHeader = (req.headers.host || '').split(':')[0];
   const isIpAddress = (str: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(str);
 
   let primaryInternalIp = process.env.HOST_IP || process.env.NODE_HOST || '';
 
-  if (!primaryInternalIp && isIpAddress(hostHeader) && hostHeader !== '127.0.0.1' && !hostHeader.startsWith('172.17.')) {
+  if (!primaryInternalIp && isIpAddress(hostHeader) && !isDockerOrLoopback(hostHeader)) {
     primaryInternalIp = hostHeader;
   }
 
@@ -35,19 +41,11 @@ function getDeviceInfo(req: Request) {
     primaryInternalIp = nonDockerLanIps[0];
   }
 
-  if (!primaryInternalIp && rawAddresses.length > 0) {
-    primaryInternalIp = rawAddresses[0];
-  }
-
-  if (!primaryInternalIp) {
-    primaryInternalIp = hostHeader || 'localhost';
-  }
-
   return {
     hostname: os.hostname(),
-    internalIp: primaryInternalIp,
-    requestHostIp: hostHeader || 'localhost',
-    deviceIps: nonDockerLanIps.length > 0 ? nonDockerLanIps : rawAddresses,
+    internalIp: primaryInternalIp || (isDockerOrLoopback(hostHeader) ? '' : hostHeader),
+    requestHostIp: hostHeader || '',
+    deviceIps: nonDockerLanIps,
   };
 }
 
