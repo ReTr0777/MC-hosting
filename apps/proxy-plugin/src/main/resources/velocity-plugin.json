@@ -1,0 +1,9 @@
+{
+  "id": "mcmanager-proxy",
+  "name": "MCManager Proxy Rest API",
+  "version": "1.0",
+  "authors": [
+    "ReTr0777"
+  ],
+  "main": "com.mcmanager.proxy.VelocityRestPlugin"
+}

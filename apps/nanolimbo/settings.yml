@@ -1,0 +1,66 @@
+bind:
+  ip: "0.0.0.0"
+  port: 25565
+
+maxPlayers: 1000
+
+ping:
+  description: "<yellow>MCManager Limbo"
+  version: "NanoLimbo"
+  protocol: -1
+
+dimension: THE_END
+
+playerList:
+  enable: true
+  username: "NanoLimbo"
+
+headerAndFooter:
+  enable: false
+
+gameMode: 3
+secureProfile: false
+
+brandName:
+  enable: true
+  content: "MCManager Limbo"
+
+joinMessage:
+  enable: false
+
+bossBar:
+  enable: true
+  text: "Server Booting... Please wait!"
+  health: 1.0
+  color: YELLOW
+  division: SOLID
+
+title:
+  enable: true
+  title: "<yellow>Loading..."
+  subtitle: "<gray>Your server is starting up"
+  fadeIn: 10
+  stay: 70
+  fadeOut: 20
+
+infoForwarding:
+  type: NONE
+  secret: "mcmanager-limbo-secret"
+  tokens: []
+
+readTimeout: 30000
+logPlayersIp: true
+debugLevel: 2
+
+netty:
+  transportType: EPOLL
+  threads:
+    bossGroup: 1
+    workerGroup: 4
+
+traffic:
+  enable: true
+  maxPacketSize: 8192
+  interval: 7.0
+  maxPacketRate: 500.0
+  maxPacketBytesRate: 2048.0

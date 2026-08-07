@@ -60,6 +60,27 @@ services:
     volumes:
       - ./frps.toml:/etc/frp/frps.toml
 
+  nanolimbo:
+    build:
+      context: .
+      dockerfile: apps/nanolimbo/Dockerfile
+    image: ghcr.io/retr0777/mc-hosting:nanolimbo
+    container_name: mc_nanolimbo
+    restart: always
+
+  proxy:
+    build:
+      context: .
+      dockerfile: apps/proxy/Dockerfile
+    image: ghcr.io/retr0777/mc-hosting:proxy
+    container_name: mc_velocity_proxy
+    restart: always
+    ports:
+      - "25565:25565" # Velocity public player port
+      - "3001:3001"   # Velocity REST API
+    depends_on:
+      - nanolimbo
+
 volumes:
   pgdata:
   daemon_data:

@@ -84,6 +84,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           throw createErr;
         }
       }
+
+      // Register with Velocity Proxy
+      try {
+        const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
+        const velocity = new (require('@/lib/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
+        velocity.setBaseUrl(velocityUrl);
+        await velocity.registerServer(server.id, server.node.host, server.serverPort);
+      } catch (velErr: any) {
+        console.warn(`[Web API] Failed to register server ${server.id} with Velocity: ${velErr.message}`);
+      }
+
       await prisma.server.update({
         where: { id: server.id },
         data: { containerId: targetContainerId, status: 'RUNNING' },
@@ -97,6 +108,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       } catch (e: any) {
         console.warn(`[Web API] Stop warning: ${e.message}`);
       }
+      
+      // Unregister from Velocity Proxy
+      try {
+        const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
+        const velocity = new (require('@/lib/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
+        velocity.setBaseUrl(velocityUrl);
+        await velocity.unregisterServer(server.id);
+      } catch (velErr: any) {
+        console.warn(`[Web API] Failed to unregister server ${server.id} with Velocity: ${velErr.message}`);
+      }
+
       await prisma.server.update({
         where: { id: server.id },
         data: { containerId: targetContainerId, status: 'STOPPING' },
@@ -110,6 +132,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       } catch (e: any) {
         console.warn(`[Web API] Kill warning: ${e.message}`);
       }
+      
+      // Unregister from Velocity Proxy
+      try {
+        const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
+        const velocity = new (require('@/lib/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
+        velocity.setBaseUrl(velocityUrl);
+        await velocity.unregisterServer(server.id);
+      } catch (velErr: any) {
+        console.warn(`[Web API] Failed to unregister server ${server.id} with Velocity: ${velErr.message}`);
+      }
+
       await prisma.server.update({
         where: { id: server.id },
         data: { containerId: targetContainerId, status: 'OFFLINE' },

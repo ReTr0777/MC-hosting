@@ -201,13 +201,28 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
     fs.mkdirSync(serverDir, { recursive: true });
   }
   fs.writeFileSync(path.join(serverDir, 'eula.txt'), 'eula=true\n');
+  fs.writeFileSync(path.join(serverDir, 'no-autopause'), '');
+
+  // Setup FabricProxy-Lite config for Velocity Modern Forwarding (Preserved for future opt-in)
+  const modsDir = path.join(serverDir, 'mods');
+  const configDir = path.join(serverDir, 'config');
+  if (!fs.existsSync(modsDir)) fs.mkdirSync(modsDir, { recursive: true });
+  if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'FabricProxy-Lite.toml'), 'secret = "mcmanager-limbo-secret"\n');
 
   const envVars = [
     `EULA=TRUE`,
+    `ONLINE_MODE=FALSE`,
+    `ENFORCE_SECURE_PROFILE=FALSE`,
+    `ENABLE_AUTOPAUSE=FALSE`,
+    `AUTOPAUSE=FALSE`,
+    `OVERRIDE_SERVER_PROPERTIES=TRUE`,
+    // `FABRIC_PROXY_SECRET=mcmanager-limbo-secret`,
+    // `FABRICPROXY_SECRET=mcmanager-limbo-secret`,
+    // `MODS=https://cdn.modrinth.com/data/P7dR8mSH/versions/3gT0I5vt/fabric-api-0.156.0%2B26.2.jar,https://cdn.modrinth.com/data/8dI2tmqs/versions/CsEpiziv/FabricProxy-Lite-2.12.0.jar`,
     `MEMORY=${dto.memoryMb}M`,
     `SERVER_PORT=25565`,
     `JVM_OPTS=-Djava.awt.headless=true`,
-    `REMOVE_OLD_MODS=false`,
     `NETWORK_COMPRESSION_THRESHOLD=-1`,
   ];
 
@@ -635,18 +650,35 @@ export async function stopServerContainer(containerId: string): Promise<void> {
 export async function gracefulStopWithCountdown(containerId: string, seconds: number = 10): Promise<void> {
   const container = await getContainerByIdOrName(containerId);
   
-  // Send warning messages
-  try {
-    const exec = await container.exec({
-      Cmd: ['rcli', `say [SYSTEM] SERVER MIGRATING! Shutting down in ${seconds} seconds...`],
-      AttachStdin: false,
-      AttachStdout: false,
-    });
-    await exec.start({});
-  } catch(e) {}
-
-  // Wait for countdown
-  await new Promise(r => setTimeout(r, seconds * 1000));
+  for (let i = seconds; i > 0; i--) {
+    try {
+      const exec = await container.exec({
+        Cmd: ['rcli', `title @a title {"text":"Migration in ${i}s", "color":"red", "bold":true}`],
+        AttachStdin: false,
+        AttachStdout: false,
+      });
+      await exec.start({});
+      
+      const execSubtitle = await container.exec({
+        Cmd: ['rcli', `title @a subtitle {"text":"Please wait...", "color":"gray"}`],
+        AttachStdin: false,
+        AttachStdout: false,
+      });
+      await execSubtitle.start({});
+      
+      if (i === seconds) {
+         // Also send a chat message on the first second
+         const execChat = await container.exec({
+           Cmd: ['rcli', `say [SYSTEM] SERVER MIGRATING! Shutting down in ${seconds} seconds...`],
+           AttachStdin: false,
+           AttachStdout: false,
+         });
+         await execChat.start({});
+      }
+    } catch(e) {}
+    
+    await new Promise(r => setTimeout(r, 1000));
+  }
   
   // Stop server
   await stopServerContainer(containerId);

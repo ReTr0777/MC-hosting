@@ -3,6 +3,20 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { CreateServerContainerDto } from '@mc-manager/shared';
+import { VelocityClient } from '@/lib/velocity-client';
+
+async function updateLimboTitle(title: string, subtitle: string) {
+  try {
+    const proxyUrl = process.env.PROXY_API_URL || 'http://proxy:3001';
+    await fetch(`${proxyUrl}/api/players/title`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server: 'nanolimbo', title, subtitle })
+    });
+  } catch (e) {
+    console.warn(`[Migration] Failed to update Limbo title:`, e);
+  }
+}
 
 export async function POST(
   req: NextRequest,
@@ -65,6 +79,7 @@ export async function POST(
           // If daemon is reachable, try to gracefully stop
           await sourceClient.request(`/servers/${server.id}/stop?countdown=10`, { method: 'POST' });
           console.log(`[Migration] Sent graceful stop signal to source container. Waiting 15s...`);
+          await updateLimboTitle('<yellow>Migration Started</yellow>', '<gray>Waiting for server to stop...</gray>');
           await new Promise(r => setTimeout(r, 15000));
         } catch (e) {
           console.log(`[Migration] Server was likely already offline, proceeding with migration.`);
@@ -87,6 +102,7 @@ export async function POST(
         }
 
         console.log(`[Migration] Export stream established. Piping to destination...`);
+        await updateLimboTitle('<yellow>Transferring Data</yellow>', '<gray>Piping files to destination node...</gray>');
 
         // 3. Pipe to Destination Daemon import
         const dto: CreateServerContainerDto = {
@@ -130,6 +146,18 @@ export async function POST(
             status: 'OFFLINE'
           }
         });
+        
+        await updateLimboTitle('<green>Migration Complete</green>', '<gray>Cleaning up old node...</gray>');
+        
+        // Update proxy with new node routing
+        try {
+          const velocity = new VelocityClient({ host: '127.0.0.1', port: 3001 });
+          velocity.setBaseUrl(process.env.PROXY_API_URL || 'http://proxy:3001');
+          await velocity.registerServer(server.id, destNode.host, server.serverPort);
+          console.log(`[Migration] Proxy updated for server ${server.id}`);
+        } catch(e) {
+          console.warn(`[Migration] Failed to update Proxy routing:`, e);
+        }
 
         // 5. Cleanup Source Daemon
         console.log(`[Migration] Cleaning up source daemon...`);
@@ -143,6 +171,7 @@ export async function POST(
         }
 
         console.log(`[Migration] Migration of ${server.id} completed successfully!`);
+        await updateLimboTitle('<green>Ready!</green>', '<gray>Server is offline, ready to boot</gray>');
 
       } catch (err: any) {
         console.error(`[Migration Error] Background migration failed:`, err);
