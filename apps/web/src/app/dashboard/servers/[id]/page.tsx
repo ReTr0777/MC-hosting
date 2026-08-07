@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { ConsoleViewer } from '@/components/ConsoleViewer';
+import { FileExplorer } from '@/components/FileExplorer';
+import { ServerPermissionsModal } from '@/components/ServerPermissionsModal';
 
 interface ServerDetail {
   id: string;
@@ -41,6 +43,11 @@ export default function ServerConsolePage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [migrationDestId, setMigrationDestId] = useState('');
   const [error, setError] = useState('');
+
+  // Active View Tab: 'console' | 'files'
+  const [activeTab, setActiveTab] = useState<'console' | 'files'>('console');
+  // Permissions Modal State
+  const [showPermissionsModal, setShowPermissionsModal] = useState(false);
 
   const fetchServerDetails = async () => {
     try {
@@ -190,7 +197,17 @@ export default function ServerConsolePage() {
           </div>
 
           {/* Quick Actions */}
-          <div className="flex items-center space-x-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {user?.globalRole === 'GLOBAL_ADMIN' && (
+              <button
+                onClick={() => setShowPermissionsModal(true)}
+                className="bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 text-xs font-semibold px-4 py-2.5 rounded-xl border border-purple-500/30 transition flex items-center space-x-1.5"
+              >
+                <span>🔑</span>
+                <span>User Access & Privileges</span>
+              </button>
+            )}
+
             {server.status === 'RUNNING' ? (
               <>
                 <button
@@ -227,95 +244,140 @@ export default function ServerConsolePage() {
           </div>
         </div>
 
-        {/* Modpack Platform Notice Banner for Modrinth Modpacks */}
-        {server.serverType === 'MODRINTH' && server.modpackSlug && (
-          <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-2xl p-5 flex items-start space-x-4 text-emerald-200">
-            <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400 mt-0.5">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+        {/* Tab Navigation */}
+        <div className="flex border-b border-slate-800 space-x-6">
+          <button
+            onClick={() => setActiveTab('console')}
+            className={`pb-3 text-sm font-bold border-b-2 transition flex items-center space-x-2 ${
+              activeTab === 'console'
+                ? 'border-emerald-500 text-emerald-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>🖥️ Console & Status</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('files')}
+            className={`pb-3 text-sm font-bold border-b-2 transition flex items-center space-x-2 ${
+              activeTab === 'files'
+                ? 'border-emerald-500 text-emerald-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>📁 File Explorer</span>
+          </button>
+        </div>
+
+        {activeTab === 'console' ? (
+          <>
+            {/* Modpack Platform Notice Banner for Modrinth Modpacks */}
+            {server.serverType === 'MODRINTH' && server.modpackSlug && (
+              <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-2xl p-5 flex items-start space-x-4 text-emerald-200">
+                <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400 mt-0.5">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-emerald-300">Client Compatibility Requirement</h3>
+                  <p className="text-xs text-emerald-200/80 mt-1 leading-relaxed">
+                    This server runs the official <span className="font-semibold text-white">Modrinth Build ({server.mcVersion})</span>.
+                    Players <span className="font-bold underline text-emerald-300">MUST install this modpack from the Modrinth App</span> or <a href={`https://modrinth.com/modpack/${server.modpackSlug}`} target="_blank" rel="noreferrer" className="underline font-semibold text-white hover:text-emerald-300">Modrinth.com</a>.
+                    <span className="block mt-1 text-slate-300 font-mono">
+                      ⚠️ Note: CurseForge builds of this modpack carry different dependency mod versions and will cause a client-side Netty DecoderException network disconnect upon joining.
+                    </span>
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Server Metadata Stats Grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Allocated Memory</span>
+                <div className="text-lg font-bold text-white mt-1">{server.memoryMb} MB</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">CPU Limit</span>
+                <div className="text-lg font-bold text-white mt-1">{server.cpuLimit} Cores</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Server Port</span>
+                <div className="text-lg font-bold text-white mt-1 font-mono">{server.serverPort}</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">EULA Consent</span>
+                <div className="text-lg font-bold text-emerald-400 mt-1">Accepted</div>
+              </div>
             </div>
+
+            {/* Live Interactive WebSocket Terminal Console */}
             <div>
-              <h3 className="text-sm font-bold text-emerald-300">Client Compatibility Requirement</h3>
-              <p className="text-xs text-emerald-200/80 mt-1 leading-relaxed">
-                This server runs the official <span className="font-semibold text-white">Modrinth Build ({server.mcVersion})</span>.
-                Players <span className="font-bold underline text-emerald-300">MUST install this modpack from the Modrinth App</span> or <a href={`https://modrinth.com/modpack/${server.modpackSlug}`} target="_blank" rel="noreferrer" className="underline font-semibold text-white hover:text-emerald-300">Modrinth.com</a>.
-                <span className="block mt-1 text-slate-300 font-mono">
-                  ⚠️ Note: CurseForge builds of this modpack carry different dependency mod versions and will cause a client-side Netty DecoderException network disconnect upon joining.
-                </span>
-              </p>
+              <h2 className="text-lg font-bold text-white mb-3">Live Terminal & Output</h2>
+              <ConsoleViewer
+                serverId={server.id}
+                containerId={server.containerId || `mc-server-${server.id}`}
+                daemonHost={server.node.host}
+                daemonPort={server.node.port}
+                apiKey={server.node.apiKey}
+              />
             </div>
+
+            {/* Server Migration Block */}
+            <div className="mt-8 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
+                <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                Server Migration
+              </h3>
+              <p className="text-sm text-slate-400 mb-6 max-w-3xl leading-relaxed">
+                Instantly transfer this server and all of its files to a different node. If the server is currently running, it will automatically perform a graceful 10-second shutdown countdown in-game before transferring.
+              </p>
+
+              <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                <select
+                  value={migrationDestId}
+                  onChange={(e) => setMigrationDestId(e.target.value)}
+                  className="bg-slate-950 border border-slate-700 text-white text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:max-w-xs p-3 transition"
+                >
+                  <option value="">Select Destination Node...</option>
+                  {nodes
+                    .filter(n => n.id !== server.nodeId)
+                    .map(n => (
+                      <option key={n.id} value={n.id}>
+                        {n.name} (Priority {n.offloadPriority}) {n.isOnline ? '' : '- OFFLINE'}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  onClick={handleMigrate}
+                  disabled={actionLoading || !migrationDestId}
+                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-6 py-3 rounded-xl shadow-lg shadow-indigo-600/20 transition whitespace-nowrap"
+                >
+                  {actionLoading ? 'Migrating...' : 'Start Migration'}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          /* File Explorer Tab */
+          <div>
+            <h2 className="text-lg font-bold text-white mb-3">Server File Explorer</h2>
+            <FileExplorer
+              serverId={server.id}
+              canManageFiles={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
           </div>
         )}
 
-        {/* Server Metadata Stats Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Allocated Memory</span>
-            <div className="text-lg font-bold text-white mt-1">{server.memoryMb} MB</div>
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">CPU Limit</span>
-            <div className="text-lg font-bold text-white mt-1">{server.cpuLimit} Cores</div>
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Server Port</span>
-            <div className="text-lg font-bold text-white mt-1 font-mono">{server.serverPort}</div>
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">EULA Consent</span>
-            <div className="text-lg font-bold text-emerald-400 mt-1">Accepted</div>
-          </div>
-        </div>
-
-        {/* Live Interactive WebSocket Terminal Console */}
-        <div>
-          <h2 className="text-lg font-bold text-white mb-3">Live Terminal & Output</h2>
-          <ConsoleViewer
-            serverId={server.id}
-            containerId={server.containerId || `mc-server-${server.id}`}
-            daemonHost={server.node.host}
-            daemonPort={server.node.port}
-            apiKey={server.node.apiKey}
-          />
-        </div>
-
-        {/* Server Migration Block */}
-        <div className="mt-8 bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-            <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-            </svg>
-            Server Migration
-          </h3>
-          <p className="text-sm text-slate-400 mb-6 max-w-3xl leading-relaxed">
-            Instantly transfer this server and all of its files to a different node. If the server is currently running, it will automatically perform a graceful 10-second shutdown countdown in-game before transferring.
-          </p>
-
-          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-            <select
-              value={migrationDestId}
-              onChange={(e) => setMigrationDestId(e.target.value)}
-              className="bg-slate-950 border border-slate-700 text-white text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:max-w-xs p-3 transition"
-            >
-              <option value="">Select Destination Node...</option>
-              {nodes
-                .filter(n => n.id !== server.nodeId)
-                .map(n => (
-                  <option key={n.id} value={n.id}>
-                    {n.name} (Priority {n.offloadPriority}) {n.isOnline ? '' : '- OFFLINE'}
-                  </option>
-                ))}
-            </select>
-            <button
-              onClick={handleMigrate}
-              disabled={actionLoading || !migrationDestId}
-              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-6 py-3 rounded-xl shadow-lg shadow-indigo-600/20 transition whitespace-nowrap"
-            >
-              {actionLoading ? 'Migrating...' : 'Start Migration'}
-            </button>
-          </div>
-        </div>
+        {/* Server Permissions Modal */}
+        <ServerPermissionsModal
+          serverId={server.id}
+          serverName={server.name}
+          isOpen={showPermissionsModal}
+          onClose={() => setShowPermissionsModal(false)}
+        />
 
       </main>
     </div>

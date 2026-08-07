@@ -82,4 +82,42 @@ export class DaemonClient {
       body: JSON.stringify({ deleteData, serverId }),
     });
   }
+
+  // File Manager API Methods
+  async listFiles(serverId: string, path: string = ''): Promise<{ currentPath: string; files: any[] }> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : '';
+    return this.request<{ currentPath: string; files: any[] }>(`/servers/${serverId}/files/list${query}`);
+  }
+
+  async readFile(serverId: string, path: string): Promise<{ path: string; content: string; size: number; modifiedAt: string }> {
+    return this.request<{ path: string; content: string; size: number; modifiedAt: string }>(`/servers/${serverId}/files/read?path=${encodeURIComponent(path)}`);
+  }
+
+  async writeFile(serverId: string, path: string, content: string): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>(`/servers/${serverId}/files/write`, {
+      method: 'POST',
+      body: JSON.stringify({ path, content }),
+    });
+  }
+
+  async createFolder(serverId: string, path: string, name: string): Promise<{ success: boolean; folderPath: string }> {
+    return this.request<{ success: boolean; folderPath: string }>(`/servers/${serverId}/files/create-folder`, {
+      method: 'POST',
+      body: JSON.stringify({ path, name }),
+    });
+  }
+
+  async renameFile(serverId: string, oldPath: string, newPath: string): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>(`/servers/${serverId}/files/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ oldPath, newPath }),
+    });
+  }
+
+  async deleteFile(serverId: string, path: string): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>(`/servers/${serverId}/files/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  }
 }

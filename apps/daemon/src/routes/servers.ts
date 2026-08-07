@@ -280,4 +280,208 @@ router.post('/import', (req: Request, res: Response) => {
   });
 });
 
+// Helper for safe path resolution preventing directory traversal
+function getSafeServerPath(serverId: string, subPath: string = ''): string | null {
+  const baseDir = path.resolve(config.dataDir, serverId);
+  if (!fs.existsSync(baseDir)) {
+    fs.mkdirSync(baseDir, { recursive: true });
+  }
+
+  const targetPath = path.resolve(baseDir, subPath ? subPath.replace(/^\//, '') : '');
+  if (!targetPath.startsWith(baseDir)) {
+    return null;
+  }
+  return targetPath;
+}
+
+// GET /api/v1/servers/:serverId/files/list?path=...
+router.get('/:serverId/files/list', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const relPath = (req.query.path as string) || '';
+
+  const targetPath = getSafeServerPath(serverId, relPath);
+  if (!targetPath) {
+    return res.status(403).json({ error: 'Access denied: Invalid or out-of-bounds path' });
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    return res.status(404).json({ error: 'Directory not found' });
+  }
+
+  try {
+    const stats = fs.statSync(targetPath);
+    if (!stats.isDirectory()) {
+      return res.status(400).json({ error: 'Path is not a directory' });
+    }
+
+    const items = fs.readdirSync(targetPath);
+    const files = items.map((name) => {
+      const itemPath = path.join(targetPath, name);
+      let isDir = false;
+      let size = 0;
+      let mtime = new Date();
+
+      try {
+        const s = fs.statSync(itemPath);
+        isDir = s.isDirectory();
+        size = s.size;
+        mtime = s.mtime;
+      } catch (e) {}
+
+      return {
+        name,
+        path: path.join(relPath, name).replace(/\\/g, '/'),
+        isDir,
+        size,
+        modifiedAt: mtime.toISOString(),
+      };
+    });
+
+    // Sort directories first, then alphabetical
+    files.sort((a, b) => {
+      if (a.isDir && !b.isDir) return -1;
+      if (!a.isDir && b.isDir) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    res.json({ currentPath: relPath, files });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to list directory contents', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/files/read?path=...
+router.get('/:serverId/files/read', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const relPath = req.query.path as string;
+
+  if (!relPath) return res.status(400).json({ error: 'Missing path parameter' });
+
+  const targetPath = getSafeServerPath(serverId, relPath);
+  if (!targetPath) {
+    return res.status(403).json({ error: 'Access denied: Invalid path' });
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  try {
+    const stats = fs.statSync(targetPath);
+    if (stats.isDirectory()) {
+      return res.status(400).json({ error: 'Cannot read directory as file' });
+    }
+
+    if (stats.size > 5 * 1024 * 1024) {
+      return res.status(413).json({ error: 'File too large to edit directly (> 5MB)' });
+    }
+
+    const content = fs.readFileSync(targetPath, 'utf8');
+    res.json({ path: relPath, content, size: stats.size, modifiedAt: stats.mtime.toISOString() });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to read file', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/files/write
+router.post('/:serverId/files/write', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const { path: relPath, content } = req.body;
+
+  if (!relPath || content === undefined) {
+    return res.status(400).json({ error: 'Missing path or content body' });
+  }
+
+  const targetPath = getSafeServerPath(serverId, relPath);
+  if (!targetPath) {
+    return res.status(403).json({ error: 'Access denied: Invalid path' });
+  }
+
+  try {
+    const parentDir = path.dirname(targetPath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+
+    fs.writeFileSync(targetPath, content, 'utf8');
+    res.json({ success: true, path: relPath });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to write file', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/files/create-folder
+router.post('/:serverId/files/create-folder', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const { path: relPath, name } = req.body;
+
+  if (!name) return res.status(400).json({ error: 'Missing folder name' });
+
+  const targetDir = getSafeServerPath(serverId, path.join(relPath || '', name));
+  if (!targetDir) {
+    return res.status(403).json({ error: 'Access denied: Invalid folder path' });
+  }
+
+  try {
+    if (fs.existsSync(targetDir)) {
+      return res.status(409).json({ error: 'Folder already exists' });
+    }
+
+    fs.mkdirSync(targetDir, { recursive: true });
+    res.json({ success: true, folderPath: path.join(relPath || '', name).replace(/\\/g, '/') });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create folder', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/files/rename
+router.post('/:serverId/files/rename', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const { oldPath, newPath } = req.body;
+
+  if (!oldPath || !newPath) return res.status(400).json({ error: 'Missing oldPath or newPath' });
+
+  const targetOld = getSafeServerPath(serverId, oldPath);
+  const targetNew = getSafeServerPath(serverId, newPath);
+
+  if (!targetOld || !targetNew) {
+    return res.status(403).json({ error: 'Access denied: Invalid path' });
+  }
+
+  if (!fs.existsSync(targetOld)) {
+    return res.status(404).json({ error: 'Source file or folder not found' });
+  }
+
+  try {
+    fs.renameSync(targetOld, targetNew);
+    res.json({ success: true, oldPath, newPath });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to rename', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/files/delete
+router.post('/:serverId/files/delete', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const { path: relPath } = req.body;
+
+  if (!relPath) return res.status(400).json({ error: 'Missing path to delete' });
+
+  const targetPath = getSafeServerPath(serverId, relPath);
+  if (!targetPath) {
+    return res.status(403).json({ error: 'Access denied: Invalid path' });
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    return res.status(404).json({ error: 'File or folder not found' });
+  }
+
+  try {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+    res.json({ success: true, path: relPath });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to delete file or directory', details: err.message });
+  }
+});
+
 export default router;

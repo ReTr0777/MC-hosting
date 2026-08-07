@@ -92,8 +92,8 @@ export async function POST(req: NextRequest) {
       }
 
       // Calculate capacity per node and filter eligible nodes
-      const nodeCapacities = onlineNodes.map((node) => {
-        const usedMemoryMb = node.servers.reduce((sum, s) => sum + s.memoryMb, 0);
+      const nodeCapacities = onlineNodes.map((node: any) => {
+        const usedMemoryMb = node.servers.reduce((sum: number, s: any) => sum + s.memoryMb, 0);
         const availableMemoryMb = node.totalMemory - usedMemoryMb;
         return {
           node,
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
         };
       });
 
-      const eligibleNodes = nodeCapacities.filter((item) => item.availableMemoryMb >= reqMemoryMb);
+      const eligibleNodes = nodeCapacities.filter((item: any) => item.availableMemoryMb >= reqMemoryMb);
 
       if (eligibleNodes.length === 0) {
         return NextResponse.json(
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Sort by offloadPriority (descending - highest offload priority first), then by available memory
-      eligibleNodes.sort((a, b) => {
+      eligibleNodes.sort((a: any, b: any) => {
         if (b.offloadPriority !== a.offloadPriority) {
           return b.offloadPriority - a.offloadPriority;
         }
