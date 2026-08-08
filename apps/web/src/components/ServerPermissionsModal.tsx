@@ -48,10 +48,12 @@ export function ServerPermissionsModal({ serverId, serverName, isOpen, onClose }
       if (!permRes.ok) throw new Error(permData.error || 'Failed to load permissions');
       if (!usersRes.ok) throw new Error(usersData.error || 'Failed to load users');
 
-      setPermissions(permData.permissions || []);
-      setAllUsers(usersData.users || []);
+      setPermissions(Array.isArray(permData.permissions) ? permData.permissions : []);
+      setAllUsers(Array.isArray(usersData.users) ? usersData.users : []);
     } catch (err: any) {
       setError(err.message);
+      setPermissions([]);
+      setAllUsers([]);
     } finally {
       setLoading(false);
     }
@@ -105,6 +107,9 @@ export function ServerPermissionsModal({ serverId, serverName, isOpen, onClose }
 
   if (!isOpen) return null;
 
+  const safeUsers = Array.isArray(allUsers) ? allUsers : [];
+  const safePermissions = Array.isArray(permissions) ? permissions : [];
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-6">
@@ -135,7 +140,7 @@ export function ServerPermissionsModal({ serverId, serverName, isOpen, onClose }
                 className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
               >
                 <option value="">Select User...</option>
-                {allUsers.map((u) => (
+                {safeUsers.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.username} ({u.email}) - Role: {u.globalRole}
                   </option>
@@ -182,16 +187,16 @@ export function ServerPermissionsModal({ serverId, serverName, isOpen, onClose }
                   <tr>
                     <td colSpan={3} className="text-center py-6 text-slate-500">Loading permissions...</td>
                   </tr>
-                ) : permissions.length === 0 ? (
+                ) : (Array.isArray(permissions) ? permissions : []).length === 0 ? (
                   <tr>
                     <td colSpan={3} className="text-center py-6 text-slate-500">No custom permissions granted yet. Only Global Admins have access.</td>
                   </tr>
                 ) : (
-                  permissions.map((p) => (
+                  (Array.isArray(permissions) ? permissions : []).map((p) => (
                     <tr key={p.id} className="hover:bg-slate-900/50">
                       <td className="px-4 py-3">
-                        <span className="font-semibold text-white">{p.user.username}</span>
-                        <span className="text-slate-500 text-[10px] block">{p.user.email}</span>
+                        <span className="font-semibold text-white">{p.user?.username || 'Unknown User'}</span>
+                        <span className="text-slate-500 text-[10px] block">{p.user?.email || p.userId}</span>
                       </td>
                       <td className="px-4 py-3 font-mono">
                         <span className={`px-2 py-1 rounded text-[10px] font-bold ${

@@ -1,4 +1,4 @@
-import { ServerType } from './enums';
+import { ServerType, ExecutionMode } from './enums';
 
 export interface CreateServerContainerDto {
   serverId: string;
@@ -12,6 +12,7 @@ export interface CreateServerContainerDto {
   cpuLimit: number;
   eulaAccepted: boolean;
   isMigration?: boolean;
+  executionMode?: ExecutionMode;
 }
 
 export interface DaemonHealthDto {

@@ -5,10 +5,11 @@ export const STATUS = {
   STARTING: 'STARTING',
   RUNNING: 'RUNNING',
   FAILED: 'FAILED',
+  OFFLINE: 'OFFLINE',
 };
 
 export interface LogEntry {
-  type: 'daemon' | 'container';
+  type: 'daemon' | 'container' | 'process';
   line: string;
   ts: number;
 }
@@ -21,7 +22,7 @@ export class ProvisioningManager extends EventEmitter {
     return this.locks.has(serverId);
   }
 
-  emitLog(serverId: string, type: 'daemon' | 'container', line: string) {
+  emitLog(serverId: string, type: 'daemon' | 'container' | 'process', line: string) {
     const entry: LogEntry = { type, line, ts: Date.now() };
     if (!this.logBuffers.has(serverId)) {
       this.logBuffers.set(serverId, []);

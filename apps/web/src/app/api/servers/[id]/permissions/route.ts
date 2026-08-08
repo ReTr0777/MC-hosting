@@ -58,6 +58,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   try {
+    // Automatically alter PostgreSQL enum type if OPERATOR value is missing in existing database
+    await prisma.$executeRawUnsafe(`ALTER TYPE "ServerRole" ADD VALUE IF NOT EXISTS 'OPERATOR';`).catch((e) => {
+      console.warn('[Permissions API] ALTER TYPE warning:', e.message);
+    });
+
     const permission = await prisma.serverPermission.upsert({
       where: {
         userId_serverId: {

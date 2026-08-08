@@ -6,6 +6,7 @@ export enum GlobalRole {
 export enum ServerRole {
   OWNER = 'OWNER',
   ADMIN = 'ADMIN',
+  OPERATOR = 'OPERATOR',
   VIEWER = 'VIEWER',
 }
 
@@ -27,3 +28,9 @@ export enum ServerType {
   MODRINTH = 'MODRINTH',
   CURSEFORGE = 'CURSEFORGE',
 }
+
+export enum ExecutionMode {
+  CONTAINER = 'CONTAINER',
+  PROCESS = 'PROCESS',
+}
+

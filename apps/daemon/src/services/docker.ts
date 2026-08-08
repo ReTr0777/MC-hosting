@@ -186,6 +186,35 @@ export async function syncServerDirToContainer(containerId: string, serverId: st
   }
 }
 
+export async function syncContainerToHost(serverId: string): Promise<void> {
+  const config = getConfig();
+  const baseDir = path.resolve(config.dataDir, serverId);
+  if (!fs.existsSync(baseDir)) {
+    fs.mkdirSync(baseDir, { recursive: true });
+  }
+
+  try {
+    const containerName = `mc-server-${serverId}`;
+    const container = await getContainerByIdOrName(containerName);
+    console.log(`[Daemon Auto-Sync] Extracting live files from container '${containerName}:/data' to '${baseDir}'...`);
+
+    const stream = await container.getArchive({ path: '/data' });
+    await new Promise<void>((resolve, reject) => {
+      const tar = require('child_process').spawn('tar', ['-xf', '-', '-C', baseDir, '--strip-components=1']);
+      stream.pipe(tar.stdin);
+      tar.on('close', (code: number) => {
+        if (code === 0) resolve();
+        else reject(new Error(`tar extraction failed with code ${code}`));
+      });
+      tar.on('error', reject);
+      stream.on('error', reject);
+    });
+    console.log(`[Daemon Auto-Sync] Container file extraction complete for server ${serverId}.`);
+  } catch (err: any) {
+    console.warn(`[Daemon Auto-Sync Warning] ${err.message}`);
+  }
+}
+
 export async function createServerContainer(dto: CreateServerContainerDto): Promise<string> {
   if (!dto.eulaAccepted) {
     throw new Error('EULA must be accepted before creating or running server container.');
@@ -208,7 +237,9 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
   const configDir = path.join(serverDir, 'config');
   if (!fs.existsSync(modsDir)) fs.mkdirSync(modsDir, { recursive: true });
   if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(path.join(configDir, 'FabricProxy-Lite.toml'), 'secret = "mcmanager-limbo-secret"\n');
+  if (!fs.existsSync(path.join(configDir, 'FabricProxy-Lite.toml'))) {
+    fs.writeFileSync(path.join(configDir, 'FabricProxy-Lite.toml'), 'secret = "mcmanager-limbo-secret"\n');
+  }
 
   const envVars = [
     `EULA=TRUE`,
@@ -216,7 +247,7 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
     `ENFORCE_SECURE_PROFILE=FALSE`,
     `ENABLE_AUTOPAUSE=FALSE`,
     `AUTOPAUSE=FALSE`,
-    `OVERRIDE_SERVER_PROPERTIES=TRUE`,
+    `OVERRIDE_SERVER_PROPERTIES=FALSE`,
     `MEMORY=${dto.memoryMb}M`,
     `SERVER_PORT=25565`,
     `JVM_OPTS=-Djava.awt.headless=true`,
@@ -264,10 +295,15 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
         envVars.push(`MODRINTH_FORCE_SYNCHRONIZE=true`);
       }
     } else {
-      console.log(`[Daemon] Migration mode: skipping ServerPackCreator for Modrinth. Launching as standard fabric/forge based on original setup if possible, or letting standard MODRINTH env vars handle it.`);
-      envVars.push(`TYPE=MODRINTH`);
-      envVars.push(`MODRINTH_MODPACK=${dto.modpackSlug}`);
-      envVars.push(`MODRINTH_FORCE_SYNCHRONIZE=false`);
+      console.log(`[Daemon] Migration mode: preserving pre-built server files for Modrinth server.`);
+      let detectedType = 'FABRIC';
+      if (fs.existsSync(path.join(serverDir, 'user_args.txt')) || fs.existsSync(path.join(serverDir, 'unix_args.txt'))) {
+        detectedType = 'FORGE';
+      }
+      envVars.push(`TYPE=${detectedType}`);
+      if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
+        envVars.push(`VERSION=${dto.mcVersion}`);
+      }
     }
   } else if (dto.serverType === 'CURSEFORGE') {
     if (!dto.isMigration) {
@@ -314,10 +350,18 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
         }
       }
     } else {
-      console.log(`[Daemon] Migration mode: skipping CurseForge installer.`);
+      console.log(`[Daemon] Migration mode: preserving pre-built server files for CurseForge server.`);
     }
 
-    envVars.push(`TYPE=CURSEFORGE`);
+    if (dto.isMigration) {
+      let detectedType = 'FABRIC';
+      if (fs.existsSync(path.join(serverDir, 'user_args.txt')) || fs.existsSync(path.join(serverDir, 'unix_args.txt'))) {
+        detectedType = 'FORGE';
+      }
+      envVars.push(`TYPE=${detectedType}`);
+    } else {
+      envVars.push(`TYPE=CURSEFORGE`);
+    }
     if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
       envVars.push(`VERSION=${dto.mcVersion}`);
     }
@@ -365,7 +409,7 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
       OpenStdin: true,
       HostConfig: {
         PortBindings: {
-          '25565/tcp': [{ HostPort: dto.serverPort.toString() }],
+          '25565/tcp': [{ HostIp: '0.0.0.0', HostPort: dto.serverPort.toString() }],
         },
         Binds: [volumeBind],
         Memory: dto.memoryMb * 1024 * 1024,
@@ -684,20 +728,42 @@ export async function gracefulStopWithCountdown(containerId: string, seconds: nu
   await stopServerContainer(containerId);
 }
 
+export async function registerContainerTunnel(container: any, serverId: string) {
+  try {
+    const inspect = await container.inspect();
+    const portBindings = inspect.HostConfig.PortBindings?.['25565/tcp'];
+    if (portBindings && portBindings.length > 0) {
+      const publicPort = parseInt(portBindings[0].HostPort, 10);
+      const targetLocalIp = process.env.HOST_IP || 'host.docker.internal';
+      console.log(`[Daemon Tunnel Manager] Registering tunnel for server ${serverId}: ${targetLocalIp}:${publicPort} -> remote:${publicPort}`);
+      await tunnelManager.addTunnel(serverId, targetLocalIp, publicPort, publicPort);
+    } else {
+      console.warn(`[Daemon Tunnel Manager] Missing PortBinding for ${serverId}.`);
+    }
+  } catch (e: any) {
+    console.warn(`[Daemon Tunnel Manager] Failed to register tunnel for ${serverId}: ${e.message}`);
+  }
+}
+
 export async function restartServerContainer(containerId: string): Promise<void> {
   const container = await getContainerByIdOrName(containerId);
+  let targetServerId = '';
   try {
     const inspect = await container.inspect();
     const name = (inspect.Name || '').replace(/^\//, '');
     const match = name.match(/^mc-server-(.+)$/);
     if (match) {
-      const serverId = match[1];
-      await syncServerDirToContainer(container.id, serverId);
+      targetServerId = match[1];
+      await syncServerDirToContainer(container.id, targetServerId);
     }
   } catch (e: any) {
     console.warn(`[Daemon Pre-Restart Sync Warning] ${e.message}`);
   }
   await container.restart();
+
+  if (targetServerId) {
+    await registerContainerTunnel(container, targetServerId);
+  }
 }
 
 export async function killServerContainer(containerId: string): Promise<void> {

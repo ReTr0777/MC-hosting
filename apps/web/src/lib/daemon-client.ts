@@ -24,8 +24,28 @@ export class DaemonClient {
       ...options.headers,
     };
 
-    const res = await fetch(url, { ...options, headers });
-    const data = await res.json();
+    let res: Response;
+    try {
+      // 5-second connection timeout prevents proxy 504 gateway timeouts
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      res = await fetch(url, { ...options, headers, signal: controller.signal });
+      clearTimeout(timeoutId);
+    } catch (fetchErr: any) {
+      if (fetchErr.name === 'AbortError') {
+        throw new Error(`Connection timed out after 5s connecting to daemon worker node at ${this.baseUrl}. Check if daemon is running.`);
+      }
+      throw new Error(`Cannot connect to daemon worker node at ${this.baseUrl}: ${fetchErr.message}`);
+    }
+
+    let data: any = {};
+    const text = await res.text();
+    try {
+      data = JSON.parse(text);
+    } catch (jsonErr) {
+      throw new Error(`Daemon node returned invalid non-JSON response (HTTP ${res.status}). Snippet: ${text.substring(0, 120)}`);
+    }
 
     if (!res.ok) {
       const msg = data.details ? `${data.error}: ${data.details}` : (data.error || `Daemon error HTTP ${res.status}`);

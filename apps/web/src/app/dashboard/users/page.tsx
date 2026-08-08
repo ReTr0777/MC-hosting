@@ -55,14 +55,20 @@ export default function UsersDashboardPage() {
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/users');
-      if (res.ok) setUsers(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(Array.isArray(data.users) ? data.users : Array.isArray(data) ? data : []);
+      }
     } catch (e) { console.error(e); }
   };
 
   const fetchInvites = async () => {
     try {
       const res = await fetch('/api/invites');
-      if (res.ok) setInvites(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setInvites(Array.isArray(data.invites) ? data.invites : Array.isArray(data) ? data : []);
+      }
     } catch (e) { console.error(e); }
   };
 
@@ -205,7 +211,7 @@ export default function UsersDashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/50">
-                  {users.map(u => (
+                  {(Array.isArray(users) ? users : []).map(u => (
                     <tr key={u.id} className="hover:bg-slate-800/20 transition">
                       <td className="px-6 py-4 font-medium text-white">{u.username}</td>
                       <td className="px-6 py-4">{u.email}</td>
@@ -238,8 +244,8 @@ export default function UsersDashboardPage() {
               </button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {invites.length === 0 && <div className="col-span-full text-slate-500 text-sm">No active invites.</div>}
-              {invites.map(inv => {
+              {(Array.isArray(invites) ? invites : []).length === 0 && <div className="col-span-full text-slate-500 text-sm">No active invites.</div>}
+              {(Array.isArray(invites) ? invites : []).map(inv => {
                 const inviteUrl = `${window.location.origin}/register?invite=${inv.code}`;
                 return (
                   <div key={inv.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative">

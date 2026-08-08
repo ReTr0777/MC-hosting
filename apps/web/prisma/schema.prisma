@@ -16,6 +16,7 @@ enum GlobalRole {
 enum ServerRole {
   OWNER
   ADMIN
+  OPERATOR
   VIEWER
 }
 
@@ -36,6 +37,11 @@ enum ServerType {
   PURPUR
   MODRINTH
   CURSEFORGE
+}
+
+enum ExecutionMode {
+  CONTAINER
+  PROCESS
 }
 
 model User {
@@ -80,6 +86,7 @@ model Server {
   nodeId            String
   node              Node               @relation(fields: [nodeId], references: [id], onDelete: Cascade)
   containerId       String?            // Docker container ID on daemon node
+  executionMode     ExecutionMode      @default(PROCESS)
   status            ServerStatus       @default(OFFLINE)
   
   // Game Configuration

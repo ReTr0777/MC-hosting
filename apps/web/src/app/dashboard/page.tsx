@@ -22,6 +22,7 @@ interface ServerItem {
   description: string;
   status: string;
   serverType: string;
+  executionMode?: string;
   mcVersion: string;
   serverPort: number;
   memoryMb: number;
@@ -37,6 +38,7 @@ interface ModpackHit {
   icon_url: string;
   downloads: number;
 }
+
 
 const MC_VERSIONS = [
   'LATEST',
@@ -134,9 +136,10 @@ export default function DashboardPage() {
   const [serverName, setServerName] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState('AUTO');
   const [serverType, setServerType] = useState('FABRIC');
+  const [executionMode, setExecutionMode] = useState<'CONTAINER' | 'PROCESS'>('PROCESS');
   const [selectedMcVersion, setSelectedMcVersion] = useState('1.20.1');
   const [customMcVersion, setCustomMcVersion] = useState('');
-  const [serverPort, setServerPort] = useState(25565);
+  const [serverPort, setServerPort] = useState(24000);
   const [modpackSlug, setModpackSlug] = useState('');
   const [selectedModpackTitle, setSelectedModpackTitle] = useState('');
   const [memoryMb, setMemoryMb] = useState(8192);
@@ -185,12 +188,16 @@ export default function DashboardPage() {
 
       if (nodesRes.ok) {
         const nodesData = await nodesRes.json();
-        setNodes(nodesData.nodes || []);
+        setNodes(Array.isArray(nodesData.nodes) ? nodesData.nodes : []);
+      } else {
+        setNodes([]);
       }
 
       if (serversRes.ok) {
         const serversData = await serversRes.json();
-        setServers(serversData.servers || []);
+        setServers(Array.isArray(serversData.servers) ? serversData.servers : []);
+      } else {
+        setServers([]);
       }
     } catch (e) {
       console.error('Failed to load dashboard data:', e);
@@ -202,25 +209,23 @@ export default function DashboardPage() {
       fetchData();
       
       const intervalId = setInterval(async () => {
-        // Ping all nodes to update their online status in the database
+        // Ping all nodes to update their online status in the database every 5s
         try {
-          // fetch current nodes to avoid stale closure (or just use a ref, but fetching from api is fine since fetchData will be called right after anyway)
           const res = await fetch('/api/nodes');
           if (res.ok) {
             const data = await res.json();
-            const currentNodes = data.nodes || [];
+            const currentNodes = Array.isArray(data.nodes) ? data.nodes : [];
             await Promise.all(
               currentNodes.map((n: NodeItem) => 
                 fetch(`/api/nodes/${n.id}/ping`, { method: 'POST' }).catch(() => {})
               )
             );
           }
-          // After pinging, refresh the data to show the new statuses
           fetchData();
         } catch (e) {
           // ignore
         }
-      }, 60000); // 60 seconds
+      }, 5000); // Fast 5 seconds polling for instant status updates
 
       return () => clearInterval(intervalId);
     }
@@ -352,6 +357,7 @@ export default function DashboardPage() {
           name: serverName || (serverpackFile ? serverpackFile.name.replace(/\.zip$/i, '') : 'Minecraft Server'),
           nodeId: selectedNodeId,
           serverType: serverType === 'CUSTOM_ZIP' ? 'FABRIC' : serverType,
+          executionMode,
           mcVersion: finalMcVersion,
           serverPort,
           memoryMb,
@@ -582,6 +588,12 @@ export default function DashboardPage() {
             </div>
             <button
               onClick={() => {
+                const usedPorts = new Set((servers || []).map((s) => s.serverPort));
+                let nextPort = 24000;
+                while (usedPorts.has(nextPort) && nextPort <= 25000) {
+                  nextPort++;
+                }
+                setServerPort(nextPort);
                 setShowServerModal(true);
                 setModalStep(1);
               }}
@@ -620,6 +632,7 @@ export default function DashboardPage() {
 
                     <div className="text-xs text-slate-400 space-y-1 mb-6">
                       <div>Node: <span className="text-slate-200">{server.node.name}</span></div>
+                      <div>Mode: <span className="text-emerald-400 font-semibold">{server.executionMode === 'PROCESS' ? '⚡ Crafty Standalone Process' : '🐳 Docker Container'}</span></div>
                       <div>Type: <span className="text-slate-200">{server.serverType} ({server.mcVersion})</span></div>
                       {server.modpackSlug && (
                         <div>Modpack: <span className="text-emerald-400 font-mono">@{server.modpackSlug}</span></div>
@@ -870,6 +883,40 @@ export default function DashboardPage() {
                     />
                   </div>
 
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Execution Mode</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div
+                        onClick={() => setExecutionMode('CONTAINER')}
+                        className={`p-3.5 rounded-xl border cursor-pointer transition flex items-center space-x-3 ${
+                          executionMode === 'CONTAINER'
+                            ? 'bg-emerald-500/10 border-emerald-500 text-white ring-2 ring-emerald-500/20'
+                            : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="text-2xl">🐳</span>
+                        <div>
+                          <div className="text-xs font-bold text-white">Docker Container</div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">Isolated container per server</div>
+                        </div>
+                      </div>
+                      <div
+                        onClick={() => setExecutionMode('PROCESS')}
+                        className={`p-3.5 rounded-xl border cursor-pointer transition flex items-center space-x-3 ${
+                          executionMode === 'PROCESS'
+                            ? 'bg-emerald-500/10 border-emerald-500 text-white ring-2 ring-emerald-500/20'
+                            : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="text-2xl">⚡</span>
+                        <div>
+                          <div className="text-xs font-bold text-white">Crafty Standalone Process</div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">Direct process (No extra Docker containers)</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs text-slate-400 mb-1">Target Worker Node</label>
@@ -973,6 +1020,12 @@ export default function DashboardPage() {
                   </label>
 
                   <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Execution Mode:</span>
+                      <span className="font-bold text-emerald-400">
+                        {executionMode === 'PROCESS' ? '⚡ Crafty Standalone Process' : '🐳 Docker Container'}
+                      </span>
+                    </div>
                     <div className="flex items-center justify-between text-xs text-slate-400">
                       <span>Server Engine:</span>
                       <span className="font-bold text-white">{serverType}</span>

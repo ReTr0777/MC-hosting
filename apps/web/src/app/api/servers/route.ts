@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
-import { ServerType } from '@mc-manager/shared';
+import { ServerType, ExecutionMode } from '@mc-manager/shared';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -54,8 +54,9 @@ export async function POST(req: NextRequest) {
       description,
       nodeId,
       serverType = 'FABRIC',
+      executionMode = 'PROCESS',
       mcVersion = '1.20.1',
-      serverPort = 25565,
+      serverPort = 24000,
       modpackSlug,
       memoryMb = 8192,
       cpuLimit = 1.0,
@@ -143,6 +144,7 @@ export async function POST(req: NextRequest) {
         description,
         nodeId: node.id,
         serverType: serverType as any,
+        executionMode: executionMode as any,
         mcVersion,
         serverPort: parseInt(serverPort, 10),
         modpackSlug: (serverType === 'MODRINTH' || serverType === 'CURSEFORGE') ? modpackSlug : null,
@@ -159,13 +161,14 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 2. Dispatch container creation to selected Daemon node
+    // 2. Dispatch server creation to selected Daemon node
     const daemonClient = new DaemonClient({ host: node.host, port: node.port, apiKey: node.apiKey });
 
     try {
       const containerResult = await daemonClient.createServer({
         serverId: server.id,
         serverType: server.serverType as ServerType,
+        executionMode: server.executionMode as ExecutionMode,
         mcVersion: server.mcVersion,
         modpackSlug: server.modpackSlug || undefined,
         serverPort: server.serverPort,
@@ -174,13 +177,13 @@ export async function POST(req: NextRequest) {
         eulaAccepted: true,
       });
 
-      // Update server with container ID
+      // Update server with container ID or process ID
       await prisma.server.update({
         where: { id: server.id },
         data: { containerId: containerResult.containerId },
       });
     } catch (daemonErr: any) {
-      console.error('[Web API] Daemon create container failed:', daemonErr.message);
+      console.error('[Web API] Daemon create server failed:', daemonErr.message);
       await prisma.server.update({
         where: { id: server.id },
         data: { status: 'ERROR' },

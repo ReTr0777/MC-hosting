@@ -67,7 +67,9 @@ export default function ServerConsolePage() {
 
       if (nodesRes.ok) {
         const data = await nodesRes.json();
-        setNodes(data.nodes || []);
+        setNodes(Array.isArray(data.nodes) ? data.nodes : []);
+      } else {
+        setNodes([]);
       }
     } catch (e: any) {
       setError('Network error retrieving server instance');
@@ -363,7 +365,7 @@ export default function ServerConsolePage() {
         ) : (
           /* File Explorer Tab */
           <div>
-            <h2 className="text-lg font-bold text-white mb-3">Server File Explorer</h2>
+            <h2 className="text-lg font-bold text-white mb-3">Server File Explorer (v1.0.5)</h2>
             <FileExplorer
               serverId={server.id}
               canManageFiles={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OPERATOR' || userRole === 'ADMIN'}

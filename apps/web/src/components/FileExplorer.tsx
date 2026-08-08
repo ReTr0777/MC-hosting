@@ -40,11 +40,19 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
     setError('');
     try {
       const res = await fetch(`/api/servers/${serverId}/files?path=${encodeURIComponent(targetPath)}`);
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error('[FileExplorer Raw Response]', text);
+        throw new Error(`[v1.0.5] Server returned non-JSON response (HTTP ${res.status}): ${text.substring(0, 80)}`);
+      }
+
       if (!res.ok) throw new Error(data.error || 'Failed to load files');
 
       setCurrentPath(data.currentPath || '');
-      setFiles(data.files || []);
+      setFiles(Array.isArray(data.files) ? data.files : []);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -186,7 +194,9 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  const breadcrumbs = currentPath.split('/').filter(Boolean);
+  const safePath = typeof currentPath === 'string' ? currentPath : '';
+  const breadcrumbs = safePath.split('/').filter(Boolean);
+  const safeFiles = Array.isArray(files) ? files : [];
 
   return (
     <div className="space-y-4">
@@ -257,14 +267,14 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
                   Loading files...
                 </td>
               </tr>
-            ) : files.length === 0 ? (
+            ) : safeFiles.length === 0 ? (
               <tr>
                 <td colSpan={4} className="text-center py-8 text-slate-500 text-sm">
                   Directory is empty
                 </td>
               </tr>
             ) : (
-              files.map((file) => (
+              safeFiles.map((file) => (
                 <tr key={file.path} className="hover:bg-slate-800/40 transition">
                   <td className="px-4 py-3 font-medium">
                     <button

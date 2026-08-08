@@ -13,9 +13,11 @@ import {
   killServerContainer,
   removeServerContainer,
   syncServerDirToContainer,
+  syncContainerToHost,
 } from '../services/docker';
 import { provisioningManager } from '../services/provisioning';
-import { CreateServerContainerDto } from '@mc-manager/shared';
+import { processManager } from '../services/process';
+import { CreateServerContainerDto, ExecutionMode } from '@mc-manager/shared';
 
 const router = Router();
 const config = loadConfig();
@@ -24,7 +26,7 @@ const config = loadConfig();
 router.post('/create', async (req: Request, res: Response) => {
   try {
     const dto: CreateServerContainerDto = req.body;
-    console.log('[Daemon API] Received container creation request:', JSON.stringify(dto));
+    console.log('[Daemon API] Received server creation request:', JSON.stringify(dto));
 
     if (!dto.serverId || !dto.serverType || !dto.serverPort) {
       return res.status(400).json({ error: 'Missing required parameters: serverId, serverType, serverPort' });
@@ -34,19 +36,31 @@ router.post('/create', async (req: Request, res: Response) => {
       return res.status(409).json({ status: 'PROVISIONING', message: 'Provisioning already in progress' });
     }
 
+    const isProcessMode = dto.executionMode === ExecutionMode.PROCESS;
+    const generatedContainerId = isProcessMode ? `process-${dto.serverId}` : `mc-server-${dto.serverId}`;
+
     // Immediately respond with HTTP 202 Accepted
-    res.status(202).json({ message: 'Server container creation accepted', serverId: dto.serverId, status: 'PROVISIONING' });
+    res.status(202).json({
+      message: isProcessMode ? 'Standalone server process creation accepted' : 'Server container creation accepted',
+      serverId: dto.serverId,
+      containerId: generatedContainerId,
+      status: 'PROVISIONING',
+    });
 
     // Execute background build and startup non-blocking
     provisioningManager.run(dto.serverId, async () => {
-      const containerId = await createServerContainer(dto);
-      await startServerContainer(containerId, dto.serverId);
+      if (isProcessMode) {
+        await processManager.startProcess(dto);
+      } else {
+        const containerId = await createServerContainer(dto);
+        await startServerContainer(containerId, dto.serverId);
+      }
     }).catch((err) => {
       console.error(`[Daemon Background Build Failed] ${dto.serverId}:`, err.message);
     });
   } catch (err: any) {
-    console.error('[Daemon API Error] Container creation failed:', err.message, err.stack);
-    res.status(500).json({ error: 'Failed to create server container', details: err.message });
+    console.error('[Daemon API Error] Creation failed:', err.message, err.stack);
+    res.status(500).json({ error: 'Failed to create server', details: err.message });
   }
 });
 
@@ -80,9 +94,11 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
     execSync(`unzip -q -o "${zipPath}" -d "${serverDir}"`);
     fs.rmSync(zipPath, { force: true });
     
-    // Fix permissions so the itzg/minecraft-server image (which runs as UID 1000) can modify files (like server.properties)
-    execSync(`chown -R 1000:1000 "${serverDir}"`);
-    execSync(`chmod -R 775 "${serverDir}"`);
+    // Fix permissions so the server process / container can access files
+    try {
+      execSync(`chown -R 1000:1000 "${serverDir}"`);
+      execSync(`chmod -R 775 "${serverDir}"`);
+    } catch (e) {}
 
     console.log(`[Daemon API] Serverpack ZIP extracted into '${serverDir}'`);
 
@@ -98,12 +114,12 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       fs.rmdirSync(subDir);
     }
 
-    // Sync extracted serverpack files into container volume via Docker putArchive API
+    // Sync extracted serverpack files into container volume if running in Docker mode
     const containerName = `mc-server-${serverId}`;
     try {
       await syncServerDirToContainer(containerName, serverId);
     } catch (syncErr: any) {
-      console.warn(`[Daemon API Sync Warning] ${syncErr.message}`);
+      // ignore container sync if process mode
     }
 
     res.json({ message: 'Serverpack ZIP extracted successfully', serverId });
@@ -116,82 +132,153 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
 // POST /api/v1/servers/:containerId/start
 router.post('/:containerId/start', async (req: Request, res: Response) => {
   try {
-    console.log('[Daemon API] Starting server container:', req.params.containerId);
-    await startServerContainer(req.params.containerId);
+    const { containerId } = req.params;
+    console.log('[Daemon API] Starting server container/process:', containerId);
+
+    if (containerId.startsWith('process-')) {
+      const serverId = containerId.replace('process-', '');
+      await processManager.startProcess({
+        serverId,
+        serverType: 'FABRIC' as any,
+        mcVersion: '1.20.1',
+        serverPort: 25565,
+        memoryMb: 2048,
+        cpuLimit: 1,
+        eulaAccepted: true,
+        executionMode: ExecutionMode.PROCESS,
+      });
+      return res.json({ message: 'Standalone server process started successfully' });
+    }
+
+    await startServerContainer(containerId);
     res.json({ message: 'Server started successfully' });
   } catch (err: any) {
     console.error('[Daemon API Error] Start failed:', err.message);
-    res.status(500).json({ error: 'Failed to start server container', details: err.message });
+    res.status(500).json({ error: 'Failed to start server', details: err.message });
   }
 });
 
 // POST /api/v1/servers/:containerId/stop
 router.post('/:containerId/stop', async (req: Request, res: Response) => {
   try {
+    const { containerId } = req.params;
     const { countdown } = req.query;
-    console.log('[Daemon API] Stopping server container:', req.params.containerId);
+    console.log('[Daemon API] Stopping server container/process:', containerId);
+
+    if (containerId.startsWith('process-')) {
+      const serverId = containerId.replace('process-', '');
+      await processManager.stopProcess(serverId);
+      return res.json({ message: 'Standalone server process stopped' });
+    }
     
     if (countdown && !isNaN(Number(countdown))) {
       const seconds = Number(countdown);
       // Run it asynchronously so the HTTP request completes immediately
-      gracefulStopWithCountdown(req.params.containerId, seconds).catch(err => {
+      gracefulStopWithCountdown(containerId, seconds).catch(err => {
         console.error(`[Daemon API Error] Graceful stop failed:`, err.message);
       });
       res.json({ message: `Server stopping gracefully with ${seconds}s countdown` });
     } else {
-      await stopServerContainer(req.params.containerId);
+      await stopServerContainer(containerId);
       res.json({ message: 'Server stopped' });
     }
   } catch (err: any) {
     console.error('[Daemon API Error] Stop failed:', err.message);
-    res.status(500).json({ error: 'Failed to stop server container', details: err.message });
+    res.status(500).json({ error: 'Failed to stop server', details: err.message });
   }
 });
 
 // POST /api/v1/servers/:containerId/restart
 router.post('/:containerId/restart', async (req: Request, res: Response) => {
   try {
-    console.log('[Daemon API] Restarting server container:', req.params.containerId);
-    await restartServerContainer(req.params.containerId);
+    const { containerId } = req.params;
+    console.log('[Daemon API] Restarting server container/process:', containerId);
+
+    if (containerId.startsWith('process-')) {
+      const serverId = containerId.replace('process-', '');
+      await processManager.stopProcess(serverId);
+      await processManager.startProcess({
+        serverId,
+        serverType: 'FABRIC' as any,
+        mcVersion: '1.20.1',
+        serverPort: 25565,
+        memoryMb: 2048,
+        cpuLimit: 1,
+        eulaAccepted: true,
+        executionMode: ExecutionMode.PROCESS,
+      });
+      return res.json({ message: 'Standalone server process restarted' });
+    }
+
+    await restartServerContainer(containerId);
     res.json({ message: 'Server restarted' });
   } catch (err: any) {
     console.error('[Daemon API Error] Restart failed:', err.message);
-    res.status(500).json({ error: 'Failed to restart server container', details: err.message });
+    res.status(500).json({ error: 'Failed to restart server', details: err.message });
   }
 });
 
 // POST /api/v1/servers/:containerId/kill
 router.post('/:containerId/kill', async (req: Request, res: Response) => {
   try {
-    console.log('[Daemon API] Killing server container:', req.params.containerId);
-    await killServerContainer(req.params.containerId);
+    const { containerId } = req.params;
+    console.log('[Daemon API] Killing server container/process:', containerId);
+
+    if (containerId.startsWith('process-')) {
+      const serverId = containerId.replace('process-', '');
+      await processManager.killProcess(serverId);
+      return res.json({ message: 'Standalone server process force killed' });
+    }
+
+    await killServerContainer(containerId);
     res.json({ message: 'Server force killed' });
   } catch (err: any) {
     console.error('[Daemon API Error] Kill failed:', err.message);
-    res.status(500).json({ error: 'Failed to kill server container', details: err.message });
+    res.status(500).json({ error: 'Failed to kill server', details: err.message });
   }
 });
 
 // DELETE /api/v1/servers/:containerId
 router.delete('/:containerId', async (req: Request, res: Response) => {
   try {
+    const { containerId } = req.params;
     const { deleteData, serverId } = req.body;
-    console.log('[Daemon API] Deleting server container:', req.params.containerId);
-    await removeServerContainer(req.params.containerId, deleteData, serverId);
+    console.log('[Daemon API] Deleting server container/process:', containerId);
+
+    if (containerId.startsWith('process-')) {
+      const targetServerId = serverId || containerId.replace('process-', '');
+      await processManager.killProcess(targetServerId);
+      if (deleteData && targetServerId) {
+        const serverDir = path.join(config.dataDir, targetServerId);
+        if (fs.existsSync(serverDir)) {
+          fs.rmSync(serverDir, { recursive: true, force: true });
+        }
+      }
+      return res.json({ message: 'Standalone server process removed' });
+    }
+
+    await removeServerContainer(containerId, deleteData, serverId);
     res.json({ message: 'Server container removed' });
   } catch (err: any) {
     console.error('[Daemon API Error] Delete failed:', err.message);
-    res.status(500).json({ error: 'Failed to remove server container', details: err.message });
+    res.status(500).json({ error: 'Failed to remove server', details: err.message });
   }
 });
 
 // GET /api/v1/servers/:serverId/export
-router.get('/:serverId/export', (req: Request, res: Response) => {
+router.get('/:serverId/export', async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const serverDir = path.join(config.dataDir, serverId);
 
   if (!fs.existsSync(serverDir)) {
     return res.status(404).json({ error: 'Server directory not found' });
+  }
+
+  // Sync latest live container data to host directory before exporting
+  try {
+    await syncContainerToHost(serverId);
+  } catch (syncErr: any) {
+    console.warn(`[Daemon API Export Sync Warning] ${syncErr.message}`);
   }
 
   console.log(`[Daemon API] Streaming export for server ${serverId}...`);
@@ -295,7 +382,7 @@ function getSafeServerPath(serverId: string, subPath: string = ''): string | nul
 }
 
 // GET /api/v1/servers/:serverId/files/list?path=...
-router.get('/:serverId/files/list', (req: Request, res: Response) => {
+router.get('/:serverId/files/list', async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const relPath = (req.query.path as string) || '';
 
@@ -309,6 +396,11 @@ router.get('/:serverId/files/list', (req: Request, res: Response) => {
   }
 
   try {
+    const baseDir = path.resolve(config.dataDir, serverId);
+    if (relPath === '' && fs.readdirSync(baseDir).length === 0) {
+      await syncContainerToHost(serverId);
+    }
+
     const stats = fs.statSync(targetPath);
     if (!stats.isDirectory()) {
       return res.status(400).json({ error: 'Path is not a directory' });

@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { getContainerByIdOrName } from './docker';
+import { processManager } from './process';
 import { getConfig } from '../config';
 import { WsIncomingMessage, WsOutgoingMessage } from '@mc-manager/shared';
 import { provisioningManager } from './provisioning';
@@ -47,21 +48,36 @@ export function handleConsoleWebSocket(ws: WebSocket, serverId: string, containe
             }
           }
 
-          // 3. Listen for live provisioning log events
+          // 3. Listen for live provisioning and process log events
           const logListener = (payload: any) => {
             if (payload.serverId === serverId && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ event: 'log', data: `${payload.line}\n`, type: payload.type }));
             }
           };
           provisioningManager.on('log', logListener);
+          processManager.on('log', logListener);
 
           ws.on('close', () => {
             provisioningManager.removeListener('log', logListener);
+            processManager.removeListener('log', logListener);
           });
 
-          // 4. Attach & Auto-Reattach to Container Stream
+          // 4. Attach & Auto-Reattach to Container Stream if running in Docker container mode
           const attachStream = async () => {
             if (ws.readyState !== WebSocket.OPEN) return;
+            if (processManager.isRunning(serverId) || containerId?.startsWith('process-')) {
+              // Server is running as a standalone native process managed by processManager
+              const mp = processManager.getProcess(serverId);
+              if (mp) {
+                for (const line of mp.logBuffer) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ event: 'log', data: `${line}\n` }));
+                  }
+                }
+              }
+              return;
+            }
+
             try {
               const container = await getContainerByIdOrName(targetContainerRef);
               const containerStream = await container.logs({
@@ -113,10 +129,7 @@ export function handleConsoleWebSocket(ws: WebSocket, serverId: string, containe
                 }
               });
             } catch (err: any) {
-              console.warn(`[Daemon Console Error] ${err.message}`);
-              if (ws.readyState === WebSocket.OPEN) {
-                setTimeout(attachStream, 2000);
-              }
+              console.warn(`[Daemon Console Warning] Docker stream attach fallback: ${err.message}`);
             }
           };
 
@@ -129,19 +142,23 @@ export function handleConsoleWebSocket(ws: WebSocket, serverId: string, containe
         }
       }
 
-      // 3. Command execution (write to container via rcli exec)
+      // 3. Command execution (write to standalone process stdin or container via rcli exec)
       if (authenticated && message.event === 'command' && message.data) {
-        try {
-          const container = await getContainerByIdOrName(serverId);
-          const exec = await container.exec({
-            Cmd: ['rcli', message.data],
-            AttachStdin: false,
-            AttachStdout: true,
-            AttachStderr: true,
-          });
-          await exec.start({});
-        } catch (e: any) {
-          console.warn(`[Daemon Command Exec Error] ${e.message}`);
+        if (processManager.isRunning(serverId) || processManager.getProcess(serverId)) {
+          processManager.writeStdin(serverId, message.data);
+        } else {
+          try {
+            const container = await getContainerByIdOrName(serverId);
+            const exec = await container.exec({
+              Cmd: ['rcli', message.data],
+              AttachStdin: false,
+              AttachStdout: true,
+              AttachStderr: true,
+            });
+            await exec.start({});
+          } catch (e: any) {
+            console.warn(`[Daemon Command Exec Error] ${e.message}`);
+          }
         }
       }
     } catch (e) {
