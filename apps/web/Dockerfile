@@ -24,7 +24,10 @@ RUN mkdir -p /app/apps/web/public
 # Build shared types package
 RUN npm run --prefix packages/shared build
 
-# Generate Prisma Client & Build Next.js Standalone
+# Ensure DATABASE_URL dummy string for build-time Prisma Client generation & Next.js page collection
+ENV DATABASE_URL="postgresql://mcuser:mcpassword@127.0.0.1:5432/mcmanager?schema=public"
+
+# Generate Prisma Client & Build Next.js
 RUN npm run --prefix apps/web prisma:generate
 RUN npm run --prefix apps/web build
 
