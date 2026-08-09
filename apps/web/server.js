@@ -149,15 +149,13 @@ app.prepare().then(() => {
               console.log(`[WS Proxy] Retrying connection to daemon on fallback port ${altPort}...`);
               attemptProxy(host, altPort);
             } else {
-              try { socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'); } catch (e) {}
-              socket.destroy();
+              acceptAndCloseWS(req, socket, `Daemon unreachable: ${err.message}`);
             }
           });
 
           proxyReq.on('response', (proxyRes) => {
             console.error(`[WS Proxy] Daemon rejected upgrade with status: ${proxyRes.statusCode}`);
-            try { socket.write(`HTTP/1.1 ${proxyRes.statusCode || 502} Bad Gateway\r\nConnection: close\r\n\r\n`); } catch (e) {}
-            socket.destroy();
+            acceptAndCloseWS(req, socket, `Daemon status: ${proxyRes.statusCode}`);
           });
 
           proxyReq.end();
@@ -173,8 +171,7 @@ app.prepare().then(() => {
       }
     } catch (err) {
       console.error('WebSocket proxy error:', err);
-      try { socket.write('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n'); } catch (e) {}
-      socket.destroy();
+      acceptAndCloseWS(req, socket, 'WebSocket error');
     }
   });
 
