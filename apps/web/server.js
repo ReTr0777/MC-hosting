@@ -14,6 +14,39 @@ const handle = app.getRequestHandler();
 const proxy = httpProxy.createProxyServer({ ws: true });
 const prisma = new PrismaClient();
 
+const crypto = require('crypto');
+
+function acceptAndCloseWS(req, socket, reason) {
+  try {
+    const key = req.headers['sec-websocket-key'];
+    if (key) {
+      const acceptKey = crypto.createHash('sha1')
+        .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+        .digest('base64');
+      
+      const response = [
+        'HTTP/1.1 101 Switching Protocols',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Accept: ${acceptKey}`,
+        '\r\n'
+      ].join('\r\n');
+      socket.write(response);
+
+      const reasonBuf = Buffer.from(reason || 'Server not found');
+      const frame = Buffer.alloc(2 + reasonBuf.length + 2);
+      frame[0] = 0x88; // FIN bit set, opcode 0x8 (Close)
+      frame[1] = 2 + reasonBuf.length;
+      frame.writeUInt16BE(1008, 2);
+      reasonBuf.copy(frame, 4);
+      socket.write(frame);
+    }
+  } catch (e) {}
+  setTimeout(() => {
+    try { socket.end(); } catch (e) {}
+  }, 100);
+}
+
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
     try {
@@ -35,8 +68,7 @@ app.prepare().then(() => {
         
         if (!serverId) {
           console.error('[WS Proxy] Missing serverId');
-          try { socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); } catch (e) {}
-          socket.destroy();
+          acceptAndCloseWS(req, socket, 'Missing serverId');
           return;
         }
 
@@ -47,8 +79,7 @@ app.prepare().then(() => {
 
         if (!mcServer || !mcServer.node) {
           console.error(`[WS Proxy] Server or Node not found for serverId: ${serverId}`);
-          try { socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); } catch (e) {}
-          socket.destroy();
+          acceptAndCloseWS(req, socket, 'Server or Node not found');
           return;
         }
 
