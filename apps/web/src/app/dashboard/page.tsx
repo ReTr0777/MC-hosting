@@ -13,6 +13,16 @@ interface NodeItem {
   totalMemory: number;
   totalCpu: number;
   offloadPriority: number;
+  liveCpuUsage: number | null;
+  liveRamUsed: number | null;
+  liveRamTotal: number | null;
+  liveDiskUsed: number | null;
+  liveDiskTotal: number | null;
+  liveCpuModel: string | null;
+  liveCpuCores: number | null;
+  liveOsDistro: string | null;
+  liveCpuTemp: number | null;
+  liveLastSeenAt: string | null;
   _count: { servers: number };
 }
 
@@ -614,44 +624,110 @@ export default function DashboardPage() {
               No daemon nodes registered yet.
             </div>
           ) : (
-            nodes.map(node => (
-              <div key={node.id} className="cc-card" style={{ padding: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--text-primary)', marginBottom: '2px' }}>{node.name}</div>
-                    <div style={{ fontSize: '0.7rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-                      {node.host}:{node.port}
+            nodes.map(node => {
+              const cpuPct = node.liveCpuUsage ?? 0;
+              const ramUsed = node.liveRamUsed ?? 0;
+              const ramTotal = node.liveRamTotal ?? node.totalMemory ?? 1;
+              const ramPct = ramTotal > 0 ? Math.round((ramUsed / ramTotal) * 100) : 0;
+              const diskUsed = node.liveDiskUsed ?? 0;
+              const diskTotal = node.liveDiskTotal ?? 1;
+              const diskPct = diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 100) : 0;
+              const cpuBarColor = cpuPct > 85 ? '#f87171' : cpuPct > 60 ? '#fb923c' : '#34d399';
+              const ramBarColor = ramPct > 85 ? '#f87171' : ramPct > 60 ? '#fb923c' : '#60a5fa';
+              const diskBarColor = diskPct > 85 ? '#f87171' : diskPct > 60 ? '#fb923c' : '#a78bfa';
+
+              return (
+                <div key={node.id} className="cc-card" style={{ padding: '14px' }}>
+                  {/* Node Header */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--text-primary)', marginBottom: '2px' }}>{node.name}</div>
+                      <div style={{ fontSize: '0.68rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                        {node.host}:{node.port}
+                      </div>
                     </div>
+                    <span className={node.isOnline ? 'cc-badge-online' : 'cc-badge-offline'}>
+                      {node.isOnline ? 'Online' : 'Offline'}
+                    </span>
                   </div>
-                  <span className={node.isOnline ? 'cc-badge-online' : 'cc-badge-offline'}>
-                    {node.isOnline ? 'Online' : 'Offline'}
-                  </span>
-                </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '8px', marginTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>{node._count.servers} Active Servers</span>
-                  {user?.globalRole === 'GLOBAL_ADMIN' && (
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <button
-                        onClick={() => openEditNodeModal(node)}
-                        title="Edit Node"
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
-                        onMouseOver={e => (e.currentTarget.style.color = '#60a5fa')}
-                        onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
-                      >
-                        <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                      </button>
-                      <button
-                        onClick={() => handleDeleteNode(node.id)}
-                        title="Delete Node"
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--danger)' }}
-                      >
-                        <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                      </button>
+
+                  {/* CPU Model + OS */}
+                  {(node.liveCpuModel || node.liveOsDistro) && (
+                    <div style={{ fontSize: '0.67rem', color: 'var(--text-muted)', marginBottom: '8px', lineHeight: 1.4 }}>
+                      {node.liveCpuModel && (
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={node.liveCpuModel}>
+                          🖥 {node.liveCpuModel}{node.liveCpuCores ? ` · ${node.liveCpuCores}C` : ''}
+                        </div>
+                      )}
+                      {node.liveOsDistro && <div>🐧 {node.liveOsDistro}</div>}
                     </div>
                   )}
+
+                  {/* Live Hardware Bars */}
+                  {node.isOnline && node.liveCpuUsage !== null && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+                      {/* CPU */}
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
+                          <span>CPU</span>
+                          <span style={{ color: cpuBarColor, fontWeight: 700 }}>{cpuPct.toFixed(1)}%{node.liveCpuTemp ? ` · ${node.liveCpuTemp}°C` : ''}</span>
+                        </div>
+                        <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${Math.min(cpuPct, 100)}%`, background: cpuBarColor, borderRadius: '2px', transition: 'width 0.5s ease' }} />
+                        </div>
+                      </div>
+                      {/* RAM */}
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
+                          <span>RAM</span>
+                          <span style={{ color: ramBarColor, fontWeight: 700 }}>{(ramUsed / 1024).toFixed(1)} / {(ramTotal / 1024).toFixed(1)} GB</span>
+                        </div>
+                        <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${Math.min(ramPct, 100)}%`, background: ramBarColor, borderRadius: '2px', transition: 'width 0.5s ease' }} />
+                        </div>
+                      </div>
+                      {/* Disk */}
+                      {diskTotal > 0 && (
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
+                            <span>Disk</span>
+                            <span style={{ color: diskBarColor, fontWeight: 700 }}>{diskUsed.toFixed(0)} / {diskTotal.toFixed(0)} GB</span>
+                          </div>
+                          <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${Math.min(diskPct, 100)}%`, background: diskBarColor, borderRadius: '2px', transition: 'width 0.5s ease' }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Footer: server count + admin buttons */}
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '8px', marginTop: '2px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>{node._count.servers} Active Servers</span>
+                    {user?.globalRole === 'GLOBAL_ADMIN' && (
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button
+                          onClick={() => openEditNodeModal(node)}
+                          title="Edit Node"
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
+                          onMouseOver={e => (e.currentTarget.style.color = '#60a5fa')}
+                          onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                        >
+                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteNode(node.id)}
+                          title="Delete Node"
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--danger)' }}
+                        >
+                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </aside>
 

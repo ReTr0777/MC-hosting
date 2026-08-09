@@ -22,8 +22,36 @@ export interface DaemonHealthDto {
   memoryUsage: {
     used: number;
     total: number;
+    free: number;
+    swapUsed: number;
+    swapTotal: number;
   };
   dockerAvailable: boolean;
+  diskUsage?: {
+    used: number;
+    total: number;
+    free: number;
+    usedPercent: number;
+    mount: string;
+  }[];
+  cpuModel?: string;
+  cpuCores?: number;
+  cpuThreads?: number;
+  osInfo?: {
+    platform: string;
+    distro: string;
+    arch: string;
+    kernel: string;
+    hostname: string;
+  };
+  cpuTemp?: number | null;
+  networkInterfaces?: {
+    iface: string;
+    ip4: string;
+    speed: number;
+    rx_sec: number;
+    tx_sec: number;
+  }[];
 }
 
 export interface WsAuthPayload {

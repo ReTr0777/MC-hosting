@@ -70,6 +70,19 @@ model Node {
   totalMemory     Int      // MB
   totalCpu        Int      // Cores / Percentage
   offloadPriority Int      @default(0) // Higher value = higher offload priority (e.g. Secondary PC = 10, Main Server = 1)
+
+  // Live hardware stats (updated on each ping)
+  liveCpuUsage    Float?   // Current CPU load percentage (0-100)
+  liveRamUsed     Int?     // Currently used RAM in MB
+  liveRamTotal    Int?     // Total RAM in MB (also updates totalMemory)
+  liveDiskUsed    Float?   // Used disk on primary mount in GB
+  liveDiskTotal   Float?   // Total disk on primary mount in GB
+  liveCpuModel    String?  // CPU model string
+  liveCpuCores    Int?     // Physical CPU cores
+  liveOsDistro    String?  // OS distro e.g. "Ubuntu 22.04"
+  liveCpuTemp     Float?   // CPU temperature in celsius (if available)
+  liveLastSeenAt  DateTime? // Last time a successful hardware check was received
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

@@ -23,9 +23,29 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const health = await client.getHealth();
     const isOnline = health.status === 'ok' || health.dockerAvailable;
 
+    // Extract primary disk (largest mounted volume)
+    const primaryDisk = health.diskUsage
+      ?.filter((d) => d.total > 0)
+      .sort((a, b) => b.total - a.total)[0];
+
     await prisma.node.update({
       where: { id: node.id },
-      data: { isOnline },
+      data: {
+        isOnline,
+        // Update totalMemory from live data so Smart Scheduler stays accurate
+        ...(health.memoryUsage?.total ? { totalMemory: health.memoryUsage.total } : {}),
+        // Live hardware stats
+        liveCpuUsage: health.cpuUsage ?? null,
+        liveRamUsed: health.memoryUsage?.used ?? null,
+        liveRamTotal: health.memoryUsage?.total ?? null,
+        liveDiskUsed: primaryDisk?.used ?? null,
+        liveDiskTotal: primaryDisk?.total ?? null,
+        liveCpuModel: health.cpuModel ?? null,
+        liveCpuCores: health.cpuCores ?? null,
+        liveOsDistro: health.osInfo?.distro ?? null,
+        liveCpuTemp: health.cpuTemp ?? null,
+        liveLastSeenAt: new Date(),
+      },
     });
 
     return NextResponse.json({ isOnline, health });
