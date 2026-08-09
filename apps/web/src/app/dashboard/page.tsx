@@ -948,8 +948,10 @@ export default function DashboardPage() {
                     </select>
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Minecraft Version</label>
-                    <select value={selectedMcVersion} disabled={serverType === 'MODRINTH'} onChange={e => setSelectedMcVersion(e.target.value)} className="cc-input" style={{ opacity: serverType === 'MODRINTH' ? 0.5 : 1 }}>
+                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>
+                      Minecraft Version {(serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>🔒 (Auto-Detected from Pack)</span>}
+                    </label>
+                    <select value={selectedMcVersion} disabled={serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null} onChange={e => setSelectedMcVersion(e.target.value)} className="cc-input" style={{ opacity: (serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 0.5 : 1 }}>
                       {MC_VERSIONS.map(v => <option key={v} value={v}>{v === 'CUSTOM' ? 'Custom / Snapshot...' : v}</option>)}
                     </select>
                   </div>
@@ -996,7 +998,7 @@ export default function DashboardPage() {
                   {[
                     { label: 'Execution Mode', value: executionMode === 'PROCESS' ? 'Standalone Process' : 'Docker Container' },
                     { label: 'Server Engine', value: serverType },
-                    ...(serverType !== 'MODRINTH' ? [{ label: 'Minecraft Version', value: selectedMcVersion === 'CUSTOM' ? customMcVersion : selectedMcVersion }] : []),
+                    { label: 'Minecraft Version', value: (serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? '🔒 Auto-Detected from Serverpack' : (selectedMcVersion === 'CUSTOM' ? customMcVersion : selectedMcVersion) },
                     ...(modpackSlug ? [{ label: 'Modpack', value: `@${modpackSlug}` }] : []),
                     { label: 'Allocated RAM', value: `${memoryMb} MB` },
                     { label: 'Game Port', value: String(serverPort) },

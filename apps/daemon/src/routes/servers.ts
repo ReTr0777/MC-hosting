@@ -187,6 +187,90 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       fs.rmdirSync(subDir);
     }
 
+    // Smart Serverpack Minecraft Version Auto-Detection & Version Lock
+    let detectedMcVersion: string | null = null;
+    try {
+      // 1. Check CurseForge manifest.json
+      const manifestPath = path.join(serverDir, 'manifest.json');
+      if (fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (manifest.minecraft && manifest.minecraft.version) {
+          detectedMcVersion = manifest.minecraft.version;
+        }
+      }
+
+      // 2. Check Modrinth modrinth.index.json
+      if (!detectedMcVersion) {
+        const modrinthIndexPath = path.join(serverDir, 'modrinth.index.json');
+        if (fs.existsSync(modrinthIndexPath)) {
+          const indexJson = JSON.parse(fs.readFileSync(modrinthIndexPath, 'utf8'));
+          if (indexJson.dependencies && indexJson.dependencies.minecraft) {
+            detectedMcVersion = indexJson.dependencies.minecraft;
+          }
+        }
+      }
+
+      // 3. Check serverpackcreator.properties
+      if (!detectedMcVersion) {
+        const spcPropsPath = path.join(serverDir, 'serverpackcreator.properties');
+        if (fs.existsSync(spcPropsPath)) {
+          const content = fs.readFileSync(spcPropsPath, 'utf8');
+          const match = content.match(/minecraft\.version=([^\r\n]+)/);
+          if (match) detectedMcVersion = match[1].trim();
+        }
+      }
+
+      // 4. Check user_args.txt or unix_args.txt
+      if (!detectedMcVersion) {
+        const argsPath = fs.existsSync(path.join(serverDir, 'user_args.txt'))
+          ? path.join(serverDir, 'user_args.txt')
+          : (fs.existsSync(path.join(serverDir, 'unix_args.txt')) ? path.join(serverDir, 'unix_args.txt') : null);
+        if (argsPath) {
+          const content = fs.readFileSync(argsPath, 'utf8');
+          const match = content.match(/(\d+\.\d+(?:\.\d+)?)/);
+          if (match) detectedMcVersion = match[1];
+        }
+      }
+
+      // 5. Scan root directory for versioned jar names
+      if (!detectedMcVersion) {
+        const files = fs.readdirSync(serverDir);
+        for (const file of files) {
+          const match = file.match(/(?:fabric|forge|neoforge|paper|purpur|spigot|vanilla|server|minecraft)[_-]?(?:loader|server|installer)?[_-]?(\d+\.\d+(?:\.\d+)?)/i);
+          if (match) {
+            detectedMcVersion = match[1];
+            break;
+          }
+        }
+      }
+    } catch (detectErr: any) {
+      console.warn(`[Daemon Extractor Warning] Version auto-detection failed:`, detectErr.message);
+    }
+
+    // Always flag serverpack as version locked
+    const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+    let meta: any = {};
+    if (fs.existsSync(metaPath)) {
+      try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
+    }
+    meta.versionLocked = true;
+
+    if (detectedMcVersion) {
+      console.log(`[Daemon Extractor] Auto-detected version '${detectedMcVersion}' from serverpack. Locking server version...`);
+      meta.mcVersion = detectedMcVersion;
+      meta.installedVersion = detectedMcVersion;
+
+      try {
+        await prisma.server.update({
+          where: { id: serverId },
+          data: { mcVersion: detectedMcVersion },
+        });
+      } catch (dbErr: any) {
+        console.warn(`[Daemon Extractor Warning] Failed to sync detected mcVersion to DB:`, dbErr.message);
+      }
+    }
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+
     // Sync extracted serverpack files into container volume if running in Docker mode
     const containerName = `mc-server-${serverId}`;
     try {
@@ -195,7 +279,7 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       // ignore container sync if process mode
     }
 
-    res.json({ message: 'Serverpack archive extracted successfully', serverId });
+    res.json({ message: 'Serverpack archive extracted successfully', serverId, detectedVersion: detectedMcVersion });
   } catch (err: any) {
     console.error(`[Daemon API Error] Upload pack failed:`, err.message);
     res.status(500).json({ error: 'Failed to extract serverpack archive', details: err.message });
