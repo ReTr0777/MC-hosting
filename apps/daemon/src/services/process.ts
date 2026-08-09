@@ -6,6 +6,7 @@ import { CreateServerContainerDto } from '@mc-manager/shared';
 import { getConfig } from '../config';
 import { provisioningManager, STATUS } from './provisioning';
 import { tunnelManager } from './frpc';
+import { flattenServerDir } from '../utils/flatten';
 
 export interface ManagedProcess {
   serverId: string;
@@ -54,6 +55,8 @@ class ProcessManager extends EventEmitter {
   }
 
   public async ensureServerJar(serverDir: string, dto: CreateServerContainerDto): Promise<string> {
+    flattenServerDir(serverDir);
+
     const mcVersion = dto.mcVersion || '26.2';
     const serverType = (dto.serverType || 'FABRIC').toUpperCase();
     const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
@@ -68,7 +71,17 @@ class ProcessManager extends EventEmitter {
       } catch (e) {}
     }
 
-    // 1. Check for custom launch scripts or user args
+    // 1. Check for launch scripts (modpack preferred executables)
+    if (fs.existsSync(path.join(serverDir, 'run.sh'))) {
+      console.log(`[ProcessManager] Using run.sh launch script`);
+      return 'run.sh';
+    }
+    if (fs.existsSync(path.join(serverDir, 'run.bat'))) {
+      console.log(`[ProcessManager] Using run.bat launch script`);
+      return 'run.bat';
+    }
+    
+    // 2. Check for custom fabric/forge launcher jars
     if (fs.existsSync(path.join(serverDir, 'fabric-server-launch.jar'))) {
       return 'fabric-server-launch.jar';
     }
@@ -91,6 +104,17 @@ class ProcessManager extends EventEmitter {
     // If server.jar already exists in the server folder and version matches, use it immediately
     if (fs.existsSync(targetJarPath) && !(dto as any).forceRedownload) {
       return 'server.jar';
+    }
+
+    // Check if any other jar file exists in the root (e.g., fabric-server.jar, forge.jar, etc.)
+    if (!fs.existsSync(targetJarPath)) {
+      const rootJars = fs.readdirSync(serverDir).filter((f: string) => 
+        f.toLowerCase().endsWith('.jar') && f.toLowerCase() !== 'server.jar'
+      );
+      if (rootJars.length > 0) {
+        console.log(`[ProcessManager] Using found jar file: ${rootJars[0]}`);
+        return rootJars[0];
+      }
     }
 
     // 3. Centralized Bundled & Persistent Cache Resolution
@@ -229,32 +253,6 @@ class ProcessManager extends EventEmitter {
 
     const jarOrArgs = await this.ensureServerJar(serverDir, dto);
 
-    const memoryMb = dto.memoryMb || 4096;
-    let javaArgs: string[] = [
-      `-Xmx${memoryMb}M`,
-      `-Xms1024M`,
-      `-Dfile.encoding=UTF-8`,
-      `-Djava.awt.headless=true`,
-      `-Djava.net.preferIPv4Stack=true`,
-    ];
-
-    if (jarOrArgs === '@user_args.txt') {
-      javaArgs.push('@user_args.txt', 'nogui');
-    } else {
-      javaArgs.push('-jar', jarOrArgs, 'nogui');
-    }
-
-    const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
-    let effectiveMcVersion = dto.mcVersion || '26.2';
-    if (fs.existsSync(metaPath)) {
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        effectiveMcVersion = meta.installedVersion || meta.mcVersion || effectiveMcVersion;
-      } catch (e) {}
-    }
-
-    const javaCmd = resolveJavaCmd(effectiveMcVersion);
-
     // Forcefully clear any stray process holding the port on host immediately prior to spawn
     try {
       execSync(`fuser -k -9 ${effectivePort}/tcp 2>/dev/null || true`);
@@ -264,15 +262,115 @@ class ProcessManager extends EventEmitter {
     // Short pause for Linux kernel TCP socket TIME_WAIT release
     await new Promise((r) => setTimeout(r, 1000));
 
-    console.log(`[ProcessManager] Spawning standalone Java process using '${javaCmd}' for server ${dto.serverId} in '${serverDir}': ${javaCmd} ${javaArgs.join(' ')}`);
+    let child: ChildProcess;
 
-    const child = spawn(javaCmd, javaArgs, {
-      cwd: serverDir,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-      },
-    });
+    // Handle launch scripts (run.sh, run.bat)
+    if (jarOrArgs === 'run.sh' || jarOrArgs === 'run.bat') {
+      console.log(`[ProcessManager] Spawning launch script for server ${dto.serverId} in '${serverDir}': ${jarOrArgs}`);
+      // Make run.sh executable if it exists
+      if (jarOrArgs === 'run.sh') {
+        try {
+          execSync(`chmod +x "${path.join(serverDir, 'run.sh')}"`);
+        } catch (e) {}
+
+        // Strip Windows CRLF line endings from run.sh — when uploaded from a Windows
+        // system, \r\n endings cause bash to interpret each command as "command\r" which
+        // isn't found, so the script exits silently with code 0 producing no output.
+        const runShPath = path.join(serverDir, 'run.sh');
+        try {
+          const raw = fs.readFileSync(runShPath, 'utf8');
+          if (raw.includes('\r')) {
+            console.log(`[ProcessManager] Detected CRLF in run.sh — stripping to LF...`);
+            fs.writeFileSync(runShPath, raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+          }
+          // Log first few lines of run.sh for debugging
+          const preview = raw.replace(/\r/g, '').split('\n').slice(0, 5).join(' | ');
+          console.log(`[ProcessManager] run.sh preview: ${preview}`);
+        } catch (e) {}
+
+        // Also strip CRLF from user_jvm_args.txt and unix_args.txt if present
+        for (const argFile of ['user_jvm_args.txt', 'unix_args.txt', 'user_args.txt']) {
+          const argFilePath = path.join(serverDir, argFile);
+          if (fs.existsSync(argFilePath)) {
+            try {
+              const raw = fs.readFileSync(argFilePath, 'utf8');
+              if (raw.includes('\r')) {
+                fs.writeFileSync(argFilePath, raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+                console.log(`[ProcessManager] Stripped CRLF from ${argFile}`);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // Resolve the correct Java binary for this server's MC version and inject it into PATH.
+      // Modpack run.sh scripts call `java` directly and will silently fail (exit 0) if
+      // the binary isn't discoverable on PATH.
+      const metaPathForScript = path.join(serverDir, 'craftcontrol-meta.json');
+      let scriptMcVersion = dto.mcVersion || '1.20.1';
+      if (fs.existsSync(metaPathForScript)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPathForScript, 'utf8'));
+          scriptMcVersion = meta.installedVersion || meta.mcVersion || scriptMcVersion;
+        } catch (e) {}
+      }
+      const resolvedJavaCmd = resolveJavaCmd(scriptMcVersion);
+      const javaDir = path.dirname(resolvedJavaCmd);
+      const javaHome = path.dirname(javaDir); // e.g. /opt/java/openjdk-21
+      const augmentedPath = `${javaDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`;
+      console.log(`[ProcessManager] Injecting JAVA_HOME=${javaHome} and java dir ${javaDir} into PATH for run.sh`);
+
+      // Strip the trailing empty arg — bash interprets argv[0] as script name when called as `bash <script>`
+      const scriptArgs = jarOrArgs === 'run.sh' ? ['run.sh'] : ['/c', 'run.bat'];
+      child = spawn(jarOrArgs === 'run.sh' ? '/bin/bash' : 'cmd.exe',
+        scriptArgs,
+        {
+          cwd: serverDir,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            PATH: augmentedPath,
+            JAVA_HOME: javaHome,
+          },
+        }
+      );
+    } else {
+      // Handle Java jar files
+      const memoryMb = dto.memoryMb || 4096;
+      let javaArgs: string[] = [
+        `-Xmx${memoryMb}M`,
+        `-Xms1024M`,
+        `-Dfile.encoding=UTF-8`,
+        `-Djava.awt.headless=true`,
+        `-Djava.net.preferIPv4Stack=true`,
+      ];
+
+      if (jarOrArgs === '@user_args.txt') {
+        javaArgs.push('@user_args.txt', 'nogui');
+      } else {
+        javaArgs.push('-jar', jarOrArgs, 'nogui');
+      }
+
+      const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+      let effectiveMcVersion = dto.mcVersion || '26.2';
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          effectiveMcVersion = meta.installedVersion || meta.mcVersion || effectiveMcVersion;
+        } catch (e) {}
+      }
+
+      const javaCmd = resolveJavaCmd(effectiveMcVersion);
+      console.log(`[ProcessManager] Spawning standalone Java process using '${javaCmd}' for server ${dto.serverId} in '${serverDir}': ${javaCmd} ${javaArgs.join(' ')}`);
+
+      child = spawn(javaCmd, javaArgs, {
+        cwd: serverDir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+        },
+      });
+    }
 
     const mp: ManagedProcess = {
       serverId: dto.serverId,
@@ -330,8 +428,8 @@ class ProcessManager extends EventEmitter {
       }
     };
 
-    child.stdout.on('data', handleData);
-    child.stderr.on('data', handleData);
+    if (child.stdout) child.stdout.on('data', handleData);
+    if (child.stderr) child.stderr.on('data', handleData);
 
     child.on('error', (err) => {
       console.error(`[ProcessManager Fatal] Child process error on server ${dto.serverId}:`, err.message);

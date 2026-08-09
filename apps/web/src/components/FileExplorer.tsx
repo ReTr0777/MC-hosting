@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { uploadFileInChunks } from '@/lib/chunked-upload';
 
 interface FileItem {
   name: string;
@@ -34,6 +35,12 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
   // Rename Modal State
   const [renameTarget, setRenameTarget] = useState<FileItem | null>(null);
   const [newName, setNewName] = useState('');
+
+  // Upload State
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatusMessage, setUploadStatusMessage] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchFiles = async (targetPath: string = currentPath) => {
     setLoading(true);
@@ -186,6 +193,40 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    setUploadStatusMessage(`Uploading ${file.name} (0%)...`);
+    setError('');
+
+    try {
+      await uploadFileInChunks({
+        serverId,
+        file,
+        isServerpack: false,
+        targetPath: currentPath,
+        onProgress: (percent) => {
+          setUploadProgress(percent);
+          if (percent < 100) {
+            setUploadStatusMessage(`Uploading ${file.name} (${percent}%)...`);
+          } else {
+            setUploadStatusMessage(`Assembling ${file.name} on server...`);
+          }
+        },
+      });
+
+      fetchFiles(currentPath);
+    } catch (err: any) {
+      setError(`Upload failed: ${err.message}`);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   const formatSize = (bytes: number) => {
     if (bytes === 0) return '--';
     const k = 1024;
@@ -227,14 +268,30 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
         {/* Action Buttons */}
         {canManageFiles && (
           <div className="flex items-center space-x-2">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              className="hidden"
+              disabled={isUploading}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-2 rounded-lg transition disabled:opacity-50 flex items-center gap-1"
+            >
+              📤 Upload File
+            </button>
             <button
               onClick={() => setShowFolderModal(true)}
+              disabled={isUploading}
               className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-2 rounded-lg border border-slate-700 transition"
             >
               + New Folder
             </button>
             <button
               onClick={() => fetchFiles(currentPath)}
+              disabled={isUploading}
               className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-xs font-semibold px-3 py-2 rounded-lg border border-emerald-500/30 transition"
             >
               Refresh
@@ -242,6 +299,21 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
           </div>
         )}
       </div>
+
+      {isUploading && (
+        <div className="bg-slate-900/90 border border-emerald-500/30 p-4 rounded-xl space-y-2">
+          <div className="flex justify-between text-xs text-emerald-400 font-semibold">
+            <span>{uploadStatusMessage}</span>
+            <span>{uploadProgress}%</span>
+          </div>
+          <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+            <div
+              className="bg-emerald-500 h-full transition-all duration-300 rounded-full"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm p-4 rounded-xl">

@@ -23,6 +23,7 @@ import { processManager } from '../services/process';
 import { backupManager } from '../services/backup';
 import { CreateServerContainerDto, ExecutionMode } from '@mc-manager/shared';
 import { PrismaClient } from '@prisma/client';
+import { flattenServerDir } from '../utils/flatten';
 
 const router = Router();
 const config = loadConfig();
@@ -72,6 +73,318 @@ router.post('/create', async (req: Request, res: Response) => {
   }
 });
 
+// Helper function for processing and extracting serverpack archives
+async function processAndExtractServerpack(serverId: string, archivePath: string, res: Response) {
+  const serverDir = path.join(config.dataDir, serverId);
+
+  console.log(`[Daemon API] Serverpack archive saved to disk, detecting format & extracting...`);
+  
+  // Detect format (ZIP vs RAR) and extract using native CLI tools or WASM fallback
+  const headerBuf = Buffer.alloc(8);
+  const fd = fs.openSync(archivePath, 'r');
+  fs.readSync(fd, headerBuf, 0, 8, 0);
+  fs.closeSync(fd);
+
+  const isRar = headerBuf[0] === 0x52 && headerBuf[1] === 0x61 && headerBuf[2] === 0x72 && headerBuf[3] === 0x21; // "Rar!"
+  console.log(`[Daemon Archive Extractor] Detected archive format for '${serverId}': ${isRar ? 'RAR' : 'ZIP'}`);
+
+  // Count files before extraction to verify something was extracted
+  const filesBefore = fs.readdirSync(serverDir).length;
+
+  if (isRar) {
+    let extracted = false;
+    const commands = [
+      `unrar x -o+ "${archivePath}" "${serverDir}/"`,
+      `7z x "${archivePath}" -o"${serverDir}" -y`,
+      `7za x "${archivePath}" -o"${serverDir}" -y`,
+      `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
+    ];
+
+    for (const cmd of commands) {
+      try {
+        const output = execSync(cmd, { stdio: 'pipe', encoding: 'utf8' });
+        console.log(`[Daemon Archive Extractor] Extracted RAR using: ${cmd.split(' ')[0]}`);
+        extracted = true;
+        break;
+      } catch (e: any) {
+        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${e.message}`);
+      }
+    }
+
+    if (!extracted) {
+      console.log(`[Daemon Archive Extractor] Running node-unrar-js WASM fallback...`);
+      try {
+        const unrar = require('node-unrar-js');
+        const fileData = fs.readFileSync(archivePath);
+        const extractor = await unrar.createExtractorFromData({ data: fileData });
+        const unrarResult = extractor.extract({ files: () => true });
+        let filesExtracted = 0;
+        for (const file of unrarResult.files) {
+          const fullDest = path.join(serverDir, file.fileHeader.name);
+          if (file.fileHeader.flags.directory) {
+            fs.mkdirSync(fullDest, { recursive: true });
+          } else if (file.extraction) {
+            fs.mkdirSync(path.dirname(fullDest), { recursive: true });
+            fs.writeFileSync(fullDest, Buffer.from(file.extraction));
+            filesExtracted++;
+          }
+        }
+        console.log(`[Daemon Archive Extractor] WASM fallback extracted ${filesExtracted} files`);
+        extracted = true;
+      } catch (e: any) {
+        console.error(`[Daemon Archive Extractor] WASM fallback failed: ${e.message}`);
+        throw new Error(`All RAR extraction methods failed: ${e.message}`);
+      }
+    }
+  } else {
+    let extracted = false;
+    const commands = [
+      `unzip -q -o "${archivePath}" -d "${serverDir}"`,
+      `7z x "${archivePath}" -o"${serverDir}" -y`,
+      `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
+      `tar -xf "${archivePath}" -C "${serverDir}"`,
+    ];
+
+    for (const cmd of commands) {
+      try {
+        const output = execSync(cmd, { stdio: 'pipe', encoding: 'utf8' });
+        console.log(`[Daemon Archive Extractor] Extracted ZIP using: ${cmd.split(' ')[0]}`);
+        extracted = true;
+        break;
+      } catch (e: any) {
+        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${e.message}`);
+      }
+    }
+
+    if (!extracted) {
+      console.log(`[Daemon Archive Extractor] Running AdmZip fallback...`);
+      try {
+        const zip = new AdmZip(archivePath);
+        zip.extractAllTo(serverDir, true);
+        extracted = true;
+      } catch (e: any) {
+        console.error(`[Daemon Archive Extractor] AdmZip fallback failed: ${e.message}`);
+        throw new Error(`All ZIP extraction methods failed: ${e.message}`);
+      }
+    }
+  }
+
+  // Verify extraction actually happened
+  const filesAfter = fs.readdirSync(serverDir).length;
+  if (filesAfter <= filesBefore) {
+    const allFiles = fs.readdirSync(serverDir);
+    throw new Error(`Archive extraction failed: no files were extracted from the archive. Files before: ${filesBefore}, after: ${filesAfter}. Current files: ${allFiles.join(', ')}`);
+  }
+  console.log(`[Daemon Archive Extractor] Extraction verified: ${filesAfter - filesBefore} new files created (before: ${filesBefore}, after: ${filesAfter})`);
+  console.log(`[Daemon Archive Extractor] Files in directory after extraction: ${fs.readdirSync(serverDir).join(', ')}`);
+
+  fs.rmSync(archivePath, { force: true });
+  
+  // Fix permissions so the server process / container can access files
+  try {
+    execSync(`chown -R 1000:1000 "${serverDir}"`);
+    execSync(`chmod -R 775 "${serverDir}"`);
+  } catch (e) {}
+
+  console.log(`[Daemon API] Serverpack archive extracted into '${serverDir}'`);
+
+  // Smart Nested Directory Flattening
+  flattenServerDir(serverDir);
+  let items = fs.readdirSync(serverDir);
+  console.log(`[Daemon Extractor] Directory contents after flattening (${items.length} items): ${items.join(', ')}`);
+
+  // Smart Launch Script Detection: Check for run.sh or run.bat (preferred for modpacks)
+  let launchScript: string | null = null;
+  const runShPath = path.join(serverDir, 'run.sh');
+  const runBatPath = path.join(serverDir, 'run.bat');
+  
+  if (fs.existsSync(runShPath)) {
+    console.log(`[Daemon Extractor] Found run.sh launch script, using as primary executable`);
+    launchScript = 'run.sh';
+    try {
+      execSync(`chmod +x "${runShPath}"`);
+    } catch (e) {}
+
+    // Strip Windows CRLF line endings from run.sh and companion arg files eagerly
+    // (server packs created on Windows have \r\n endings, causing silent bash exit 0)
+    for (const f of ['run.sh', 'user_jvm_args.txt', 'unix_args.txt', 'user_args.txt']) {
+      const fp = path.join(serverDir, f);
+      if (fs.existsSync(fp)) {
+        try {
+          const raw = fs.readFileSync(fp, 'utf8');
+          if (raw.includes('\r')) {
+            fs.writeFileSync(fp, raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+            console.log(`[Daemon Extractor] Stripped CRLF from ${f}`);
+          }
+        } catch (e) {}
+      }
+    }
+  } else if (fs.existsSync(runBatPath)) {
+    console.log(`[Daemon Extractor] Found run.bat launch script, using as primary executable`);
+    launchScript = 'run.bat';
+  }
+
+  // If no launch script, search for server.jar
+  let serverJarPath = path.join(serverDir, 'server.jar');
+  if (!launchScript && !fs.existsSync(serverJarPath)) {
+    console.log(`[Daemon Extractor] No launch script found, searching for server.jar...`);
+    items = fs.readdirSync(serverDir);
+    for (const item of items) {
+      const itemPath = path.join(serverDir, item);
+      if (fs.statSync(itemPath).isDirectory()) {
+        const potentialJarPath = path.join(itemPath, 'server.jar');
+        if (fs.existsSync(potentialJarPath)) {
+          console.log(`[Daemon Extractor] Found server.jar in subdirectory '${item}', moving to root...`);
+          const subItems = fs.readdirSync(itemPath);
+          for (const subItem of subItems) {
+            fs.renameSync(path.join(itemPath, subItem), path.join(serverDir, subItem));
+          }
+          fs.rmdirSync(itemPath);
+          serverJarPath = path.join(serverDir, 'server.jar');
+          break;
+        }
+      }
+    }
+  }
+
+  // Fallback: If still no server.jar and no launch script, search for ANY jar file at root
+  if (!launchScript && !fs.existsSync(serverJarPath)) {
+    console.log(`[Daemon Extractor] server.jar not found, searching for any .jar file at root...`);
+    const rootJars = fs.readdirSync(serverDir).filter((f: string) => f.toLowerCase().endsWith('.jar'));
+    if (rootJars.length > 0) {
+      console.log(`[Daemon Extractor] Found jar file: ${rootJars[0]}, using as server executable`);
+      serverJarPath = path.join(serverDir, rootJars[0]);
+    }
+  }
+
+  // Fallback: Search for any jar file in subdirectories and move it to root
+  if (!launchScript && !fs.existsSync(serverJarPath)) {
+    console.log(`[Daemon Extractor] No jar at root, searching subdirectories for any .jar file...`);
+    items = fs.readdirSync(serverDir);
+    for (const item of items) {
+      const itemPath = path.join(serverDir, item);
+      if (fs.statSync(itemPath).isDirectory()) {
+        const jarFiles = fs.readdirSync(itemPath).filter((f: string) => f.toLowerCase().endsWith('.jar'));
+        if (jarFiles.length > 0) {
+          console.log(`[Daemon Extractor] Found jar file in subdirectory '${item}': ${jarFiles[0]}, moving to root...`);
+          const subItems = fs.readdirSync(itemPath);
+          for (const subItem of subItems) {
+            fs.renameSync(path.join(itemPath, subItem), path.join(serverDir, subItem));
+          }
+          fs.rmdirSync(itemPath);
+          serverJarPath = path.join(serverDir, jarFiles[0]);
+          break;
+        }
+      }
+    }
+  }
+
+  // Verify either launch script or jar file exists
+  if (!launchScript && !fs.existsSync(serverJarPath)) {
+    const availableFiles = fs.readdirSync(serverDir).slice(0, 20).join(', ');
+    throw new Error(
+      `Server archive does not contain a launch script (run.sh/run.bat) or .jar executable file. ` +
+      `Archive contents: ${availableFiles}${fs.readdirSync(serverDir).length > 20 ? ', ...' : ''}. ` +
+      `Make sure the archive is a valid server pack with either run.sh/run.bat or a jar executable.`
+    );
+  }
+
+  if (launchScript) {
+    console.log(`[Daemon Extractor] ✓ Verified launch script exists: ${launchScript}`);
+  } else {
+    console.log(`[Daemon Extractor] ✓ Verified jar executable exists at ${serverJarPath}`);
+  }
+
+  // Smart Serverpack Minecraft Version Auto-Detection & Version Lock
+  let detectedMcVersion: string | null = null;
+  try {
+    const manifestPath = path.join(serverDir, 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      if (manifest.minecraft && manifest.minecraft.version) {
+        detectedMcVersion = manifest.minecraft.version;
+      }
+    }
+
+    if (!detectedMcVersion) {
+      const modrinthIndexPath = path.join(serverDir, 'modrinth.index.json');
+      if (fs.existsSync(modrinthIndexPath)) {
+        const indexJson = JSON.parse(fs.readFileSync(modrinthIndexPath, 'utf8'));
+        if (indexJson.dependencies && indexJson.dependencies.minecraft) {
+          detectedMcVersion = indexJson.dependencies.minecraft;
+        }
+      }
+    }
+
+    if (!detectedMcVersion) {
+      const spcPropsPath = path.join(serverDir, 'serverpackcreator.properties');
+      if (fs.existsSync(spcPropsPath)) {
+        const content = fs.readFileSync(spcPropsPath, 'utf8');
+        const match = content.match(/minecraft\.version=([^\r\n]+)/);
+        if (match) detectedMcVersion = match[1].trim();
+      }
+    }
+
+    if (!detectedMcVersion) {
+      const argsPath = fs.existsSync(path.join(serverDir, 'user_args.txt'))
+        ? path.join(serverDir, 'user_args.txt')
+        : (fs.existsSync(path.join(serverDir, 'unix_args.txt')) ? path.join(serverDir, 'unix_args.txt') : null);
+      if (argsPath) {
+        const content = fs.readFileSync(argsPath, 'utf8');
+        const match = content.match(/(\d+\.\d+(?:\.\d+)?)/);
+        if (match) detectedMcVersion = match[1];
+      }
+    }
+
+    if (!detectedMcVersion) {
+      const files = fs.readdirSync(serverDir);
+      for (const file of files) {
+        const match = file.match(/(?:fabric|forge|neoforge|paper|purpur|spigot|vanilla|server|minecraft)[_-]?(?:loader|server|installer)?[_-]?(\d+\.\d+(?:\.\d+)?)/i);
+        if (match) {
+          detectedMcVersion = match[1];
+          break;
+        }
+      }
+    }
+  } catch (detectErr: any) {
+    console.warn(`[Daemon Extractor Warning] Version auto-detection failed:`, detectErr.message);
+  }
+
+  // Always flag serverpack as version locked
+  const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+  let meta: any = {};
+  if (fs.existsSync(metaPath)) {
+    try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
+  }
+  meta.versionLocked = true;
+
+  if (detectedMcVersion) {
+    console.log(`[Daemon Extractor] Auto-detected version '${detectedMcVersion}' from serverpack. Locking server version...`);
+    meta.mcVersion = detectedMcVersion;
+    meta.installedVersion = detectedMcVersion;
+
+    try {
+      await prisma.server.update({
+        where: { id: serverId },
+        data: { mcVersion: detectedMcVersion },
+      });
+    } catch (dbErr: any) {
+      console.warn(`[Daemon Extractor Warning] Failed to sync detected mcVersion to DB:`, dbErr.message);
+    }
+  }
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+
+  // Sync extracted serverpack files into container volume if running in Docker mode
+  const containerName = `mc-server-${serverId}`;
+  try {
+    await syncServerDirToContainer(containerName, serverId);
+  } catch (syncErr: any) {
+    // ignore container sync if process mode
+  }
+
+  res.json({ message: 'Serverpack archive extracted successfully', serverId, detectedVersion: detectedMcVersion });
+}
+
 // POST /api/v1/servers/:serverId/upload-pack
 router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
   try {
@@ -95,194 +408,121 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       req.on('error', reject);
     });
 
-    console.log(`[Daemon API] Serverpack archive saved to disk, detecting format & extracting...`);
-    
-    // Detect format (ZIP vs RAR) and extract using native CLI tools or WASM fallback
-    const headerBuf = Buffer.alloc(8);
-    const fd = fs.openSync(archivePath, 'r');
-    fs.readSync(fd, headerBuf, 0, 8, 0);
-    fs.closeSync(fd);
-
-    const isRar = headerBuf[0] === 0x52 && headerBuf[1] === 0x61 && headerBuf[2] === 0x72 && headerBuf[3] === 0x21; // "Rar!"
-    console.log(`[Daemon Archive Extractor] Detected archive format for '${serverId}': ${isRar ? 'RAR' : 'ZIP'}`);
-
-    if (isRar) {
-      let extracted = false;
-      const commands = [
-        `unrar x -o+ "${archivePath}" "${serverDir}/"`,
-        `7z x "${archivePath}" -o"${serverDir}" -y`,
-        `7za x "${archivePath}" -o"${serverDir}" -y`,
-        `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
-      ];
-
-      for (const cmd of commands) {
-        try {
-          execSync(cmd, { stdio: 'pipe' });
-          console.log(`[Daemon Archive Extractor] Extracted RAR using: ${cmd.split(' ')[0]}`);
-          extracted = true;
-          break;
-        } catch (e) {}
-      }
-
-      if (!extracted) {
-        console.log(`[Daemon Archive Extractor] Running node-unrar-js WASM fallback...`);
-        const unrar = require('node-unrar-js');
-        const fileData = fs.readFileSync(archivePath);
-        const extractor = await unrar.createExtractorFromData({ data: fileData });
-        const unrarResult = extractor.extract({ files: () => true });
-        for (const file of unrarResult.files) {
-          const fullDest = path.join(serverDir, file.fileHeader.name);
-          if (file.fileHeader.flags.directory) {
-            fs.mkdirSync(fullDest, { recursive: true });
-          } else if (file.extraction) {
-            fs.mkdirSync(path.dirname(fullDest), { recursive: true });
-            fs.writeFileSync(fullDest, Buffer.from(file.extraction));
-          }
-        }
-      }
-    } else {
-      let extracted = false;
-      const commands = [
-        `unzip -q -o "${archivePath}" -d "${serverDir}"`,
-        `7z x "${archivePath}" -o"${serverDir}" -y`,
-        `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
-        `tar -xf "${archivePath}" -C "${serverDir}"`,
-      ];
-
-      for (const cmd of commands) {
-        try {
-          execSync(cmd, { stdio: 'pipe' });
-          console.log(`[Daemon Archive Extractor] Extracted ZIP using: ${cmd.split(' ')[0]}`);
-          extracted = true;
-          break;
-        } catch (e) {}
-      }
-
-      if (!extracted) {
-        console.log(`[Daemon Archive Extractor] Running AdmZip fallback...`);
-        const zip = new AdmZip(archivePath);
-        zip.extractAllTo(serverDir, true);
-      }
-    }
-
-    fs.rmSync(archivePath, { force: true });
-    
-    // Fix permissions so the server process / container can access files
-    try {
-      execSync(`chown -R 1000:1000 "${serverDir}"`);
-      execSync(`chmod -R 775 "${serverDir}"`);
-    } catch (e) {}
-
-    console.log(`[Daemon API] Serverpack archive extracted into '${serverDir}'`);
-
-    // Smart Nested Directory Flattening: If archive extracted everything into a single subfolder (e.g. serverpack-v1/), move contents to top level
-    const items = fs.readdirSync(serverDir);
-    if (items.length === 1 && fs.statSync(path.join(serverDir, items[0])).isDirectory()) {
-      const subDir = path.join(serverDir, items[0]);
-      console.log(`[Daemon Extractor] Flattening nested root directory '${items[0]}'...`);
-      const subItems = fs.readdirSync(subDir);
-      for (const subItem of subItems) {
-        fs.renameSync(path.join(subDir, subItem), path.join(serverDir, subItem));
-      }
-      fs.rmdirSync(subDir);
-    }
-
-    // Smart Serverpack Minecraft Version Auto-Detection & Version Lock
-    let detectedMcVersion: string | null = null;
-    try {
-      // 1. Check CurseForge manifest.json
-      const manifestPath = path.join(serverDir, 'manifest.json');
-      if (fs.existsSync(manifestPath)) {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        if (manifest.minecraft && manifest.minecraft.version) {
-          detectedMcVersion = manifest.minecraft.version;
-        }
-      }
-
-      // 2. Check Modrinth modrinth.index.json
-      if (!detectedMcVersion) {
-        const modrinthIndexPath = path.join(serverDir, 'modrinth.index.json');
-        if (fs.existsSync(modrinthIndexPath)) {
-          const indexJson = JSON.parse(fs.readFileSync(modrinthIndexPath, 'utf8'));
-          if (indexJson.dependencies && indexJson.dependencies.minecraft) {
-            detectedMcVersion = indexJson.dependencies.minecraft;
-          }
-        }
-      }
-
-      // 3. Check serverpackcreator.properties
-      if (!detectedMcVersion) {
-        const spcPropsPath = path.join(serverDir, 'serverpackcreator.properties');
-        if (fs.existsSync(spcPropsPath)) {
-          const content = fs.readFileSync(spcPropsPath, 'utf8');
-          const match = content.match(/minecraft\.version=([^\r\n]+)/);
-          if (match) detectedMcVersion = match[1].trim();
-        }
-      }
-
-      // 4. Check user_args.txt or unix_args.txt
-      if (!detectedMcVersion) {
-        const argsPath = fs.existsSync(path.join(serverDir, 'user_args.txt'))
-          ? path.join(serverDir, 'user_args.txt')
-          : (fs.existsSync(path.join(serverDir, 'unix_args.txt')) ? path.join(serverDir, 'unix_args.txt') : null);
-        if (argsPath) {
-          const content = fs.readFileSync(argsPath, 'utf8');
-          const match = content.match(/(\d+\.\d+(?:\.\d+)?)/);
-          if (match) detectedMcVersion = match[1];
-        }
-      }
-
-      // 5. Scan root directory for versioned jar names
-      if (!detectedMcVersion) {
-        const files = fs.readdirSync(serverDir);
-        for (const file of files) {
-          const match = file.match(/(?:fabric|forge|neoforge|paper|purpur|spigot|vanilla|server|minecraft)[_-]?(?:loader|server|installer)?[_-]?(\d+\.\d+(?:\.\d+)?)/i);
-          if (match) {
-            detectedMcVersion = match[1];
-            break;
-          }
-        }
-      }
-    } catch (detectErr: any) {
-      console.warn(`[Daemon Extractor Warning] Version auto-detection failed:`, detectErr.message);
-    }
-
-    // Always flag serverpack as version locked
-    const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
-    let meta: any = {};
-    if (fs.existsSync(metaPath)) {
-      try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
-    }
-    meta.versionLocked = true;
-
-    if (detectedMcVersion) {
-      console.log(`[Daemon Extractor] Auto-detected version '${detectedMcVersion}' from serverpack. Locking server version...`);
-      meta.mcVersion = detectedMcVersion;
-      meta.installedVersion = detectedMcVersion;
-
-      try {
-        await prisma.server.update({
-          where: { id: serverId },
-          data: { mcVersion: detectedMcVersion },
-        });
-      } catch (dbErr: any) {
-        console.warn(`[Daemon Extractor Warning] Failed to sync detected mcVersion to DB:`, dbErr.message);
-      }
-    }
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-
-    // Sync extracted serverpack files into container volume if running in Docker mode
-    const containerName = `mc-server-${serverId}`;
-    try {
-      await syncServerDirToContainer(containerName, serverId);
-    } catch (syncErr: any) {
-      // ignore container sync if process mode
-    }
-
-    res.json({ message: 'Serverpack archive extracted successfully', serverId, detectedVersion: detectedMcVersion });
+    await processAndExtractServerpack(serverId, archivePath, res);
   } catch (err: any) {
     console.error(`[Daemon API Error] Upload pack failed:`, err.message);
     res.status(500).json({ error: 'Failed to extract serverpack archive', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/upload-chunk
+router.post('/:serverId/upload-chunk', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    const uploadId = (req.headers['x-upload-id'] || req.query.uploadId) as string;
+    const chunkIndexStr = (req.headers['x-chunk-index'] || req.query.chunkIndex) as string;
+
+    if (!uploadId || chunkIndexStr === undefined || chunkIndexStr === null) {
+      return res.status(400).json({ error: 'Missing x-upload-id or x-chunk-index header' });
+    }
+
+    const chunkIndex = parseInt(chunkIndexStr, 10);
+    if (isNaN(chunkIndex)) {
+      return res.status(400).json({ error: 'Invalid chunk index' });
+    }
+
+    const uploadTmpDir = path.join(config.dataDir, serverId, '.tmp_uploads', uploadId);
+    if (!fs.existsSync(uploadTmpDir)) {
+      fs.mkdirSync(uploadTmpDir, { recursive: true });
+    }
+
+    const chunkFilePath = path.join(uploadTmpDir, `chunk_${chunkIndex}`);
+    const writeStream = fs.createWriteStream(chunkFilePath);
+    req.pipe(writeStream);
+
+    await new Promise<void>((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      req.on('error', reject);
+    });
+
+    res.json({ success: true, chunkIndex });
+  } catch (err: any) {
+    console.error(`[Daemon API Error] Upload chunk failed:`, err.message);
+    res.status(500).json({ error: 'Failed to upload chunk', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/upload-complete
+router.post('/:serverId/upload-complete', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '' } = req.body;
+
+    if (!uploadId || !totalChunks || totalChunks <= 0) {
+      return res.status(400).json({ error: 'Missing required parameters: uploadId, totalChunks' });
+    }
+
+    const serverDir = path.join(config.dataDir, serverId);
+    const uploadTmpDir = path.join(serverDir, '.tmp_uploads', uploadId);
+
+    if (!fs.existsSync(uploadTmpDir)) {
+      return res.status(404).json({ error: 'Upload directory not found for this uploadId' });
+    }
+
+    // Verify all chunks exist
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkPath = path.join(uploadTmpDir, `chunk_${i}`);
+      if (!fs.existsSync(chunkPath)) {
+        return res.status(400).json({ error: `Missing chunk index ${i} of ${totalChunks}` });
+      }
+    }
+
+    let destinationPath: string;
+    if (isServerpack) {
+      destinationPath = path.join(serverDir, 'serverpack_uploaded.tmp');
+    } else {
+      const cleanRel = path.normalize(targetPath || '').replace(/^(\.\.[\/\\])+/, '');
+      const folderDir = path.join(serverDir, cleanRel);
+      destinationPath = path.join(folderDir, fileName || 'uploaded_file');
+
+      if (!destinationPath.startsWith(serverDir)) {
+        return res.status(403).json({ error: 'Invalid file path (path traversal forbidden)' });
+      }
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    }
+
+    // Assemble chunks into destination file
+    const destStream = fs.createWriteStream(destinationPath);
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkPath = path.join(uploadTmpDir, `chunk_${i}`);
+      const chunkBuffer = fs.readFileSync(chunkPath);
+      destStream.write(chunkBuffer);
+    }
+    destStream.end();
+
+    await new Promise<void>((resolve, reject) => {
+      destStream.on('finish', resolve);
+      destStream.on('error', reject);
+    });
+
+    // Cleanup temporary upload directory
+    fs.rmSync(uploadTmpDir, { recursive: true, force: true });
+
+    if (isServerpack) {
+      return await processAndExtractServerpack(serverId, destinationPath, res);
+    }
+
+    // Fix file permissions
+    try {
+      execSync(`chown -R 1000:1000 "${destinationPath}"`);
+      execSync(`chmod -R 775 "${destinationPath}"`);
+    } catch (e) {}
+
+    res.json({ message: 'File assembled and uploaded successfully', path: destinationPath });
+  } catch (err: any) {
+    console.error(`[Daemon API Error] Upload complete failed:`, err.message);
+    res.status(500).json({ error: 'Failed to complete chunked upload', details: err.message });
   }
 });
 

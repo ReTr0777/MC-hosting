@@ -28,7 +28,7 @@ FROM node:20-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV DAEMON_PORT=3001
+ENV DAEMON_PORT=3500
 ENV DAEMON_DATA_DIR=/app/data/servers
 ENV SERVERPACKCREATOR_JAR=/opt/serverpackcreator/serverpackcreator.jar
 
@@ -84,7 +84,7 @@ COPY apps/daemon/src/public ./apps/daemon/dist/public
 # Copy installed node_modules from builder
 COPY --from=builder /app/node_modules ./node_modules
 
-EXPOSE 3001
+EXPOSE 3500
 
 WORKDIR /app/apps/daemon
 

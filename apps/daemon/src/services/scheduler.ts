@@ -8,7 +8,10 @@ import { stopServerContainer, startServerContainer } from './docker';
 import { processManager } from './process';
 import { loadConfig } from '../config';
 
-const prisma = new PrismaClient();
+// DATABASE_URL is optional for the daemon — schedules can also be triggered via
+// the web panel's HTTP API. When not set, the scheduler silently skips DB polling.
+const DB_AVAILABLE = !!process.env.DATABASE_URL;
+const prisma = DB_AVAILABLE ? new PrismaClient() : null;
 const config = loadConfig();
 
 export class SchedulerService {
@@ -32,6 +35,7 @@ export class SchedulerService {
 
   public async tick(): Promise<void> {
     if (this.isRunning) return;
+    if (!DB_AVAILABLE || !prisma) return; // No DB connection — skip silently
     this.isRunning = true;
 
     try {
@@ -90,10 +94,12 @@ export class SchedulerService {
         }
         await processManager.startProcess(dto).catch(() => {});
       }
-      await prisma.server.update({
-        where: { id: serverId },
-        data: { status: 'RUNNING' },
-      }).catch(() => {});
+      if (prisma) {
+        await prisma.server.update({
+          where: { id: serverId },
+          data: { status: 'RUNNING' },
+        }).catch(() => {});
+      }
     } else if (schedule.actionType === 'RESTART') {
       const isDocker = !serverId.startsWith('process-');
       const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${serverId}`) : serverId;
@@ -119,10 +125,12 @@ export class SchedulerService {
         }
         await processManager.startProcess(dto).catch(() => {});
       }
-      await prisma.server.update({
-        where: { id: serverId },
-        data: { status: 'RUNNING' },
-      }).catch(() => {});
+      if (prisma) {
+        await prisma.server.update({
+          where: { id: serverId },
+          data: { status: 'RUNNING' },
+        }).catch(() => {});
+      }
     } else if (schedule.actionType === 'STOP') {
       const isDocker = !serverId.startsWith('process-');
       const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${serverId}`) : serverId;
@@ -131,17 +139,21 @@ export class SchedulerService {
       } else {
         await processManager.stopProcess(serverId).catch(() => {});
       }
-      await prisma.server.update({
-        where: { id: serverId },
-        data: { status: 'OFFLINE' },
-      }).catch(() => {});
+      if (prisma) {
+        await prisma.server.update({
+          where: { id: serverId },
+          data: { status: 'OFFLINE' },
+        }).catch(() => {});
+      }
     }
 
     // Update lastRunAt timestamp
-    await prisma.serverSchedule.update({
-      where: { id: schedule.id },
-      data: { lastRunAt: now },
-    }).catch(() => {});
+    if (prisma) {
+      await prisma.serverSchedule.update({
+        where: { id: schedule.id },
+        data: { lastRunAt: now },
+      }).catch(() => {});
+    }
   }
 
   private shouldRunSchedule(cronExpr: string, lastRunAt: Date | null, now: Date): boolean {

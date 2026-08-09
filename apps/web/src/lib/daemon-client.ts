@@ -141,4 +141,31 @@ export class DaemonClient {
       body: JSON.stringify({ path }),
     });
   }
+
+  async uploadPack(serverId: string, pack: Buffer): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/servers/${serverId}/upload-pack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(pack),
+    });
+  }
+
+  async uploadChunk(serverId: string, uploadId: string, chunkIndex: number, chunk: Buffer): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>(`/servers/${serverId}/upload-chunk`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Upload-Id': uploadId,
+        'X-Chunk-Index': String(chunkIndex),
+      },
+      body: new Uint8Array(chunk),
+    });
+  }
+
+  async completeChunkedUpload(serverId: string, uploadId: string, fileName: string, totalChunks: number, isServerpack = true, targetPath = ''): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/servers/${serverId}/upload-complete`, {
+      method: 'POST',
+      body: JSON.stringify({ uploadId, fileName, totalChunks, isServerpack, targetPath }),
+    });
+  }
 }

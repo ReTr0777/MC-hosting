@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { ConsoleViewer } from '@/components/ConsoleViewer';
 import { FileExplorer } from '@/components/FileExplorer';
@@ -62,6 +62,7 @@ type TabKey = typeof TABS[number]['key'];
 
 export default function ServerConsolePage() {
   const params = useParams();
+  const router = useRouter();
   const serverId = params.id as string;
   const { user } = useAuth();
 
@@ -190,6 +191,32 @@ export default function ServerConsolePage() {
     }
   };
 
+  const handleDeleteServer = async () => {
+    if (!confirm('Delete this server instance? This will remove it from the dashboard and delete its daemon container data.')) return;
+
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/servers/${serverId}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', deleteData: true }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete server');
+      }
+
+      router.push('/dashboard');
+    } catch (e: any) {
+      alert(e.message || 'Network error deleting server');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const canDeleteServer = user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER';
+
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)' }}>
@@ -271,6 +298,15 @@ export default function ServerConsolePage() {
 
         {/* Right: action buttons */}
         <div className="cc-actions-row" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {canDeleteServer && (
+            <button
+              onClick={handleDeleteServer}
+              disabled={actionLoading}
+              style={{ background: 'rgba(248,81,73,0.12)', color: 'var(--danger)', border: '1px solid rgba(248,81,73,0.25)', borderRadius: '6px', padding: '5px 12px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+            >
+              🗑 Delete Server
+            </button>
+          )}
           {server.status === 'RUNNING' ? (
             <>
               <button

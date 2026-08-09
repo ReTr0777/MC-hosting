@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { uploadFileInChunks } from '@/lib/chunked-upload';
 
 interface NodeItem {
   id: string;
@@ -379,6 +380,24 @@ export default function DashboardPage() {
     }
   };
 
+  const handleDeleteServer = async (serverId: string) => {
+    if (!confirm('Delete this server instance? This will remove it from the dashboard and delete its daemon container data.')) return;
+    try {
+      const res = await fetch(`/api/servers/${serverId}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', deleteData: true }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete server');
+
+      await fetchData();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   const handleCreateServer = async (e: React.FormEvent) => {
     e.preventDefault();
     setActionError('');
@@ -392,7 +411,12 @@ export default function DashboardPage() {
       return;
     }
 
-    const finalMcVersion = selectedMcVersion === 'CUSTOM' ? customMcVersion.trim() : selectedMcVersion;
+    let finalMcVersion = selectedMcVersion === 'CUSTOM' ? customMcVersion.trim() : selectedMcVersion;
+
+    // For serverpack uploads, use LATEST as placeholder since actual version will be auto-detected from the archive
+    if (serverType === 'CUSTOM_ZIP' && serverpackFile) {
+      finalMcVersion = 'LATEST';
+    }
 
     if (!finalMcVersion) {
       setActionError('Please specify a valid Minecraft version.');
@@ -421,33 +445,59 @@ export default function DashboardPage() {
       try {
         data = JSON.parse(resText);
       } catch (e) {
+        // If response is HTML (error page), extract any error message from it
+        if (resText.includes('<html') || resText.includes('<!DOCTYPE')) {
+          throw new Error(`Server error (${res.status}): Check server logs for details`);
+        }
         throw new Error(`Server returned invalid response (${res.status}): ${resText.slice(0, 150)}`);
       }
 
       if (res.status === 207 && data.daemonError) {
         throw new Error(`Daemon Docker launch failed: ${data.daemonError}`);
       }
-      if (!res.ok) throw new Error(data.error || 'Failed to create server');
+      if (!res.ok) throw new Error(data.error || data.details || `Failed to create server (${res.status})`);
+
+      console.log('[Create Server] Server created successfully:', data.server);
+      console.log('[Create Server] Has serverpackFile?', !!serverpackFile);
+      console.log('[Create Server] Has data.server?', !!data.server);
 
       if (serverpackFile && data.server) {
-        setActionError('Uploading & extracting serverpack archive... Please wait...');
-        const uploadRes = await fetch(`/api/servers/${data.server.id}/upload-pack`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: serverpackFile,
-        });
+        console.log('[Upload Pack] Starting chunked serverpack upload for server:', data.server.id);
+        console.log('[Upload Pack] File size:', serverpackFile.size, 'bytes');
+        console.log('[Upload Pack] File name:', serverpackFile.name);
+        
+        setActionError('Uploading serverpack archive (0%)... Please wait...');
+        
+        try {
+          await uploadFileInChunks({
+            serverId: data.server.id,
+            file: serverpackFile,
+            isServerpack: true,
+            onProgress: (percent) => {
+              if (percent < 100) {
+                setActionError(`Uploading serverpack archive (${percent}%)... Please wait...`);
+              } else {
+                setActionError(`Assembling & extracting serverpack on node... Please wait...`);
+              }
+            },
+          });
 
-        if (!uploadRes.ok) {
-          const upErr = await uploadRes.json();
-          throw new Error(upErr.error || 'Failed to upload serverpack archive');
+          console.log('[Upload Pack] Upload completed successfully!');
+
+          // Restart container so Fabric detects all newly uploaded mods
+          console.log('[Upload Pack] Restarting server to apply changes...');
+          await fetch(`/api/servers/${data.server.id}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'restart' }),
+          });
+          console.log('[Upload Pack] Restart requested');
+        } catch (uploadErr: any) {
+          console.error('[Upload Pack] Upload error:', uploadErr.message);
+          throw uploadErr;
         }
-
-        // Restart container so Fabric detects all newly uploaded mods
-        await fetch(`/api/servers/${data.server.id}/action`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'restart' }),
-        });
+      } else {
+        console.log('[Create Server] No serverpack file to upload, skipping upload step');
       }
 
       setShowServerModal(false);
@@ -821,6 +871,16 @@ export default function DashboardPage() {
                       </button>
                     )}
                   </div>
+                  <button
+                    onClick={() => handleDeleteServer(server.id)}
+                    style={{
+                      background: 'rgba(248,81,73,0.12)', color: 'var(--danger)',
+                      border: '1px solid rgba(248,81,73,0.25)', borderRadius: '6px',
+                      padding: '7px 0', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    Delete Server
+                  </button>
                   <Link
                     href={`/dashboard/servers/${server.id}`}
                     style={{
