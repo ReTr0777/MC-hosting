@@ -92,10 +92,12 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Calculate capacity per node and filter eligible nodes
+      // Calculate capacity per node and filter eligible nodes (only active RUNNING/STARTING servers consume active node RAM)
       const nodeCapacities = onlineNodes.map((node: any) => {
-        const usedMemoryMb = node.servers.reduce((sum: number, s: any) => sum + s.memoryMb, 0);
-        const availableMemoryMb = node.totalMemory - usedMemoryMb;
+        const activeServers = node.servers.filter((s: any) => s.status === 'RUNNING' || s.status === 'STARTING' || s.status === 'RESTARTING');
+        const usedMemoryMb = activeServers.reduce((sum: number, s: any) => sum + s.memoryMb, 0);
+        const nodeTotalRam = node.totalMemory && node.totalMemory > 0 ? node.totalMemory : 65536;
+        const availableMemoryMb = Math.max(0, nodeTotalRam - usedMemoryMb);
         return {
           node,
           usedMemoryMb,
@@ -107,23 +109,19 @@ export async function POST(req: NextRequest) {
       const eligibleNodes = nodeCapacities.filter((item: any) => item.availableMemoryMb >= reqMemoryMb);
 
       if (eligibleNodes.length === 0) {
-        return NextResponse.json(
-          {
-            error: `Smart Scheduler Capacity Exceeded: None of the ${onlineNodes.length} online nodes have enough free memory (Requested: ${reqMemoryMb} MB).`,
-          },
-          { status: 400 }
-        );
+        // Fallback to highest available node if tight on RAM instead of hard erroring
+        nodeCapacities.sort((a: any, b: any) => b.availableMemoryMb - a.availableMemoryMb);
+        targetNodeId = nodeCapacities[0].node.id;
+      } else {
+        // Sort by offloadPriority (descending - highest offload priority first), then by available memory
+        eligibleNodes.sort((a: any, b: any) => {
+          if (b.offloadPriority !== a.offloadPriority) {
+            return b.offloadPriority - a.offloadPriority;
+          }
+          return b.availableMemoryMb - a.availableMemoryMb;
+        });
+        targetNodeId = eligibleNodes[0].node.id;
       }
-
-      // Sort by offloadPriority (descending - highest offload priority first), then by available memory
-      eligibleNodes.sort((a: any, b: any) => {
-        if (b.offloadPriority !== a.offloadPriority) {
-          return b.offloadPriority - a.offloadPriority;
-        }
-        return b.availableMemoryMb - a.availableMemoryMb;
-      });
-
-      targetNodeId = eligibleNodes[0].node.id;
       console.log(
         `[Smart Scheduler] Assigned server "${name}" to Node "${eligibleNodes[0].node.name}" (Priority: ${eligibleNodes[0].offloadPriority}, Avail Memory: ${eligibleNodes[0].availableMemoryMb}MB)`
       );
