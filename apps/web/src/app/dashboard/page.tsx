@@ -185,6 +185,7 @@ export default function DashboardPage() {
   const [eulaAccepted, setEulaAccepted] = useState(false);
   const [serverpackFile, setServerpackFile] = useState<File | null>(null);
   const [actionError, setActionError] = useState('');
+  const [showProsCons, setShowProsCons] = useState(false);
 
   // Live Modrinth Search in Wizard with Pagination
   const [modpackQuery, setModpackQuery] = useState('');
@@ -880,12 +881,56 @@ export default function DashboardPage() {
                   <input type="text" required value={serverName} onChange={e => setServerName(e.target.value)} placeholder="My Minecraft World" className="cc-input" />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Execution Mode</label>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Execution Mode</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowProsCons(!showProsCons)}
+                      style={{ fontSize: '0.72rem', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}
+                    >
+                      {showProsCons ? '✕ Hide Comparison' : '📊 Compare Pros & Cons'}
+                    </button>
+                  </div>
+
+                  {showProsCons && (
+                    <div style={{ background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '14px', marginBottom: '10px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '0.72rem' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>[🐳] Docker Container</div>
+                        <div style={{ color: 'var(--accent)', fontWeight: 700, marginTop: '2px' }}>Pros:</div>
+                        <ul style={{ margin: 0, paddingLeft: '14px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                          <li>Isolated container per server instance</li>
+                          <li>Strict Memory &amp; CPU cgroup limits</li>
+                          <li>Auto-managed Java runtimes</li>
+                        </ul>
+                        <div style={{ color: 'var(--danger)', fontWeight: 700, marginTop: '4px' }}>Cons:</div>
+                        <ul style={{ margin: 0, paddingLeft: '14px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                          <li>Slight container initialization overhead</li>
+                          <li>Slightly higher RAM footprint</li>
+                        </ul>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', borderLeft: '1px solid var(--border-2)', paddingLeft: '12px' }}>
+                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>[⚡] Standalone Process</div>
+                        <div style={{ color: 'var(--accent)', fontWeight: 700, marginTop: '2px' }}>Pros:</div>
+                        <ul style={{ margin: 0, paddingLeft: '14px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                          <li>Blazing fast instant server boot</li>
+                          <li>Zero container overhead</li>
+                          <li>Maximum memory for Java heap</li>
+                        </ul>
+                        <div style={{ color: 'var(--danger)', fontWeight: 700, marginTop: '4px' }}>Cons:</div>
+                        <ul style={{ margin: 0, paddingLeft: '14px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                          <li>Shared host process space</li>
+                          <li>Soft resource limits (-Xmx flag)</li>
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    {[{id: 'CONTAINER', icon: 'DOCKER', name: 'Docker Container', desc: 'Isolated container per server'}, {id: 'PROCESS', icon: 'PROC', name: 'Standalone Process', desc: 'Direct process, no extra Docker containers'}].map(m => (
+                    {[{id: 'CONTAINER', icon: '🐳', name: 'Docker Container', desc: 'Isolated container per server'}, {id: 'PROCESS', icon: '⚡', name: 'Standalone Process', desc: 'Direct process, no extra Docker containers'}].map(m => (
                       <div key={m.id} onClick={() => setExecutionMode(m.id as any)}
                         style={{ padding: '12px', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${executionMode === m.id ? 'var(--accent)' : 'var(--border-2)'}`, background: executionMode === m.id ? 'var(--accent-dim)' : 'var(--bg)', display: 'flex', gap: '10px', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--accent)' }}>[{m.icon}]</span>
+                        <span style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--accent)' }}>[{m.icon}]</span>
                         <div>
                           <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>{m.name}</div>
                           <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px' }}>{m.desc}</div>
