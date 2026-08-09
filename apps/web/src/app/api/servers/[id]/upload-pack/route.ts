@@ -39,7 +39,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       throw new Error(`Daemon upload failed (${daemonRes.status}): ${errText}`);
     }
 
-    return NextResponse.json({ message: 'Serverpack ZIP uploaded and extracted successfully' });
+    return NextResponse.json({ message: 'Serverpack archive uploaded and extracted successfully' });
   } catch (err: any) {
     console.error('[Web API] Serverpack upload error:', err.message);
     return NextResponse.json({ error: 'Failed to upload serverpack', details: err.message }, { status: 500 });

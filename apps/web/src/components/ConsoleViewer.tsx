@@ -42,12 +42,29 @@ export const ConsoleViewer: React.FC<ConsoleViewerProps> = ({
         term = new Terminal({
           cursorBlink: true,
           fontSize: 13,
-          fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+          fontFamily: '"JetBrains Mono", Consolas, Monaco, "Courier New", monospace',
           theme: {
-            background: '#090d16',
-            foreground: '#e2e8f0',
-            cursor: '#10b981',
-            selectionBackground: '#1e293b',
+            background: '#0a0d14',
+            foreground: '#c9d1d9',
+            cursor: '#00d97e',
+            cursorAccent: '#0d1117',
+            selectionBackground: '#21262d',
+            black: '#0d1117',
+            brightBlack: '#3b434b',
+            red: '#f85149',
+            brightRed: '#ff7b72',
+            green: '#00d97e',
+            brightGreen: '#3fb950',
+            yellow: '#f0883e',
+            brightYellow: '#d29922',
+            blue: '#58a6ff',
+            brightBlue: '#79c0ff',
+            magenta: '#bc8cff',
+            brightMagenta: '#d2a8ff',
+            cyan: '#39c5cf',
+            brightCyan: '#56d364',
+            white: '#b1bac4',
+            brightWhite: '#e6edf3',
           },
         });
 
@@ -161,51 +178,53 @@ export const ConsoleViewer: React.FC<ConsoleViewerProps> = ({
     setCommandInput('');
   };
 
-  return (
-    <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col h-[520px]">
-      {/* Terminal Header Bar */}
-      <div className="bg-slate-900 px-5 py-3 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="flex space-x-1.5">
-            <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-            <div className="w-3 h-3 rounded-full bg-amber-500/80"></div>
-            <div className="w-3 h-3 rounded-full bg-emerald-500/80"></div>
-          </div>
-          <span className="text-xs font-mono text-slate-300">Live Terminal Console</span>
-        </div>
+  const statusColor = status === 'connected' ? 'var(--accent)' : status === 'authenticating' ? 'var(--warning)' : 'var(--danger)';
 
-        <div className="flex items-center space-x-2">
-          <span
-            className={`w-2 h-2 rounded-full ${
-              status === 'connected'
-                ? 'bg-emerald-400 animate-pulse'
-                : status === 'authenticating'
-                ? 'bg-amber-400 animate-ping'
-                : 'bg-red-400'
-            }`}
-          />
-          <span className="text-xs font-semibold text-slate-400 capitalize">{status}</span>
+  return (
+    <div className="cc-console-log-box" style={{ background: '#0a0d14', border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '520px' }}>
+      {/* Terminal Header Bar */}
+      <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ display: 'flex', gap: '5px' }}>
+            <div style={{ width: '11px', height: '11px', borderRadius: '50%', background: '#f85149', opacity: 0.8 }} />
+            <div style={{ width: '11px', height: '11px', borderRadius: '50%', background: '#f0883e', opacity: 0.8 }} />
+            <div style={{ width: '11px', height: '11px', borderRadius: '50%', background: '#00d97e', opacity: 0.8 }} />
+          </div>
+          <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontWeight: 500 }}>Live Terminal Console</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span className="pulse-dot" style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor, display: 'inline-block' }} />
+          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: statusColor, textTransform: 'capitalize' }}>{status}</span>
         </div>
       </div>
 
       {/* Terminal Viewport */}
-      <div ref={terminalRef} className="flex-1 p-3 overflow-hidden bg-[#090d16]" />
+      <div ref={terminalRef} style={{ flex: 1, padding: '6px', overflow: 'hidden', background: '#0a0d14' }} />
 
       {/* Interactive Command Bar */}
-      <form onSubmit={handleSendCommand} className="bg-slate-900 p-3 border-t border-slate-800 flex gap-2">
-        <span className="text-emerald-400 font-mono font-bold flex items-center px-2 text-sm">&gt;</span>
+      <form onSubmit={handleSendCommand} className="p-2.5 sm:p-3 bg-[var(--surface)] border-t border-[var(--border)] flex gap-2 items-center">
+        <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.875rem', padding: '0 2px' }}>›</span>
         <input
           type="text"
           value={commandInput}
           onChange={(e) => setCommandInput(e.target.value)}
           disabled={status !== 'connected'}
-          placeholder={status === 'connected' ? 'Type command (e.g. /op username, /stop, /say Hello)...' : 'Terminal disconnected'}
-          className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm font-mono text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+          placeholder={status === 'connected' ? 'Type command (e.g. /op username, /stop)...' : 'Disconnected'}
+          style={{
+            flex: 1, background: '#0a0d14', border: '1px solid var(--border-2)',
+            borderRadius: '6px', padding: '8px 12px', fontSize: '0.8125rem',
+            fontFamily: 'var(--font-mono)', color: 'var(--text-primary)',
+            outline: 'none', opacity: status !== 'connected' ? 0.5 : 1,
+            minHeight: '38px',
+          }}
+          onFocus={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
+          onBlur={e => (e.currentTarget.style.borderColor = 'var(--border-2)')}
         />
         <button
           type="submit"
           disabled={status !== 'connected' || !commandInput.trim()}
-          className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-medium text-xs px-5 py-2 rounded-xl shadow transition"
+          className="cc-btn-primary"
+          style={{ opacity: (status !== 'connected' || !commandInput.trim()) ? 0.4 : 1, borderRadius: '6px', padding: '8px 16px', minHeight: '38px', flexShrink: 0 }}
         >
           Send
         </button>

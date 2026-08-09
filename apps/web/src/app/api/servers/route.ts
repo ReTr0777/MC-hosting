@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
       nodeId,
       serverType = 'FABRIC',
       executionMode = 'PROCESS',
-      mcVersion = '1.20.1',
+      mcVersion = '26.2',
       serverPort = 24000,
       modpackSlug,
       memoryMb = 8192,
@@ -137,6 +137,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Target node not found' }, { status: 404 });
     }
 
+    // Auto-allocate unique Minecraft server port starting from 24000
+    let allocatedPort = parseInt(serverPort, 10);
+    if (!allocatedPort || isNaN(allocatedPort)) {
+      allocatedPort = 24000;
+    }
+    const existingPorts = (await prisma.server.findMany({ select: { serverPort: true } })).map((s: any) => s.serverPort);
+    while (existingPorts.includes(allocatedPort)) {
+      allocatedPort++;
+    }
+
     // 1. Create Server record in database
     const server = await prisma.server.create({
       data: {
@@ -146,7 +156,7 @@ export async function POST(req: NextRequest) {
         serverType: serverType as any,
         executionMode: executionMode as any,
         mcVersion,
-        serverPort: parseInt(serverPort, 10),
+        serverPort: allocatedPort,
         modpackSlug: (serverType === 'MODRINTH' || serverType === 'CURSEFORGE') ? modpackSlug : null,
         eulaAccepted: true,
         memoryMb: reqMemoryMb,

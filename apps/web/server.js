@@ -33,8 +33,8 @@ app.prepare().then(() => {
       if (parsedUrl.pathname === '/api/ws/console') {
         const { serverId, containerId } = parsedUrl.query;
         
-        if (!serverId || !containerId) {
-          console.error('[WS Proxy] Missing serverId or containerId');
+        if (!serverId) {
+          console.error('[WS Proxy] Missing serverId');
           socket.destroy();
           return;
         }
@@ -51,63 +51,85 @@ app.prepare().then(() => {
         }
 
         const node = mcServer.node;
+        const targetContainer = containerId || mcServer.containerId || serverId;
 
-        // Clean headers to prevent HTTP 400 Bad Request from invalid HTTP/2 pseudo-headers
-        const wsHeaders = {
-          host: `${node.host}:${node.port}`,
-          connection: 'Upgrade',
-          upgrade: 'websocket',
-          'sec-websocket-key': req.headers['sec-websocket-key'],
-          'sec-websocket-version': req.headers['sec-websocket-version'],
-          authorization: `Bearer ${node.apiKey}`
-        };
-        if (req.headers['sec-websocket-extensions']) {
-          wsHeaders['sec-websocket-extensions'] = req.headers['sec-websocket-extensions'];
-        }
-        if (req.headers['sec-websocket-protocol']) {
-          wsHeaders['sec-websocket-protocol'] = req.headers['sec-websocket-protocol'];
+        let targetHost = node.host;
+        let targetPort = node.port || 3001;
+
+        if (targetHost && targetHost.includes(':')) {
+          const parts = targetHost.split(':');
+          targetHost = parts[0];
+          targetPort = parseInt(parts[1], 10) || targetPort;
         }
 
-        const options = {
-          hostname: node.host,
-          port: node.port,
-          path: `/api/v1/servers/${serverId}/console?containerId=${containerId}`,
-          method: 'GET',
-          headers: wsHeaders
+        let hasRetried = false;
+
+        const attemptProxy = (host, port) => {
+          const wsHeaders = {
+            host: `${host}:${port}`,
+            connection: 'Upgrade',
+            upgrade: 'websocket',
+            'sec-websocket-key': req.headers['sec-websocket-key'],
+            'sec-websocket-version': req.headers['sec-websocket-version'],
+            authorization: `Bearer ${node.apiKey}`
+          };
+          if (req.headers['sec-websocket-extensions']) {
+            wsHeaders['sec-websocket-extensions'] = req.headers['sec-websocket-extensions'];
+          }
+          if (req.headers['sec-websocket-protocol']) {
+            wsHeaders['sec-websocket-protocol'] = req.headers['sec-websocket-protocol'];
+          }
+
+          const options = {
+            hostname: host,
+            port: port,
+            path: `/api/v1/servers/${serverId}/console?containerId=${targetContainer}`,
+            method: 'GET',
+            headers: wsHeaders
+          };
+
+          console.log(`[WS Proxy] Proxying console for ${serverId} to ws://${host}:${port}${options.path}`);
+
+          const proxyReq = require('http').request(options);
+          
+          proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+            let headers = `HTTP/${req.httpVersion} 101 Switching Protocols\r\n`;
+            for (const key in proxyRes.headers) {
+              headers += `${key}: ${proxyRes.headers[key]}\r\n`;
+            }
+            headers += '\r\n';
+            
+            socket.write(headers);
+            if (proxyHead && proxyHead.length) {
+              socket.write(proxyHead);
+            }
+            
+            proxySocket.pipe(socket);
+            socket.pipe(proxySocket);
+          });
+
+          proxyReq.on('error', (err) => {
+            console.error(`[WS Proxy] Error connecting to daemon at ${host}:${port}:`, err.message);
+            if (!hasRetried) {
+              hasRetried = true;
+              const altPort = port === 3001 ? 3500 : 3001;
+              console.log(`[WS Proxy] Retrying connection to daemon on fallback port ${altPort}...`);
+              attemptProxy(host, altPort);
+            } else {
+              socket.destroy();
+            }
+          });
+
+          proxyReq.on('response', (proxyRes) => {
+            console.error(`[WS Proxy] Daemon rejected upgrade with status: ${proxyRes.statusCode}`);
+            socket.destroy();
+          });
+
+          proxyReq.end();
         };
 
-        console.log(`[WS Proxy] Proxying console for ${serverId} to ws://${node.host}:${node.port}${options.path}`);
-
-        const proxyReq = require('http').request(options);
-        
-        proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
-          let headers = `HTTP/${req.httpVersion} 101 Switching Protocols\r\n`;
-          for (const key in proxyRes.headers) {
-            headers += `${key}: ${proxyRes.headers[key]}\r\n`;
-          }
-          headers += '\r\n';
-          
-          socket.write(headers);
-          if (proxyHead && proxyHead.length) {
-            socket.write(proxyHead);
-          }
-          
-          proxySocket.pipe(socket);
-          socket.pipe(proxySocket);
-        });
-
-        proxyReq.on('error', (err) => {
-          console.error('[WS Proxy] Error connecting to daemon:', err);
-          socket.destroy();
-        });
-
-        // Handle unexpected HTTP response (e.g. 404 Not Found)
-        proxyReq.on('response', (proxyRes) => {
-          console.error(`[WS Proxy] Daemon rejected upgrade with status: ${proxyRes.statusCode}`);
-          socket.destroy();
-        });
-
-        proxyReq.end();
+        attemptProxy(targetHost, targetPort);
+        return;
       } else {
         // Delegate to Next.js for HMR and other web sockets
         if (app.getUpgradeHandler) {

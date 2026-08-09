@@ -56,26 +56,29 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   try {
     if (action === 'start' || action === 'restart') {
+      const serverMeta = {
+        serverId: server.id,
+        serverType: server.serverType as ServerType,
+        mcVersion: server.mcVersion,
+        modpackSlug: server.modpackSlug || undefined,
+        serverPort: server.serverPort,
+        memoryMb: server.memoryMb,
+        cpuLimit: server.cpuLimit,
+        eulaAccepted: true,
+        executionMode: server.executionMode,
+      };
+
       try {
         if (action === 'restart') {
           await daemonClient.restartServer(targetContainerId);
         } else {
-          await daemonClient.startServer(targetContainerId);
+          await daemonClient.startServer(targetContainerId, serverMeta);
         }
       } catch (e: any) {
         console.warn(`[Web API] Start/Restart failed (${e.message}). Auto-creating container for server ${server.id}...`);
         try {
-          await daemonClient.createServer({
-            serverId: server.id,
-            serverType: server.serverType as ServerType,
-            mcVersion: server.mcVersion,
-            modpackSlug: server.modpackSlug || undefined,
-            serverPort: server.serverPort,
-            memoryMb: server.memoryMb,
-            cpuLimit: server.cpuLimit,
-            eulaAccepted: true,
-          });
-          // Note: startServerContainer is automatically called by the Daemon's background provisioning, so we don't need to manually call startServer here anymore if createServer succeeded
+          await daemonClient.createServer(serverMeta as any);
+          await daemonClient.startServer(targetContainerId, serverMeta);
         } catch (createErr: any) {
           if (createErr.message.includes('409')) {
             console.log(`[Web API] Provisioning already in progress for server ${server.id}`);

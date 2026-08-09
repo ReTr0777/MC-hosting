@@ -66,9 +66,10 @@ export class DaemonClient {
     });
   }
 
-  async startServer(containerId: string): Promise<{ message: string }> {
+  async startServer(containerId: string, meta?: any): Promise<{ message: string }> {
     return this.request<{ message: string }>(`/servers/${containerId}/start`, {
       method: 'POST',
+      body: meta ? JSON.stringify(meta) : undefined,
     });
   }
 

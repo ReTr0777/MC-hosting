@@ -5,7 +5,7 @@ datasource db {
 
 generator client {
   provider      = "prisma-client-js"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
 }
 
 enum GlobalRole {
@@ -100,12 +100,34 @@ model Server {
   memoryMb          Int                @default(2048)
   cpuLimit          Float              @default(1.0) // CPU cores limit
 
+  // Domain & Proxy Routing
+  subdomain         String?            // e.g. "survival"
+  domain            String?            // e.g. "yourdomain.com"
+
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
   permissions       ServerPermission[]
+  schedules         ServerSchedule[]
 
   @@map("servers")
+}
+
+model ServerSchedule {
+  id             String    @id @default(uuid())
+  serverId       String
+  server         Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  name           String
+  cronExpression String    // e.g. "0 */6 * * *" or "0 0 * * *"
+  actionType     String    // "BACKUP" | "COMMAND" | "START" | "RESTART" | "STOP"
+  payload        String?   // Console command string if actionType === "COMMAND"
+  isEnabled      Boolean   @default(true)
+  lastRunAt      DateTime?
+  nextRunAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("server_schedules")
 }
 
 model ServerPermission {
@@ -143,4 +165,27 @@ model InviteCode {
   updatedAt DateTime @updatedAt
 
   @@map("invite_codes")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+model CloudflareLog {
+  id          String   @id @default(uuid())
+  action      String   // e.g. "PROVISION_SRV", "DELETE_SRV"
+  subdomain   String
+  domain      String
+  status      String   // "SUCCESS" | "FAILED"
+  details     String
+  userEmail   String?
+  createdAt   DateTime @default(now())
+
+  @@map("cloudflare_logs")
 }

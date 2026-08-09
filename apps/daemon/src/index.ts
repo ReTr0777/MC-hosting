@@ -10,8 +10,10 @@ import serverRoutes from './routes/servers';
 import setupRoutes from './routes/setup';
 import { handleConsoleWebSocket } from './services/console';
 import { tunnelManager } from './services/frpc';
+import { schedulerService } from './services/scheduler';
 
 tunnelManager.init();
+schedulerService.start();
 
 const config = loadConfig();
 const app = express();
@@ -47,7 +49,7 @@ server.on('upgrade', (request, socket, head) => {
     const containerId = url.searchParams.get('containerId') || '';
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      handleConsoleWebSocket(ws, serverId, containerId);
+      handleConsoleWebSocket(ws, serverId, containerId, request);
     });
   } else {
     socket.destroy();

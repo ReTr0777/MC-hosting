@@ -14,13 +14,19 @@ import {
   removeServerContainer,
   syncServerDirToContainer,
   syncContainerToHost,
+  getContainerByIdOrName,
+  getItzgImageTag,
+  ensureDockerImage,
 } from '../services/docker';
 import { provisioningManager } from '../services/provisioning';
 import { processManager } from '../services/process';
+import { backupManager } from '../services/backup';
 import { CreateServerContainerDto, ExecutionMode } from '@mc-manager/shared';
+import { PrismaClient } from '@prisma/client';
 
 const router = Router();
 const config = loadConfig();
+const prisma = new PrismaClient();
 
 // POST /api/v1/servers/create
 router.post('/create', async (req: Request, res: Response) => {
@@ -32,31 +38,33 @@ router.post('/create', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required parameters: serverId, serverType, serverPort' });
     }
 
-    if (provisioningManager.isLocked(dto.serverId)) {
-      return res.status(409).json({ status: 'PROVISIONING', message: 'Provisioning already in progress' });
-    }
-
     const isProcessMode = dto.executionMode === ExecutionMode.PROCESS;
     const generatedContainerId = isProcessMode ? `process-${dto.serverId}` : `mc-server-${dto.serverId}`;
 
-    // Immediately respond with HTTP 202 Accepted
-    res.status(202).json({
-      message: isProcessMode ? 'Standalone server process creation accepted' : 'Server container creation accepted',
-      serverId: dto.serverId,
-      containerId: generatedContainerId,
-      status: 'PROVISIONING',
-    });
+    // Prepare directory, metadata, and server.properties without launching process
+    const serverDir = path.join(config.dataDir, dto.serverId);
+    if (!fs.existsSync(serverDir)) {
+      fs.mkdirSync(serverDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(serverDir, 'craftcontrol-meta.json'), JSON.stringify(dto, null, 2));
+    fs.writeFileSync(path.join(serverDir, 'eula.txt'), 'eula=true\n');
 
-    // Execute background build and startup non-blocking
+    // Pre-download server jar in background non-blocking so starting later is instant
     provisioningManager.run(dto.serverId, async () => {
-      if (isProcessMode) {
-        await processManager.startProcess(dto);
-      } else {
-        const containerId = await createServerContainer(dto);
-        await startServerContainer(containerId, dto.serverId);
+      await processManager.ensureServerJar(serverDir, dto);
+      if (!isProcessMode) {
+        await createServerContainer(dto);
       }
     }).catch((err) => {
-      console.error(`[Daemon Background Build Failed] ${dto.serverId}:`, err.message);
+      console.error(`[Daemon Background Prepare Failed] ${dto.serverId}:`, err.message);
+    });
+
+    // Respond with OFFLINE status - server will only start when user explicitly clicks Start button
+    res.status(202).json({
+      message: 'Server created successfully',
+      serverId: dto.serverId,
+      containerId: generatedContainerId,
+      status: 'OFFLINE',
     });
   } catch (err: any) {
     console.error('[Daemon API Error] Creation failed:', err.message, err.stack);
@@ -68,17 +76,17 @@ router.post('/create', async (req: Request, res: Response) => {
 router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
   try {
     const { serverId } = req.params;
-    console.log(`[Daemon API] Receiving streaming serverpack ZIP upload for serverId '${serverId}'...`);
+    console.log(`[Daemon API] Receiving streaming serverpack archive (ZIP/RAR) upload for serverId '${serverId}'...`);
 
     const serverDir = path.join(config.dataDir, serverId);
     if (!fs.existsSync(serverDir)) {
       fs.mkdirSync(serverDir, { recursive: true });
     }
 
-    const zipPath = path.join(serverDir, 'serverpack.zip');
+    const archivePath = path.join(serverDir, 'serverpack_uploaded.tmp');
     
     // Stream directly to disk to prevent RAM exhaustion and event loop blocking
-    const writeStream = fs.createWriteStream(zipPath);
+    const writeStream = fs.createWriteStream(archivePath);
     req.pipe(writeStream);
     
     await new Promise<void>((resolve, reject) => {
@@ -87,12 +95,77 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       req.on('error', reject);
     });
 
-    console.log(`[Daemon API] Serverpack ZIP saved to disk, extracting via native unzip...`);
+    console.log(`[Daemon API] Serverpack archive saved to disk, detecting format & extracting...`);
     
-    const { execSync } = require('child_process');
-    // Using native unzip is infinitely faster than AdmZip for massive files
-    execSync(`unzip -q -o "${zipPath}" -d "${serverDir}"`);
-    fs.rmSync(zipPath, { force: true });
+    // Detect format (ZIP vs RAR) and extract using native CLI tools or WASM fallback
+    const headerBuf = Buffer.alloc(8);
+    const fd = fs.openSync(archivePath, 'r');
+    fs.readSync(fd, headerBuf, 0, 8, 0);
+    fs.closeSync(fd);
+
+    const isRar = headerBuf[0] === 0x52 && headerBuf[1] === 0x61 && headerBuf[2] === 0x72 && headerBuf[3] === 0x21; // "Rar!"
+    console.log(`[Daemon Archive Extractor] Detected archive format for '${serverId}': ${isRar ? 'RAR' : 'ZIP'}`);
+
+    if (isRar) {
+      let extracted = false;
+      const commands = [
+        `unrar x -o+ "${archivePath}" "${serverDir}/"`,
+        `7z x "${archivePath}" -o"${serverDir}" -y`,
+        `7za x "${archivePath}" -o"${serverDir}" -y`,
+        `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
+      ];
+
+      for (const cmd of commands) {
+        try {
+          execSync(cmd, { stdio: 'pipe' });
+          console.log(`[Daemon Archive Extractor] Extracted RAR using: ${cmd.split(' ')[0]}`);
+          extracted = true;
+          break;
+        } catch (e) {}
+      }
+
+      if (!extracted) {
+        console.log(`[Daemon Archive Extractor] Running node-unrar-js WASM fallback...`);
+        const unrar = require('node-unrar-js');
+        const fileData = fs.readFileSync(archivePath);
+        const extractor = await unrar.createExtractorFromData({ data: fileData });
+        const unrarResult = extractor.extract({ files: () => true });
+        for (const file of unrarResult.files) {
+          const fullDest = path.join(serverDir, file.fileHeader.name);
+          if (file.fileHeader.flags.directory) {
+            fs.mkdirSync(fullDest, { recursive: true });
+          } else if (file.extraction) {
+            fs.mkdirSync(path.dirname(fullDest), { recursive: true });
+            fs.writeFileSync(fullDest, Buffer.from(file.extraction));
+          }
+        }
+      }
+    } else {
+      let extracted = false;
+      const commands = [
+        `unzip -q -o "${archivePath}" -d "${serverDir}"`,
+        `7z x "${archivePath}" -o"${serverDir}" -y`,
+        `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
+        `tar -xf "${archivePath}" -C "${serverDir}"`,
+      ];
+
+      for (const cmd of commands) {
+        try {
+          execSync(cmd, { stdio: 'pipe' });
+          console.log(`[Daemon Archive Extractor] Extracted ZIP using: ${cmd.split(' ')[0]}`);
+          extracted = true;
+          break;
+        } catch (e) {}
+      }
+
+      if (!extracted) {
+        console.log(`[Daemon Archive Extractor] Running AdmZip fallback...`);
+        const zip = new AdmZip(archivePath);
+        zip.extractAllTo(serverDir, true);
+      }
+    }
+
+    fs.rmSync(archivePath, { force: true });
     
     // Fix permissions so the server process / container can access files
     try {
@@ -100,13 +173,13 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       execSync(`chmod -R 775 "${serverDir}"`);
     } catch (e) {}
 
-    console.log(`[Daemon API] Serverpack ZIP extracted into '${serverDir}'`);
+    console.log(`[Daemon API] Serverpack archive extracted into '${serverDir}'`);
 
-    // Smart Nested Directory Flattening: If ZIP extracted everything into a single subfolder (e.g. serverpack-v1/), move contents to top level
+    // Smart Nested Directory Flattening: If archive extracted everything into a single subfolder (e.g. serverpack-v1/), move contents to top level
     const items = fs.readdirSync(serverDir);
     if (items.length === 1 && fs.statSync(path.join(serverDir, items[0])).isDirectory()) {
       const subDir = path.join(serverDir, items[0]);
-      console.log(`[Daemon ZIP Extractor] Flattening nested root directory '${items[0]}'...`);
+      console.log(`[Daemon Extractor] Flattening nested root directory '${items[0]}'...`);
       const subItems = fs.readdirSync(subDir);
       for (const subItem of subItems) {
         fs.renameSync(path.join(subDir, subItem), path.join(serverDir, subItem));
@@ -122,10 +195,64 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
       // ignore container sync if process mode
     }
 
-    res.json({ message: 'Serverpack ZIP extracted successfully', serverId });
+    res.json({ message: 'Serverpack archive extracted successfully', serverId });
   } catch (err: any) {
     console.error(`[Daemon API Error] Upload pack failed:`, err.message);
-    res.status(500).json({ error: 'Failed to extract serverpack ZIP', details: err.message });
+    res.status(500).json({ error: 'Failed to extract serverpack archive', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/icon
+router.get('/:serverId/icon', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const serverDir = path.join(config.dataDir, serverId);
+  const iconPath = path.join(serverDir, 'server-icon.png');
+
+  if (fs.existsSync(iconPath)) {
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    return res.sendFile(iconPath);
+  } else {
+    return res.status(404).json({ error: 'Server icon not found' });
+  }
+});
+
+// POST /api/v1/servers/:serverId/icon
+router.post('/:serverId/icon', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    console.log(`[Daemon API] Receiving server icon upload for serverId '${serverId}'...`);
+
+    const serverDir = path.join(config.dataDir, serverId);
+    if (!fs.existsSync(serverDir)) {
+      fs.mkdirSync(serverDir, { recursive: true });
+    }
+
+    const iconPath = path.join(serverDir, 'server-icon.png');
+    const writeStream = fs.createWriteStream(iconPath);
+    req.pipe(writeStream);
+
+    await new Promise<void>((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      req.on('error', reject);
+    });
+
+    try {
+      execSync(`chown 1000:1000 "${iconPath}"`);
+      execSync(`chmod 664 "${iconPath}"`);
+    } catch (e) {}
+
+    const containerName = `mc-server-${serverId}`;
+    try {
+      await syncServerDirToContainer(containerName, serverId);
+    } catch (syncErr: any) {}
+
+    console.log(`[Daemon API] Server icon updated for '${serverId}'`);
+    res.json({ message: 'Server icon uploaded successfully', serverId });
+  } catch (err: any) {
+    console.error(`[Daemon API Error] Upload icon failed:`, err.message);
+    res.status(500).json({ error: 'Failed to upload server icon', details: err.message });
   }
 });
 
@@ -137,16 +264,36 @@ router.post('/:containerId/start', async (req: Request, res: Response) => {
 
     if (containerId.startsWith('process-')) {
       const serverId = containerId.replace('process-', '');
-      await processManager.startProcess({
+      const serverDir = path.join(config.dataDir, serverId);
+      const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+      
+      let dto: CreateServerContainerDto = {
         serverId,
         serverType: 'FABRIC' as any,
-        mcVersion: '1.20.1',
+        mcVersion: '26.2',
         serverPort: 25565,
-        memoryMb: 2048,
+        memoryMb: 4096,
         cpuLimit: 1,
         eulaAccepted: true,
         executionMode: ExecutionMode.PROCESS,
-      });
+      };
+
+      if (fs.existsSync(metaPath)) {
+        try {
+          const savedMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          dto = { ...dto, ...savedMeta, serverId };
+        } catch (e) {}
+      }
+
+      // Merge incoming metadata from Web API (database source of truth)
+      if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+        dto = { ...dto, ...req.body, serverId };
+        try {
+          fs.writeFileSync(metaPath, JSON.stringify(dto, null, 2));
+        } catch (e) {}
+      }
+
+      await processManager.startProcess(dto);
       return res.json({ message: 'Standalone server process started successfully' });
     }
 
@@ -197,13 +344,22 @@ router.post('/:containerId/restart', async (req: Request, res: Response) => {
     if (containerId.startsWith('process-')) {
       const serverId = containerId.replace('process-', '');
       await processManager.stopProcess(serverId);
+
+      // Read saved metadata so we restart with the correct port, version, type, etc.
+      const serverDir = path.join(config.dataDir, serverId);
+      const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+      let meta: any = {};
+      if (fs.existsSync(metaPath)) {
+        try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
+      }
+
       await processManager.startProcess({
         serverId,
-        serverType: 'FABRIC' as any,
-        mcVersion: '1.20.1',
-        serverPort: 25565,
-        memoryMb: 2048,
-        cpuLimit: 1,
+        serverType: meta.serverType || 'FABRIC' as any,
+        mcVersion: meta.installedVersion || meta.mcVersion || '1.20.1',
+        serverPort: meta.serverPort || 25565,
+        memoryMb: meta.memoryMb || 2048,
+        cpuLimit: meta.cpuLimit || 1,
         eulaAccepted: true,
         executionMode: ExecutionMode.PROCESS,
       });
@@ -573,6 +729,616 @@ router.post('/:serverId/files/delete', (req: Request, res: Response) => {
     res.json({ success: true, path: relPath });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete file or directory', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/players
+router.get('/:serverId/players', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const players = processManager.getOnlinePlayers(targetId);
+  res.json({ players, count: players.length });
+});
+
+// POST /api/v1/servers/:serverId/players/action
+router.post('/:serverId/players/action', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { username, action, reason } = req.body;
+
+  if (!username || !action) {
+    return res.status(400).json({ error: 'Missing username or action' });
+  }
+
+  let cmd = '';
+  if (action === 'op') cmd = `op ${username}`;
+  else if (action === 'deop') cmd = `deop ${username}`;
+  else if (action === 'kick') cmd = `kick ${username} ${reason || 'Kicked by administrator'}`;
+  else if (action === 'ban') cmd = `ban ${username} ${reason || 'Banned by administrator'}`;
+  else return res.status(400).json({ error: `Unsupported player action '${action}'` });
+
+  const success = processManager.writeStdin(targetId, cmd);
+  res.json({ success, message: `Dispatched command: ${cmd}` });
+});
+
+// GET /api/v1/servers/:serverId/properties
+router.get('/:serverId/properties', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const propsPath = getSafeServerPath(targetId, 'server.properties');
+
+  if (!propsPath || !fs.existsSync(propsPath)) {
+    return res.json({ properties: {} });
+  }
+
+  try {
+    const raw = fs.readFileSync(propsPath, 'utf8');
+    const properties: Record<string, string> = {};
+    const lines = raw.split(/\r?\n/);
+    for (const line of lines) {
+      if (line.trim().startsWith('#') || !line.includes('=')) continue;
+      const idx = line.indexOf('=');
+      const key = line.substring(0, idx).trim();
+      const val = line.substring(idx + 1).trim();
+      properties[key] = val;
+    }
+    res.json({ properties });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to read server.properties', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/properties
+router.post('/:serverId/properties', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { properties } = req.body;
+
+  if (!properties || typeof properties !== 'object') {
+    return res.status(400).json({ error: 'Invalid properties payload' });
+  }
+
+  const propsPath = getSafeServerPath(targetId, 'server.properties');
+  if (!propsPath) return res.status(403).json({ error: 'Access denied' });
+
+  try {
+    let lines: string[] = [];
+    if (fs.existsSync(propsPath)) {
+      lines = fs.readFileSync(propsPath, 'utf8').split(/\r?\n/);
+    }
+
+    const updatedKeys = new Set<string>();
+    const newLines = lines.map((line) => {
+      if (line.trim().startsWith('#') || !line.includes('=')) return line;
+      const idx = line.indexOf('=');
+      const key = line.substring(0, idx).trim();
+      if (key in properties) {
+        updatedKeys.add(key);
+        return `${key}=${properties[key]}`;
+      }
+      return line;
+    });
+
+    for (const [k, v] of Object.entries(properties)) {
+      if (!updatedKeys.has(k)) {
+        newLines.push(`${k}=${v}`);
+      }
+    }
+
+    fs.writeFileSync(propsPath, newLines.join('\n'), 'utf8');
+    res.json({ success: true, message: 'Updated server.properties successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update server.properties', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/stats
+router.get('/:serverId/stats', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const stats = processManager.getProcessStats(targetId);
+  res.json(stats);
+});
+
+// GET /api/v1/servers/:serverId/backups
+router.get('/:serverId/backups', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const backups = backupManager.listBackups(targetId);
+  res.json({ backups });
+});
+
+// POST /api/v1/servers/:serverId/backups
+router.post('/:serverId/backups', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { name } = req.body;
+
+  try {
+    const isDocker = !serverId.startsWith('process-');
+    const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${targetId}`) : serverId;
+
+    // Send save-all to flush in-memory inventories to disk & sync volume files to host
+    if (isDocker) {
+      try {
+        const container = await getContainerByIdOrName(containerId);
+        const exec = await container.exec({ Cmd: ['rcli', 'save-all'], AttachStdin: false, AttachStdout: false });
+        await exec.start({});
+      } catch (e) {}
+      try {
+        console.log(`[Backups] Syncing live container volume data to host for '${targetId}'...`);
+        await syncContainerToHost(targetId);
+      } catch (syncErr: any) {
+        console.warn(`[Backups] Pre-backup sync warning:`, syncErr.message);
+      }
+    } else {
+      if (processManager.isRunning(targetId)) {
+        processManager.writeStdin(targetId, 'save-all');
+      }
+    }
+
+    const backup = await backupManager.createBackup(targetId, name);
+    res.json({ success: true, backup });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create backup', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/backups/restore
+router.post('/:serverId/backups/restore', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { name } = req.body;
+
+  if (!name) return res.status(400).json({ error: 'Missing backup name' });
+
+  try {
+    const isDocker = !serverId.startsWith('process-');
+    const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${targetId}`) : serverId;
+
+    let wasRunning = false;
+    if (isDocker) {
+      try {
+        const inspect = execSync(`docker inspect -f '{{.State.Running}}' ${containerId} 2>/dev/null`).toString().trim();
+        wasRunning = inspect === 'true';
+        if (wasRunning) {
+          await stopServerContainer(containerId);
+        }
+      } catch (e) {}
+    } else {
+      wasRunning = processManager.isRunning(targetId);
+      if (wasRunning) {
+        await processManager.stopProcess(targetId);
+      }
+    }
+
+    await backupManager.restoreBackup(targetId, name);
+
+    // Fix host permissions for UID 1000 (Minecraft container user)
+    const serverDir = path.join(config.dataDir, targetId);
+    try {
+      execSync(`chown -R 1000:1000 "${serverDir}"`);
+      execSync(`chmod -R 775 "${serverDir}"`);
+    } catch (e) {}
+
+    // In Docker mode, wipe stale container volume data and sync restored files into volume mc_data_${targetId}
+    if (isDocker) {
+      try {
+        console.log(`[Backups] Cleaning container volume before restoring backup for ${containerId}...`);
+        execSync(`docker run --rm -v "mc_data_${targetId}:/data" alpine rm -rf /data/world /data/world_nether /data/world_the_end /data/mods /data/config /data/level.dat /data/level.dat_old`, { stdio: 'ignore' });
+        console.log(`[Backups] Syncing restored backup files into Docker volume for ${containerId}...`);
+        await syncServerDirToContainer(containerId, targetId);
+      } catch (syncErr: any) {
+        console.error(`[Backups] Warning: Volume sync after restore failed:`, syncErr.message);
+      }
+    }
+
+    if (wasRunning) {
+      console.log(`[Backups] Automatically restarting server ${containerId} after restore...`);
+      if (isDocker) {
+        await startServerContainer(containerId).catch((err) => {
+          console.error(`[Backups] Failed to restart container ${containerId}:`, err);
+        });
+      } else {
+        const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+        let dto: any = { serverId: targetId, mcVersion: '26.2', serverType: 'FABRIC', serverPort: 25565, memoryMb: 4096, eulaAccepted: true, executionMode: ExecutionMode.PROCESS };
+        if (fs.existsSync(metaPath)) {
+          try { dto = { ...dto, ...JSON.parse(fs.readFileSync(metaPath, 'utf8')) }; } catch (e) {}
+        }
+        await processManager.startProcess(dto).catch((err) => {
+          console.error(`[Backups] Failed to restart process ${targetId}:`, err);
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: wasRunning
+        ? 'Backup restored & server restarted successfully!'
+        : 'Backup restored successfully! Click Start to launch your server.',
+    });
+  } catch (err: any) {
+    console.error(`[Backups] Failed to restore backup:`, err.message);
+    res.status(500).json({ error: 'Failed to restore backup', details: err.message });
+  }
+});
+
+// DELETE /api/v1/servers/:serverId/backups/:name
+router.delete('/:serverId/backups/:name', (req: Request, res: Response) => {
+  const { serverId, name } = req.params;
+  const targetId = serverId.replace('process-', '');
+
+  try {
+    backupManager.deleteBackup(targetId, name);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to delete backup', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/subdomain
+router.post('/:serverId/subdomain', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { subdomain, domain, port } = req.body;
+
+  const serverDir = path.join(loadConfig().dataDir, targetId);
+  const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+
+  if (fs.existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      meta.subdomain = subdomain;
+      meta.domain = domain;
+      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    } catch (e) {}
+  }
+
+  console.log(`[ProxyRouter] Configured subdomain route for server ${targetId}: ${subdomain}.${domain} -> port ${port}`);
+  res.json({ success: true, subdomain, domain });
+});
+
+// POST /api/v1/servers/:serverId/update-engine
+router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { serverType, mcVersion, createBackup } = req.body;
+
+  if (!serverType || !mcVersion) {
+    return res.status(400).json({ error: 'Missing serverType or mcVersion' });
+  }
+
+  try {
+    const isDocker = !serverId.startsWith('process-');
+    const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${targetId}`) : serverId;
+
+    // 1. Pre-update safety snapshot
+    if (createBackup) {
+      console.log(`[UpdateEngine] Creating pre-update safety backup for '${targetId}'...`);
+      if (isDocker) {
+        try { await syncContainerToHost(targetId); } catch (e) {}
+      }
+      await backupManager.createBackup(targetId, `pre_update_${serverType.toLowerCase()}_${mcVersion}`);
+    }
+
+    // 2. Stop running server instance
+    let wasRunning = false;
+    if (isDocker) {
+      try {
+        const inspect = execSync(`docker inspect -f '{{.State.Running}}' ${containerId} 2>/dev/null`).toString().trim();
+        wasRunning = inspect === 'true';
+        if (wasRunning) {
+          await stopServerContainer(containerId);
+        }
+      } catch (e) {}
+    } else {
+      wasRunning = processManager.isRunning(targetId);
+      if (wasRunning) {
+        await processManager.stopProcess(targetId);
+      }
+    }
+
+    // 3. Clear old server executable JARs so the new loader JAR will be downloaded fresh
+    const serverDir = path.join(config.dataDir, targetId);
+    if (!fs.existsSync(serverDir)) {
+      fs.mkdirSync(serverDir, { recursive: true });
+    }
+
+    const filesToRemove = ['server.jar', 'fabric-server-launch.jar', 'user_args.txt', 'unix_args.txt'];
+    for (const f of filesToRemove) {
+      const fPath = path.join(serverDir, f);
+      if (fs.existsSync(fPath)) {
+        try { fs.rmSync(fPath, { force: true }); } catch (e) {}
+      }
+    }
+
+    // 4. Update craftcontrol-meta.json
+    const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+    let meta: any = { serverId: targetId, serverType, mcVersion, installedVersion: mcVersion };
+    if (fs.existsSync(metaPath)) {
+      try {
+        meta = { ...JSON.parse(fs.readFileSync(metaPath, 'utf8')), ...meta };
+      } catch (e) {}
+    }
+    meta.serverType = serverType;
+    meta.mcVersion = mcVersion;
+    meta.installedVersion = mcVersion;
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+
+    // 5. Download the new engine executable
+    const dto: any = {
+      serverId: targetId,
+      serverType,
+      mcVersion,
+      serverPort: meta.serverPort || 25565,
+      memoryMb: meta.memoryMb || 4096,
+      eulaAccepted: true,
+      executionMode: isDocker ? ExecutionMode.CONTAINER : ExecutionMode.PROCESS,
+      forceRedownload: true,
+    };
+
+    console.log(`[UpdateEngine] Downloading fresh ${serverType} JAR for ${mcVersion}...`);
+    await processManager.ensureServerJar(serverDir, dto);
+
+    // 6. In Docker mode, recreate container with the appropriate Java image if Java version changed, or sync volume
+    if (isDocker) {
+      try {
+        const imageTag = getItzgImageTag(mcVersion);
+        console.log(`[UpdateEngine] Target Docker image tag for ${mcVersion}: ${imageTag}`);
+        await ensureDockerImage(imageTag);
+        await syncServerDirToContainer(containerId, targetId);
+      } catch (dockerErr: any) {
+        console.warn(`[UpdateEngine Warning] Container volume sync:`, dockerErr.message);
+      }
+    }
+
+    // Fix host directory permissions for UID 1000
+    try {
+      execSync(`chown -R 1000:1000 "${serverDir}"`);
+      execSync(`chmod -R 775 "${serverDir}"`);
+    } catch (e) {}
+
+    // 7. Restart server if it was previously running
+    if (wasRunning) {
+      console.log(`[UpdateEngine] Restarting server '${containerId}' with updated engine...`);
+      if (isDocker) {
+        await startServerContainer(containerId).catch((err) => {
+          console.error(`[UpdateEngine] Failed to restart container:`, err);
+        });
+      } else {
+        await processManager.startProcess(dto).catch((err) => {
+          console.error(`[UpdateEngine] Failed to restart process:`, err);
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Server engine updated successfully to ${serverType} (${mcVersion})!`,
+    });
+  } catch (err: any) {
+    console.error(`[UpdateEngine Error]`, err.message);
+    res.status(500).json({ error: 'Failed to update server engine', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/repair-world
+router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+
+  try {
+    const isDocker = !serverId.startsWith('process-');
+    const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${targetId}`) : serverId;
+
+    // 1. Stop running server instance
+    let wasRunning = false;
+    if (isDocker) {
+      try {
+        const inspect = execSync(`docker inspect -f '{{.State.Running}}' ${containerId} 2>/dev/null`).toString().trim();
+        wasRunning = inspect === 'true';
+        if (wasRunning) {
+          await stopServerContainer(containerId);
+        }
+      } catch (e) {}
+    } else {
+      wasRunning = processManager.isRunning(targetId);
+      if (wasRunning) {
+        await processManager.stopProcess(targetId);
+      }
+    }
+
+    const serverDir = path.join(config.dataDir, targetId);
+    const worldDir = path.join(serverDir, 'world');
+    const levelDat = path.join(worldDir, 'level.dat');
+    const levelDatOld = path.join(worldDir, 'level.dat_old');
+
+    let repairedMethod = '';
+
+    if (fs.existsSync(worldDir)) {
+      // 1. Backup all level headers on host
+      if (fs.existsSync(levelDat)) {
+        try { fs.copyFileSync(levelDat, path.join(worldDir, 'level.dat.corrupt')); } catch (e) {}
+        try { fs.rmSync(levelDat, { force: true }); } catch (e) {}
+      }
+      if (fs.existsSync(levelDatOld)) {
+        try { fs.copyFileSync(levelDatOld, path.join(worldDir, 'level.dat_old.corrupt')); } catch (e) {}
+        try { fs.rmSync(levelDatOld, { force: true }); } catch (e) {}
+      }
+
+      // 2. Disable incompatible datapacks if present
+      const datapacksDir = path.join(worldDir, 'datapacks');
+      if (fs.existsSync(datapacksDir)) {
+        try {
+          const dpBackup = path.join(worldDir, 'datapacks_disabled');
+          if (fs.existsSync(dpBackup)) fs.rmSync(dpBackup, { recursive: true, force: true });
+          fs.renameSync(datapacksDir, dpBackup);
+          fs.mkdirSync(datapacksDir, { recursive: true });
+        } catch (e) {}
+      }
+
+      // 3. Remove legacy './world/players' directory causing conversion exception
+      const oldPlayersDir = path.join(worldDir, 'players');
+      if (fs.existsSync(oldPlayersDir)) {
+        try { fs.rmSync(oldPlayersDir, { recursive: true, force: true }); } catch (e) {}
+      }
+
+      repairedMethod = 'Purged invalid level.dat headers, removed legacy ./world/players, & disabled incompatible datapacks';
+    } else {
+      return res.status(400).json({ error: 'No world directory found for this server' });
+    }
+
+    // 4. WIPE stale level.dat / datapacks / legacy players directly inside Docker volume before sync
+    if (isDocker) {
+      try {
+        console.log(`[RepairWorld] Purging level.dat & legacy players inside Docker volume mc_data_${targetId}...`);
+        execSync(`docker run --rm -v "mc_data_${targetId}:/data" alpine rm -rf /data/world/level.dat /data/world/level.dat_old /data/world/datapacks /data/world/players`, { stdio: 'ignore' });
+      } catch (e) {}
+    }
+
+    // Fix host directory permissions for UID 1000
+    try {
+      execSync(`chown -R 1000:1000 "${serverDir}"`);
+      execSync(`chmod -R 775 "${serverDir}"`);
+    } catch (e) {}
+
+    // Sync repaired files to container volume if in Docker mode
+    if (isDocker) {
+      try {
+        await syncServerDirToContainer(containerId, targetId);
+      } catch (e) {}
+    }
+
+    // Restart server if it was previously running
+    if (wasRunning) {
+      if (isDocker) {
+        await startServerContainer(containerId).catch((err) => {
+          console.error(`[RepairWorld] Failed to restart container:`, err);
+        });
+      } else {
+        const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+        let dto: any = { serverId: targetId, mcVersion: '26.2', serverType: 'FABRIC', serverPort: 25565, memoryMb: 4096, eulaAccepted: true, executionMode: ExecutionMode.CONTAINER };
+        if (fs.existsSync(metaPath)) {
+          try { dto = { ...dto, ...JSON.parse(fs.readFileSync(metaPath, 'utf8')) }; } catch (e) {}
+        }
+        await processManager.startProcess(dto).catch((err) => {
+          console.error(`[RepairWorld] Failed to restart process:`, err);
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `World repair complete: ${repairedMethod}. Server ready!`,
+    });
+  } catch (err: any) {
+    console.error(`[RepairWorld Error]`, err.message);
+    res.status(500).json({ error: 'Failed to repair world settings', details: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// SCHEDULE & CRON MANAGEMENT ENDPOINTS
+// ─────────────────────────────────────────────────────────────
+
+// GET /api/v1/servers/:serverId/schedules
+router.get('/:serverId/schedules', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  try {
+    const schedules = await prisma.serverSchedule.findMany({
+      where: { serverId: targetId },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ schedules });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch schedules', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/schedules
+router.post('/:serverId/schedules', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { name, cronExpression, actionType, payload, isEnabled } = req.body;
+
+  if (!name || !cronExpression || !actionType) {
+    return res.status(400).json({ error: 'Missing required schedule fields (name, cronExpression, actionType)' });
+  }
+
+  try {
+    const schedule = await prisma.serverSchedule.create({
+      data: {
+        serverId: targetId,
+        name,
+        cronExpression,
+        actionType,
+        payload: payload || null,
+        isEnabled: isEnabled !== undefined ? Boolean(isEnabled) : true,
+      },
+    });
+    res.json({ success: true, schedule });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create schedule', details: err.message });
+  }
+});
+
+// PUT /api/v1/servers/:serverId/schedules/:scheduleId
+router.put('/:serverId/schedules/:scheduleId', async (req: Request, res: Response) => {
+  const { scheduleId } = req.params;
+  const { name, cronExpression, actionType, payload, isEnabled } = req.body;
+
+  try {
+    const schedule = await prisma.serverSchedule.update({
+      where: { id: scheduleId },
+      data: {
+        ...(name && { name }),
+        ...(cronExpression && { cronExpression }),
+        ...(actionType && { actionType }),
+        ...(payload !== undefined && { payload }),
+        ...(isEnabled !== undefined ? { isEnabled: Boolean(isEnabled) } : {}),
+      },
+    });
+    res.json({ success: true, schedule });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update schedule', details: err.message });
+  }
+});
+
+// DELETE /api/v1/servers/:serverId/schedules/:scheduleId
+router.delete('/:serverId/schedules/:scheduleId', async (req: Request, res: Response) => {
+  const { scheduleId } = req.params;
+
+  try {
+    await prisma.serverSchedule.delete({
+      where: { id: scheduleId },
+    });
+    res.json({ success: true, message: 'Schedule deleted' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to delete schedule', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/schedules/:scheduleId/trigger
+router.post('/:serverId/schedules/:scheduleId/trigger', async (req: Request, res: Response) => {
+  const { scheduleId } = req.params;
+
+  try {
+    const schedule = await prisma.serverSchedule.findUnique({
+      where: { id: scheduleId },
+      include: { server: true },
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ error: 'Schedule not found' });
+    }
+
+    const { schedulerService } = require('../services/scheduler');
+    await schedulerService.executeSchedule(schedule);
+
+    res.json({ success: true, message: `Schedule '${schedule.name}' executed manually!` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to trigger schedule', details: err.message });
   }
 });
 

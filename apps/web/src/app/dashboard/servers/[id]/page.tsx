@@ -7,6 +7,13 @@ import { useAuth } from '@/context/AuthContext';
 import { ConsoleViewer } from '@/components/ConsoleViewer';
 import { FileExplorer } from '@/components/FileExplorer';
 import { ServerPermissionsModal } from '@/components/ServerPermissionsModal';
+import AnalyticsWidget from '@/components/AnalyticsWidget';
+import PlayersTab from '@/components/PlayersTab';
+import PropertiesTab from '@/components/PropertiesTab';
+import BackupsTab from '@/components/BackupsTab';
+import SubdomainTab from '@/components/SubdomainTab';
+import UpdateCenterTab from '@/components/UpdateCenterTab';
+import { SchedulesTab } from '@/components/SchedulesTab';
 
 interface ServerDetail {
   id: string;
@@ -31,6 +38,28 @@ interface ServerDetail {
   };
 }
 
+function StatusBadge({ status }: { status: string }) {
+  const cls =
+    status === 'RUNNING' ? 'cc-badge-running' :
+    status === 'STARTING' ? 'cc-badge-starting' :
+    status === 'ERROR' ? 'cc-badge-error' :
+    'cc-badge-offline';
+  return <span className={cls}>{status}</span>;
+}
+
+const TABS = [
+  { key: 'console', label: 'Console' },
+  { key: 'players', label: 'Players & Admin' },
+  { key: 'properties', label: 'Server Properties' },
+  { key: 'update', label: 'Update Centre' },
+  { key: 'schedules', label: 'Automated Schedules' },
+  { key: 'backups', label: 'Backups' },
+  { key: 'domain', label: 'Domain Routing' },
+  { key: 'files', label: 'File Explorer' },
+] as const;
+
+type TabKey = typeof TABS[number]['key'];
+
 export default function ServerConsolePage() {
   const params = useParams();
   const serverId = params.id as string;
@@ -44,10 +73,39 @@ export default function ServerConsolePage() {
   const [migrationDestId, setMigrationDestId] = useState('');
   const [error, setError] = useState('');
 
-  // Active View Tab: 'console' | 'files'
-  const [activeTab, setActiveTab] = useState<'console' | 'files'>('console');
-  // Permissions Modal State
+  const [activeTab, setActiveTab] = useState<TabKey>('console');
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+
+  const [iconKey, setIconKey] = useState<number>(Date.now());
+  const [uploadingIcon, setUploadingIcon] = useState(false);
+
+  const handleIconUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingIcon(true);
+    try {
+      const res = await fetch(`/api/servers/${serverId}/icon`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+        },
+        body: file,
+      });
+
+      if (res.ok) {
+        setIconKey(Date.now());
+        alert('Server icon updated! Minecraft will display server-icon.png in the multiplayer server list.');
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to upload server icon');
+      }
+    } catch (err) {
+      alert('Network error uploading icon');
+    } finally {
+      setUploadingIcon(false);
+    }
+  };
 
   const fetchServerDetails = async () => {
     try {
@@ -98,7 +156,6 @@ export default function ServerConsolePage() {
       const data = await res.json();
       if (res.ok) {
         alert('Migration process has started! Your server is currently migrating in the background.');
-        // Force refresh
         setTimeout(() => window.location.reload(), 2000);
       } else {
         alert(data.error || 'Failed to trigger migration');
@@ -134,15 +191,19 @@ export default function ServerConsolePage() {
   };
 
   if (loading) {
-    return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500">Loading server console...</div>;
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)' }}>
+        Loading server console...
+      </div>
+    );
   }
 
   if (error || !server) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-center p-4">
-        <h2 className="text-2xl font-bold text-white mb-2">Error Loading Server</h2>
-        <p className="text-slate-400 mb-6">{error || 'Server instance not found'}</p>
-        <Link href="/dashboard" className="bg-slate-800 hover:bg-slate-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium">
+      <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '24px', fontFamily: 'var(--font-ui)' }}>
+        <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>Error Loading Server</h2>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '24px' }}>{error || 'Server instance not found'}</p>
+        <Link href="/dashboard" style={{ background: 'var(--surface)', color: 'var(--text-primary)', padding: '8px 20px', borderRadius: '6px', border: '1px solid var(--border-2)', fontSize: '0.8125rem', textDecoration: 'none' }}>
           ← Return to Dashboard
         </Link>
       </div>
@@ -150,172 +211,171 @@ export default function ServerConsolePage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col">
-      {/* Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-8 py-4 flex items-center justify-between sticky top-0 z-40">
-        <div className="flex items-center space-x-4">
-          <Link href="/dashboard" className="flex items-center space-x-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-xl shadow-lg shadow-emerald-500/20">
-              M
-            </div>
-            <span className="font-bold text-lg text-white">CraftControl</span>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
+
+      {/* ── Top Header Bar ── */}
+      <header className="cc-header-responsive" style={{
+        background: 'var(--surface)',
+        borderBottom: '1px solid var(--border)',
+        padding: '0 24px',
+        minHeight: '52px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        position: 'sticky',
+        top: 0,
+        zIndex: 50,
+      }}>
+        {/* Left: logo + breadcrumb + status */}
+        <div className="cc-header-row" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <Link href="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
+            <div style={{
+              width: '28px', height: '28px', borderRadius: '6px',
+              background: 'var(--accent)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '13px', fontWeight: 800, color: '#0d1117',
+            }}>C</div>
+            <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: 'var(--text-primary)' }}>CraftControl</span>
           </Link>
-          <span className="text-xs text-slate-500">/</span>
-          <span className="text-sm font-semibold text-slate-200">{server.name}</span>
-          <span className="text-xs px-2.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-            {userRole}
-          </span>
+          <span style={{ color: 'var(--border-2)', fontSize: '1.1rem', fontWeight: 300 }}>&gt;</span>
+
+          {/* Clickable Server Icon */}
+          <label
+            htmlFor="server-icon-upload-input"
+            title="Click to upload/change server-icon.png"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: '28px', height: '28px', borderRadius: '6px',
+              background: 'var(--surface-2)', border: '1px solid var(--border-2)',
+              cursor: 'pointer', overflow: 'hidden', flexShrink: 0,
+            }}
+          >
+            <img
+              src={`/api/servers/${server.id}/icon?v=${iconKey}`}
+              alt="Icon"
+              style={{ width: '100%', height: '100%', objectFit: 'cover', imageRendering: 'pixelated' }}
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
+            <span style={{ fontSize: '0.6rem', fontWeight: 800, color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>MC</span>
+          </label>
+          <input
+            id="server-icon-upload-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={handleIconUpload}
+            style={{ display: 'none' }}
+          />
+          <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '160px' }}>{server.name}</span>
+          <StatusBadge status={server.status} />
         </div>
 
-        <Link href="/dashboard" className="text-xs bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-slate-200 transition">
-          ← Dashboard
-        </Link>
+        {/* Right: action buttons */}
+        <div className="cc-actions-row" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {server.status === 'RUNNING' ? (
+            <>
+              <button
+                onClick={() => handleAction('restart')}
+                disabled={actionLoading}
+                className="cc-btn-warning"
+                style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                ↺ Restart
+              </button>
+              <button
+                onClick={() => handleAction('stop')}
+                disabled={actionLoading}
+                className="cc-btn-danger"
+              >
+                ■ Stop
+              </button>
+              <button
+                onClick={() => handleAction('kill')}
+                disabled={actionLoading}
+                style={{ background: 'rgba(248,81,73,0.1)', color: 'var(--danger)', border: '1px solid rgba(248,81,73,0.2)', borderRadius: '6px', padding: '5px 12px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+              >
+                ✕ Kill
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => handleAction('start')}
+              disabled={actionLoading}
+              className="cc-btn-primary"
+              style={{ padding: '6px 18px' }}
+            >
+              ▶ Start Server
+            </button>
+          )}
+        </div>
       </header>
 
-      {/* Main Server Control Workspace */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-8 py-8 space-y-6">
-        {/* Top Control Header Card */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div>
-            <div className="flex items-center space-x-3 mb-2">
-              <h1 className="text-2xl font-bold text-white">{server.name}</h1>
-              <span
-                className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
-                  server.status === 'RUNNING'
-                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                    : server.status === 'STARTING'
-                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'
-                    : server.status === 'ERROR'
-                    ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-                    : 'bg-slate-800 text-slate-400 border border-slate-700'
-                }`}
-              >
-                {server.status}
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 font-mono">
-              Node: {server.node.name} ({server.node.host}:{server.serverPort}) • Type: {server.serverType} ({server.mcVersion})
-            </p>
-          </div>
-
-          {/* Quick Actions */}
-          <div className="flex flex-wrap items-center gap-3">
-            {user?.globalRole === 'GLOBAL_ADMIN' && (
-              <button
-                onClick={() => setShowPermissionsModal(true)}
-                className="bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 text-xs font-semibold px-4 py-2.5 rounded-xl border border-purple-500/30 transition flex items-center space-x-1.5"
-              >
-                <span>🔑</span>
-                <span>User Access & Privileges</span>
-              </button>
-            )}
-
-            {server.status === 'RUNNING' ? (
-              <>
-                <button
-                  onClick={() => handleAction('restart')}
-                  disabled={actionLoading}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2.5 rounded-xl border border-slate-700 transition"
-                >
-                  Restart
-                </button>
-                <button
-                  onClick={() => handleAction('stop')}
-                  disabled={actionLoading}
-                  className="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 text-xs font-semibold px-5 py-2.5 rounded-xl border border-amber-500/30 transition"
-                >
-                  Stop
-                </button>
-                <button
-                  onClick={() => handleAction('kill')}
-                  disabled={actionLoading}
-                  className="bg-red-600/20 hover:bg-red-600/30 text-red-300 text-xs font-semibold px-4 py-2.5 rounded-xl border border-red-500/30 transition"
-                >
-                  Kill
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={() => handleAction('start')}
-                disabled={actionLoading}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition"
-              >
-                {actionLoading ? 'Starting...' : 'Start Server'}
-              </button>
-            )}
-          </div>
+      {/* ── Tab Navigation ── */}
+      <div className="cc-tab-nav no-scrollbar" style={{
+        background: 'var(--surface)',
+        borderBottom: '1px solid var(--border)',
+        padding: '0 24px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        overflowX: 'auto',
+      }}>
+        <div style={{ display: 'flex', gap: '20px', flexShrink: 0 }}>
+          {TABS.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`cc-tab${activeTab === tab.key ? ' cc-tab-active' : ''}`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-slate-800 space-x-6">
+        {user?.globalRole === 'GLOBAL_ADMIN' && (
           <button
-            onClick={() => setActiveTab('console')}
-            className={`pb-3 text-sm font-bold border-b-2 transition flex items-center space-x-2 ${
-              activeTab === 'console'
-                ? 'border-emerald-500 text-emerald-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
+            onClick={() => setShowPermissionsModal(true)}
+            style={{
+              background: 'rgba(139,92,246,0.12)', color: '#a78bfa',
+              border: '1px solid rgba(139,92,246,0.25)', borderRadius: '6px',
+              padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+              whiteSpace: 'nowrap', flexShrink: 0, marginLeft: '12px',
+            }}
           >
-            <span>🖥️ Console & Status</span>
+            👤 Access &amp; Privileges
           </button>
-          <button
-            onClick={() => setActiveTab('files')}
-            className={`pb-3 text-sm font-bold border-b-2 transition flex items-center space-x-2 ${
-              activeTab === 'files'
-                ? 'border-emerald-500 text-emerald-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>📁 File Explorer</span>
-          </button>
-        </div>
+        )}
+      </div>
 
-        {activeTab === 'console' ? (
-          <>
-            {/* Modpack Platform Notice Banner for Modrinth Modpacks */}
+      {/* ── Main Content ── */}
+      <main className="cc-main-content" style={{ flex: 1, maxWidth: '1280px', width: '100%', margin: '0 auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+        {activeTab === 'console' && (
+          <div className="animate-fadeIn" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Modrinth notice */}
             {server.serverType === 'MODRINTH' && server.modpackSlug && (
-              <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-2xl p-5 flex items-start space-x-4 text-emerald-200">
-                <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400 mt-0.5">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
+              <div style={{ background: 'rgba(0,217,126,0.06)', border: '1px solid var(--accent-border)', borderRadius: '10px', padding: '14px 18px', display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                <div style={{ fontSize: '1.1rem', marginTop: '2px' }}>ℹ️</div>
                 <div>
-                  <h3 className="text-sm font-bold text-emerald-300">Client Compatibility Requirement</h3>
-                  <p className="text-xs text-emerald-200/80 mt-1 leading-relaxed">
-                    This server runs the official <span className="font-semibold text-white">Modrinth Build ({server.mcVersion})</span>.
-                    Players <span className="font-bold underline text-emerald-300">MUST install this modpack from the Modrinth App</span> or <a href={`https://modrinth.com/modpack/${server.modpackSlug}`} target="_blank" rel="noreferrer" className="underline font-semibold text-white hover:text-emerald-300">Modrinth.com</a>.
-                    <span className="block mt-1 text-slate-300 font-mono">
-                      ⚠️ Note: CurseForge builds of this modpack carry different dependency mod versions and will cause a client-side Netty DecoderException network disconnect upon joining.
-                    </span>
+                  <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--accent)', marginBottom: '4px' }}>Client Compatibility Requirement</div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.6 }}>
+                    This server runs the official <strong style={{ color: 'var(--text-primary)' }}>Modrinth Build ({server.mcVersion})</strong>.
+                    Players <strong>MUST install this modpack</strong> from the{' '}
+                    <a href={`https://modrinth.com/modpack/${server.modpackSlug}`} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
+                      Modrinth App
+                    </a>.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Server Metadata Stats Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Allocated Memory</span>
-                <div className="text-lg font-bold text-white mt-1">{server.memoryMb} MB</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">CPU Limit</span>
-                <div className="text-lg font-bold text-white mt-1">{server.cpuLimit} Cores</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Server Port</span>
-                <div className="text-lg font-bold text-white mt-1 font-mono">{server.serverPort}</div>
-              </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">EULA Consent</span>
-                <div className="text-lg font-bold text-emerald-400 mt-1">Accepted</div>
-              </div>
-            </div>
+            {/* Analytics */}
+            <AnalyticsWidget serverId={server.id} memoryLimitMb={server.memoryMb} />
 
-            {/* Live Interactive WebSocket Terminal Console */}
+            {/* Console */}
             <div>
-              <h2 className="text-lg font-bold text-white mb-3">Live Terminal & Output</h2>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Live Terminal & Output
+              </div>
               <ConsoleViewer
                 serverId={server.id}
                 containerId={server.containerId || `mc-server-${server.id}`}
@@ -325,23 +385,23 @@ export default function ServerConsolePage() {
               />
             </div>
 
-            {/* Server Migration Block */}
-            <div className="mt-8 bg-slate-900 border border-slate-800 rounded-2xl p-6">
-              <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-                <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            {/* Migration */}
+            <div className="cc-card" style={{ padding: '20px 24px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                 </svg>
-                Server Migration
-              </h3>
-              <p className="text-sm text-slate-400 mb-6 max-w-3xl leading-relaxed">
-                Instantly transfer this server and all of its files to a different node. If the server is currently running, it will automatically perform a graceful 10-second shutdown countdown in-game before transferring.
+                <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: 'var(--text-primary)' }}>Server Migration</span>
+              </div>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
+                Instantly transfer this server and all of its files to a different node.
               </p>
-
-              <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <select
                   value={migrationDestId}
                   onChange={(e) => setMigrationDestId(e.target.value)}
-                  className="bg-slate-950 border border-slate-700 text-white text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:max-w-xs p-3 transition"
+                  className="cc-input"
+                  style={{ maxWidth: '260px' }}
                 >
                   <option value="">Select Destination Node...</option>
                   {nodes
@@ -355,17 +415,26 @@ export default function ServerConsolePage() {
                 <button
                   onClick={handleMigrate}
                   disabled={actionLoading || !migrationDestId}
-                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-6 py-3 rounded-xl shadow-lg shadow-indigo-600/20 transition whitespace-nowrap"
+                  style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '6px', padding: '8px 18px', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', opacity: (actionLoading || !migrationDestId) ? 0.5 : 1 }}
                 >
                   {actionLoading ? 'Migrating...' : 'Start Migration'}
                 </button>
               </div>
             </div>
-          </>
-        ) : (
-          /* File Explorer Tab */
-          <div>
-            <h2 className="text-lg font-bold text-white mb-3">Server File Explorer (v1.0.5)</h2>
+          </div>
+        )}
+
+        {activeTab === 'players' && <PlayersTab serverId={server.id} />}
+        {activeTab === 'properties' && <PropertiesTab serverId={server.id} />}
+        {activeTab === 'update' && <UpdateCenterTab server={server} onUpdateSuccess={fetchServerDetails} />}
+        {activeTab === 'schedules' && <SchedulesTab serverId={server.id} />}
+        {activeTab === 'backups' && <BackupsTab serverId={server.id} />}
+        {activeTab === 'domain' && <SubdomainTab serverId={server.id} />}
+        {activeTab === 'files' && (
+          <div className="animate-fadeIn">
+            <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Server File Explorer
+            </div>
             <FileExplorer
               serverId={server.id}
               canManageFiles={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
@@ -373,14 +442,12 @@ export default function ServerConsolePage() {
           </div>
         )}
 
-        {/* Server Permissions Modal */}
         <ServerPermissionsModal
           serverId={server.id}
           serverName={server.name}
           isOpen={showPermissionsModal}
           onClose={() => setShowPermissionsModal(false)}
         />
-
       </main>
     </div>
   );

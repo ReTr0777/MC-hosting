@@ -9,11 +9,14 @@
   },
   "dependencies": {
     "@mc-manager/shared": "*",
+    "@prisma/client": "^5.22.0",
     "@types/adm-zip": "^0.5.8",
     "adm-zip": "^0.6.0",
     "cors": "^2.8.5",
     "dockerode": "^4.0.2",
     "express": "^4.19.2",
+    "node-unrar-js": "^2.0.2",
+    "prisma": "^5.22.0",
     "systeminformation": "^5.21.22",
     "ws": "^8.16.0"
   },

@@ -18,7 +18,9 @@ class TunnelManager {
   
   constructor() {
     const dataDir = getConfig().dataDir;
-    this.frpConfigPath = path.join(dataDir, 'frpc.toml');
+    // frpc.toml lives one level above the servers subdir (e.g. /app/data/frpc.toml)
+    const baseDataDir = path.dirname(dataDir);
+    this.frpConfigPath = path.join(baseDataDir, 'frpc.toml');
   }
 
   public async init() {
@@ -27,6 +29,8 @@ class TunnelManager {
       console.log('[TunnelManager] Killing existing frpc process...');
       this.frpcProcess.kill('SIGTERM');
       this.frpcProcess = null;
+      // Wait for frps to clean up the old proxy registration before reconnecting
+      await new Promise((r) => setTimeout(r, 1500));
     }
 
     const config = getConfig();
