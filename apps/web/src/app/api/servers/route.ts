@@ -108,10 +108,12 @@ export async function POST(req: NextRequest) {
 
       const eligibleNodes = nodeCapacities.filter((item: any) => item.availableMemoryMb >= reqMemoryMb);
 
+      let selectedNodeItem: any;
       if (eligibleNodes.length === 0) {
         // Fallback to highest available node if tight on RAM instead of hard erroring
         nodeCapacities.sort((a: any, b: any) => b.availableMemoryMb - a.availableMemoryMb);
-        targetNodeId = nodeCapacities[0].node.id;
+        selectedNodeItem = nodeCapacities[0];
+        targetNodeId = selectedNodeItem.node.id;
       } else {
         // Sort by offloadPriority (descending - highest offload priority first), then by available memory
         eligibleNodes.sort((a: any, b: any) => {
@@ -120,10 +122,11 @@ export async function POST(req: NextRequest) {
           }
           return b.availableMemoryMb - a.availableMemoryMb;
         });
-        targetNodeId = eligibleNodes[0].node.id;
+        selectedNodeItem = eligibleNodes[0];
+        targetNodeId = selectedNodeItem.node.id;
       }
       console.log(
-        `[Smart Scheduler] Assigned server "${name}" to Node "${eligibleNodes[0].node.name}" (Priority: ${eligibleNodes[0].offloadPriority}, Avail Memory: ${eligibleNodes[0].availableMemoryMb}MB)`
+        `[Smart Scheduler] Assigned server "${name}" to Node "${selectedNodeItem.node.name}" (Priority: ${selectedNodeItem.offloadPriority}, Avail Memory: ${selectedNodeItem.availableMemoryMb}MB)`
       );
     }
 

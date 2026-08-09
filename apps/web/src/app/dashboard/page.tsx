@@ -416,7 +416,14 @@ export default function DashboardPage() {
         }),
       });
 
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch (e) {
+        throw new Error(`Server returned invalid response (${res.status}): ${resText.slice(0, 150)}`);
+      }
+
       if (res.status === 207 && data.daemonError) {
         throw new Error(`Daemon Docker launch failed: ${data.daemonError}`);
       }
