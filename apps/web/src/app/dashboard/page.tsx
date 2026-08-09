@@ -41,6 +41,7 @@ interface ModpackHit {
 
 
 const MC_VERSIONS = [
+  'AUTO_DETECT',
   'LATEST',
   '26.2',
   '26.1.2',
@@ -836,7 +837,16 @@ export default function DashboardPage() {
                   {SERVER_TYPES.map(t => (
                     <div
                       key={t.id}
-                      onClick={() => { setServerType(t.id); if (t.id !== 'MODRINTH' && t.id !== 'CURSEFORGE') { setModpackSlug(''); setSelectedModpackTitle(''); } }}
+                      onClick={() => {
+                        setServerType(t.id);
+                        if (t.id === 'CUSTOM_ZIP') {
+                          setSelectedMcVersion('AUTO_DETECT');
+                        }
+                        if (t.id !== 'MODRINTH' && t.id !== 'CURSEFORGE') {
+                          setModpackSlug('');
+                          setSelectedModpackTitle('');
+                        }
+                      }}
                       style={{
                         padding: '14px', borderRadius: '8px', cursor: 'pointer', transition: 'all 0.15s',
                         background: serverType === t.id ? 'var(--accent-dim)' : 'var(--bg)',
@@ -861,7 +871,21 @@ export default function DashboardPage() {
                   <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--accent)', marginBottom: '6px' }}>
                     Upload Serverpack Archive (.zip or .rar) {serverType === 'CUSTOM_ZIP' ? '(Required)' : '(Optional)'}
                   </label>
-                  <input type="file" accept=".zip,.rar" onChange={e => { const f = e.target.files?.[0]; if (f) { setServerpackFile(f); if (!serverName) setServerName(f.name.replace(/\.(zip|rar)$/i, '') + ' Server'); } }} className="cc-input" style={{ padding: '6px' }} />
+                  <input
+                    type="file"
+                    accept=".zip,.rar"
+                    onChange={e => {
+                      const f = e.target.files?.[0];
+                      if (f) {
+                        setServerpackFile(f);
+                        setServerType('CUSTOM_ZIP');
+                        setSelectedMcVersion('AUTO_DETECT');
+                        if (!serverName) setServerName(f.name.replace(/\.(zip|rar)$/i, '') + ' Server');
+                      }
+                    }}
+                    className="cc-input"
+                    style={{ padding: '6px' }}
+                  />
                   {serverpackFile && (
                     <div style={{ marginTop: '8px', fontSize: '0.72rem', color: 'var(--accent)', background: 'var(--accent-dim)', padding: '6px 10px', borderRadius: '5px', border: '1px solid var(--accent-border)', display: 'flex', justifyContent: 'space-between' }}>
                       <span>[OK] {serverpackFile.name} ({(serverpackFile.size / (1024 * 1024)).toFixed(2)} MB)</span>
@@ -949,10 +973,20 @@ export default function DashboardPage() {
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>
-                      Minecraft Version {(serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>🔒 (Auto-Detected from Pack)</span>}
+                      Minecraft Version {(serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>🔒 (Locked to Pack)</span>}
                     </label>
-                    <select value={selectedMcVersion} disabled={serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null} onChange={e => setSelectedMcVersion(e.target.value)} className="cc-input" style={{ opacity: (serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 0.5 : 1 }}>
-                      {MC_VERSIONS.map(v => <option key={v} value={v}>{v === 'CUSTOM' ? 'Custom / Snapshot...' : v}</option>)}
+                    <select
+                      value={(serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 'AUTO_DETECT' : selectedMcVersion}
+                      disabled={serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null}
+                      onChange={e => setSelectedMcVersion(e.target.value)}
+                      className="cc-input"
+                      style={{ opacity: (serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 0.6 : 1 }}
+                    >
+                      {MC_VERSIONS.map(v => (
+                        <option key={v} value={v}>
+                          {v === 'AUTO_DETECT' ? '🔒 Auto-Detect from Serverpack' : (v === 'CUSTOM' ? 'Custom / Snapshot...' : v)}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>

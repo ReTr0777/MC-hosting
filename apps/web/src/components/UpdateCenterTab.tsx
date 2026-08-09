@@ -198,39 +198,50 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
 
       {/* Step 2: Select Minecraft Version */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-bold text-cyan-400 uppercase tracking-wider border-b border-slate-800 pb-3">
-          2. Select Target Minecraft Version
+        <h3 className="text-sm font-bold text-cyan-400 uppercase tracking-wider border-b border-slate-800 pb-3 flex items-center justify-between">
+          <span>2. Select Target Minecraft Version</span>
+          {server.serverType === 'CUSTOM_ZIP' && (
+            <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 rounded-full font-mono">
+              🔒 Version Locked to Serverpack
+            </span>
+          )}
         </h3>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Minecraft Release Version</label>
-            <select
-              value={selectedMcVersion}
-              onChange={(e) => setSelectedMcVersion(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
-            >
-              {MC_VERSIONS.map((ver) => (
-                <option key={ver} value={ver}>
-                  {ver === 'CUSTOM' ? '⚙️ Custom / Snapshot...' : `Minecraft ${ver}`}
-                </option>
-              ))}
-            </select>
+        {server.serverType === 'CUSTOM_ZIP' ? (
+          <div className="bg-slate-950 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300/90 leading-relaxed">
+            🔒 <strong>Serverpack Version Locked:</strong> This instance was deployed from an uploaded serverpack archive. The Minecraft engine version (<code className="font-mono text-white font-bold">{currentMcVersion}</code>) is locked to the files provided in your serverpack archive.
           </div>
-
-          {selectedMcVersion === 'CUSTOM' && (
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-emerald-400 mb-1.5">Custom Snapshot / Version String</label>
-              <input
-                type="text"
-                value={customMcVersion}
-                onChange={(e) => setCustomMcVersion(e.target.value)}
-                placeholder="e.g. 24w10a, 1.20.4"
-                className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
-              />
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">Minecraft Release Version</label>
+              <select
+                value={selectedMcVersion}
+                onChange={(e) => setSelectedMcVersion(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
+              >
+                {MC_VERSIONS.map((ver) => (
+                  <option key={ver} value={ver}>
+                    {ver === 'CUSTOM' ? '⚙️ Custom / Snapshot...' : `Minecraft ${ver}`}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
-        </div>
+
+            {selectedMcVersion === 'CUSTOM' && (
+              <div>
+                <label className="block text-xs font-semibold text-emerald-400 mb-1.5">Custom Snapshot / Version String</label>
+                <input
+                  type="text"
+                  value={customMcVersion}
+                  onChange={(e) => setCustomMcVersion(e.target.value)}
+                  placeholder="e.g. 24w10a, 1.20.4"
+                  className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Step 3: Safety & Execution */}
