@@ -53,4 +53,4 @@ COPY --from=builder /app/node_modules ./node_modules
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "cd apps/web && npx prisma db push --accept-data-loss --schema prisma/schema.prisma && npm run start"]
+CMD ["sh", "-c", "cd apps/web && (npx prisma db push --accept-data-loss --schema prisma/schema.prisma || true) && npm run start"]
