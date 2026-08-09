@@ -35,6 +35,7 @@ app.prepare().then(() => {
         
         if (!serverId) {
           console.error('[WS Proxy] Missing serverId');
+          try { socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); } catch (e) {}
           socket.destroy();
           return;
         }
@@ -46,6 +47,7 @@ app.prepare().then(() => {
 
         if (!mcServer || !mcServer.node) {
           console.error(`[WS Proxy] Server or Node not found for serverId: ${serverId}`);
+          try { socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); } catch (e) {}
           socket.destroy();
           return;
         }
@@ -116,12 +118,14 @@ app.prepare().then(() => {
               console.log(`[WS Proxy] Retrying connection to daemon on fallback port ${altPort}...`);
               attemptProxy(host, altPort);
             } else {
+              try { socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'); } catch (e) {}
               socket.destroy();
             }
           });
 
           proxyReq.on('response', (proxyRes) => {
             console.error(`[WS Proxy] Daemon rejected upgrade with status: ${proxyRes.statusCode}`);
+            try { socket.write(`HTTP/1.1 ${proxyRes.statusCode || 502} Bad Gateway\r\nConnection: close\r\n\r\n`); } catch (e) {}
             socket.destroy();
           });
 
@@ -138,6 +142,7 @@ app.prepare().then(() => {
       }
     } catch (err) {
       console.error('WebSocket proxy error:', err);
+      try { socket.write('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n'); } catch (e) {}
       socket.destroy();
     }
   });
