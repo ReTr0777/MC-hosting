@@ -8,6 +8,8 @@ export interface CreateServerContainerDto {
   modId?: number;
   fileId?: number;
   serverPort: number;
+  /** Host port published to BlueMap's web server (container port 8100). */
+  bluemapPort?: number;
   memoryMb: number;
   cpuLimit: number;
   eulaAccepted: boolean;

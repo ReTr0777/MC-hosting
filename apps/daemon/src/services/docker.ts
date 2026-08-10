@@ -215,6 +215,38 @@ export async function syncContainerToHost(serverId: string): Promise<void> {
   }
 }
 
+/**
+ * Pulls a single file out of the container volume onto the host, so read-only views
+ * can inspect live state without paying for a full /data extraction.
+ */
+export async function syncContainerFileToHost(serverId: string, fileName: string): Promise<boolean> {
+  const config = getConfig();
+  const baseDir = path.resolve(config.dataDir, serverId);
+  if (!fs.existsSync(baseDir)) {
+    fs.mkdirSync(baseDir, { recursive: true });
+  }
+
+  try {
+    const container = await getContainerByIdOrName(`mc-server-${serverId}`);
+    const stream = await container.getArchive({ path: `/data/${fileName}` });
+    await new Promise<void>((resolve, reject) => {
+      const tar = require('child_process').spawn('tar', ['-xf', '-', '-C', baseDir]);
+      stream.pipe(tar.stdin);
+      tar.on('close', (code: number) => {
+        if (code === 0) resolve();
+        else reject(new Error(`tar extraction failed with code ${code}`));
+      });
+      tar.on('error', reject);
+      stream.on('error', reject);
+    });
+    return true;
+  } catch (err: any) {
+    // Missing file / no container is an expected case, not a failure worth escalating
+    console.warn(`[Daemon File-Sync Warning] ${serverId}:${fileName} - ${err.message}`);
+    return false;
+  }
+}
+
 export async function createServerContainer(dto: CreateServerContainerDto): Promise<string> {
   if (!dto.eulaAccepted) {
     throw new Error('EULA must be accepted before creating or running server container.');
@@ -410,6 +442,11 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
       HostConfig: {
         PortBindings: {
           '25565/tcp': [{ HostIp: '0.0.0.0', HostPort: dto.serverPort.toString() }],
+          // BlueMap's web server. Published up front because Docker cannot add a
+          // port binding to an existing container — it would need recreating.
+          ...(dto.bluemapPort
+            ? { '8100/tcp': [{ HostIp: '0.0.0.0', HostPort: dto.bluemapPort.toString() }] }
+            : {}),
         },
         Binds: [volumeBind],
         Memory: dto.memoryMb * 1024 * 1024,

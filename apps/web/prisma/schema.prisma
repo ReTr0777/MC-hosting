@@ -27,6 +27,9 @@ enum ServerStatus {
   STOPPING
   INSTALLING
   ERROR
+  /// Stopped to save resources, but the daemon still answers on its port and
+  /// starts it again when a player tries to join.
+  SLEEPING
 }
 
 enum ServerType {
@@ -117,13 +120,44 @@ model Server {
   subdomain         String?            // e.g. "survival"
   domain            String?            // e.g. "yourdomain.com"
 
+  // BlueMap live world map
+  bluemapPort       Int?               // Host port published to the container's 8100
+  bluemapEnabled    Boolean            @default(false)
+
+  // Sleep on empty / wake on join
+  sleepEnabled      Boolean            @default(false)
+  sleepAfterMinutes Int                @default(15)  // Idle minutes before sleeping
+  sleepEmptySince   DateTime?          // First tick that saw zero players; cleared when someone joins
+  lastSleptAt       DateTime?
+  lastWokeAt        DateTime?
+
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
   permissions       ServerPermission[]
   schedules         ServerSchedule[]
+  mapShares         MapShare[]
 
   @@map("servers")
+}
+
+/// A public, revocable link that grants access to one server's BlueMap and nothing else.
+model MapShare {
+  id           String    @id @default(uuid())
+  token        String    @unique
+  serverId     String
+  server       Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  label        String?
+  enabled      Boolean   @default(true)
+  expiresAt    DateTime?
+  passwordHash String?   // scrypt hash; null = no password required
+  createdBy    String?   // email of the admin who minted it
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([token])
+  @@map("map_shares")
 }
 
 model ServerSchedule {
@@ -201,4 +235,37 @@ model CloudflareLog {
   createdAt   DateTime @default(now())
 
   @@map("cloudflare_logs")
+}
+
+/// An outbound alert destination (Discord webhook or generic JSON endpoint).
+model NotificationChannel {
+  id         String   @id @default(uuid())
+  name       String
+  type       String   @default("DISCORD") // "DISCORD" | "GENERIC"
+  url        String
+  enabled    Boolean  @default(true)
+  events     String[] @default([]) // Subscribed event types; empty = every event
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  deliveries NotificationDelivery[]
+
+  @@map("notification_channels")
+}
+
+/// Delivery history, so a silent webhook can be diagnosed from the panel.
+model NotificationDelivery {
+  id        String   @id @default(uuid())
+  channelId String?
+  channel   NotificationChannel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  eventType String
+  severity  String   @default("info") // "info" | "warning" | "critical"
+  title     String
+  body      String
+  status    String   // "SUCCESS" | "FAILED"
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("notification_deliveries")
 }

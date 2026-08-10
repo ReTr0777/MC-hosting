@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { syncCloudflareDns } from '@/lib/cloudflare';
-import { decryptSecret, encryptSecret } from '@/lib/crypto';
+import { encryptSecret, tryDecryptSecret } from '@/lib/crypto';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -111,8 +111,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     // Cloudflare Auto-DNS Provisioning
     let cloudflareResult = null;
-    const rawDbToken = settingsMap['CLOUDFLARE_API_TOKEN'] ? decryptSecret(settingsMap['CLOUDFLARE_API_TOKEN']) : '';
-    const cfToken = (cloudflareToken && cloudflareToken.trim()) || rawDbToken || process.env.CLOUDFLARE_API_TOKEN;
+    const storedToken = tryDecryptSecret(settingsMap['CLOUDFLARE_API_TOKEN'] || '');
+    const cfToken = (cloudflareToken && cloudflareToken.trim()) || storedToken.value || process.env.CLOUDFLARE_API_TOKEN;
     const cfZone = (cloudflareZoneId && cloudflareZoneId.trim()) || settingsMap['CLOUDFLARE_ZONE_ID'] || process.env.CLOUDFLARE_ZONE_ID;
 
     if (cfToken && cleanSubdomain) {
@@ -133,7 +133,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     let finalMessage = '✅ Subdomain proxy route updated in database!';
     if (!cfToken) {
-      finalMessage = '⚠️ Subdomain saved in DB! Cloudflare API Token was not found. Please paste your token into the Cloudflare box below.';
+      finalMessage =
+        storedToken.status === 'undecryptable'
+          ? '⚠️ Subdomain saved in DB, but the stored Cloudflare API Token could not be decrypted — the encryption key changed since it was saved. Paste your token into the Cloudflare box below to re-save it.'
+          : '⚠️ Subdomain saved in DB! Cloudflare API Token was not found. Please paste your token into the Cloudflare box below.';
     } else if (cloudflareResult) {
       if (cloudflareResult.success) {
         finalMessage = `✅ Subdomain saved & Cloudflare SRV record (${cloudflareResult.srvRecordName}) provisioned successfully!`;

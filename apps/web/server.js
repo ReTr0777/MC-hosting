@@ -185,5 +185,50 @@ app.prepare().then(() => {
   server.listen(port, () => {
     console.log(`> Ready on http://${hostname}:${port}`);
     console.log(`> WebSocket proxy ready for /api/ws/console`);
+    startMonitorLoop();
   });
 });
+
+// ── Background monitor ────────────────────────────────────────────────────────
+// Polls every node, reconciles server status against what is actually running,
+// and fires webhook alerts on transitions. Lives here because it must be a single
+// process-wide loop; the work itself is done by the /api/monitor/tick route so the
+// logic stays in TypeScript alongside the rest of the app.
+const MONITOR_INTERVAL_MS = parseInt(process.env.MONITOR_INTERVAL_MS || '45000', 10);
+
+function monitorKey() {
+  const material = process.env.JWT_SECRET || 'super-secret-jwt-token-key-craftcontrol-secure-salt';
+  return crypto.createHash('sha256').update(`${material}:craftcontrol-monitor`).digest('hex');
+}
+
+function startMonitorLoop() {
+  if (process.env.MONITOR_ENABLED === 'false') {
+    console.log('> Monitor loop disabled via MONITOR_ENABLED=false');
+    return;
+  }
+
+  console.log(`> Monitor loop running every ${Math.round(MONITOR_INTERVAL_MS / 1000)}s`);
+
+  let running = false;
+  const tick = async () => {
+    if (running) return; // A slow/unreachable node must not stack up overlapping ticks
+    running = true;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/monitor/tick`, {
+        method: 'POST',
+        headers: { 'x-monitor-key': monitorKey() },
+      });
+      if (!res.ok) {
+        console.warn(`[Monitor] Tick returned HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn('[Monitor] Tick failed:', err.message);
+    } finally {
+      running = false;
+    }
+  };
+
+  // Delay the first run so nodes aren't probed while the app is still warming up
+  setTimeout(tick, 15000);
+  setInterval(tick, MONITOR_INTERVAL_MS);
+}

@@ -165,8 +165,8 @@ export function handleConsoleWebSocket(ws: WebSocket, serverId: string, containe
       if (authenticated && message.event === 'command' && message.data) {
         await sendServerCommand(serverId, message.data);
       }
-    } catch (e) {
-      ws.send(JSON.stringify({ event: 'error', message: 'Malformed JSON payload' }));
+    } catch (e: any) {
+      ws.send(JSON.stringify({ event: 'error', message: e?.message || 'Malformed JSON payload' }));
     }
   });
 
@@ -197,7 +197,9 @@ export async function sendServerCommand(serverId: string, command: string): Prom
       });
       await exec.start({});
     } catch (e: any) {
+      // Swallowing this made scheduled COMMAND tasks report success while doing nothing.
       console.warn(`[Daemon sendServerCommand Error] ${e.message}`);
+      throw new Error(`Could not deliver command to '${serverId}': ${e.message}`);
     }
   }
 }

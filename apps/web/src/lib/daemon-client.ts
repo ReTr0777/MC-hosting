@@ -168,4 +168,75 @@ export class DaemonClient {
       body: JSON.stringify({ uploadId, fileName, totalChunks, isServerpack, targetPath }),
     });
   }
+
+  // Mod Management API Methods
+  async searchMods(serverId: string, query: string, options: { gameVersion?: string; loader?: string; limit?: number; offset?: number; projectType?: 'mod' | 'modpack' } = {}): Promise<{ hits: any[]; total_hits: number }> {
+    const params = new URLSearchParams();
+    params.set('q', query);
+    if (options.gameVersion) params.set('gameVersion', options.gameVersion);
+    if (options.loader) params.set('loader', options.loader);
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.offset) params.set('offset', String(options.offset));
+    if (options.projectType) params.set('projectType', options.projectType);
+    
+    return this.request<{ hits: any[]; total_hits: number }>(`/servers/${serverId}/mods/search?${params}`);
+  }
+
+  async getModVersions(serverId: string, projectId: string, options: { gameVersion?: string; loader?: string } = {}): Promise<{ versions: any[] }> {
+    const params = new URLSearchParams();
+    if (options.gameVersion) params.set('gameVersion', options.gameVersion);
+    if (options.loader) params.set('loader', options.loader);
+    
+    return this.request<{ versions: any[] }>(`/servers/${serverId}/mods/versions/${projectId}?${params}`);
+  }
+
+  async installMod(serverId: string, projectId: string, versionId: string, fileUrl: string, fileName: string): Promise<{ success: boolean; message: string; fileName: string }> {
+    return this.request<{ success: boolean; message: string; fileName: string }>(`/servers/${serverId}/mods/install`, {
+      method: 'POST',
+      body: JSON.stringify({ projectId, versionId, fileUrl, fileName }),
+    });
+  }
+
+  async listMods(serverId: string): Promise<{ mods: any[] }> {
+    return this.request<{ mods: any[] }>(`/servers/${serverId}/mods/list`);
+  }
+
+  async uninstallMod(serverId: string, fileName: string): Promise<{ success: boolean; message: string }> {
+    return this.request<{ success: boolean; message: string }>(`/servers/${serverId}/mods/${fileName}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Whitelist API Methods
+  async getWhitelist(serverId: string): Promise<WhitelistSnapshot> {
+    return this.request<WhitelistSnapshot>(`/servers/${serverId}/whitelist`);
+  }
+
+  async whitelistAction(serverId: string, action: WhitelistAction, username?: string): Promise<{ success: boolean; live: boolean; message: string }> {
+    return this.request<{ success: boolean; live: boolean; message: string }>(`/servers/${serverId}/whitelist`, {
+      method: 'POST',
+      body: JSON.stringify({ action, username }),
+    });
+  }
+}
+
+export type WhitelistAction = 'add' | 'remove' | 'on' | 'off' | 'reload';
+
+export interface WhitelistEntry {
+  uuid: string;
+  name: string;
+  isOp: boolean;
+  opLevel: number | null;
+  online: boolean;
+  avatarUrl: string;
+}
+
+export interface WhitelistSnapshot {
+  enabled: boolean;
+  enforce: boolean;
+  onlineMode: boolean;
+  live: boolean;
+  count: number;
+  entries: WhitelistEntry[];
+  unlistedOps: string[];
 }

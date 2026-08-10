@@ -31,6 +31,9 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 
+# claude
+.claudeignore
+
 # craftcontrol specific
 data/
 mc_data_*/

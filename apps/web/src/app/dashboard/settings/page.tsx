@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import AlertsPanel from '@/components/AlertsPanel';
 
 interface CloudflareLog {
   id: string;
@@ -150,6 +151,9 @@ export default function SettingsPage() {
             {message}
           </div>
         )}
+
+        {/* Alerts & Webhooks */}
+        <AlertsPanel />
 
         {/* Cloudflare API Integration Form Card */}
         <form onSubmit={handleSave} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">

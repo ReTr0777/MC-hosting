@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { encryptSecret, decryptSecret, maskSecret } from '@/lib/crypto';
+import { encryptSecret, maskSecret, tryDecryptSecret } from '@/lib/crypto';
 
 export async function GET(request: NextRequest) {
   const user = await getUserFromRequest(request);
@@ -16,7 +16,17 @@ export async function GET(request: NextRequest) {
       settingsMap[s.key] = s.value;
     });
 
-    const rawToken = decryptSecret(settingsMap['CLOUDFLARE_API_TOKEN'] || '');
+    const tokenResult = tryDecryptSecret(settingsMap['CLOUDFLARE_API_TOKEN'] || '');
+
+    // Decrypted under a fallback key — migrate it to the primary key so the fallback
+    // can eventually be dropped without stranding the secret.
+    if (tokenResult.status === 'ok' && tokenResult.needsReEncryption) {
+      await prisma.systemSetting.upsert({
+        where: { key: 'CLOUDFLARE_API_TOKEN' },
+        update: { value: encryptSecret(tokenResult.value) },
+        create: { key: 'CLOUDFLARE_API_TOKEN', value: encryptSecret(tokenResult.value) },
+      }).catch(() => {});
+    }
 
     const cloudflareLogs = await prisma.cloudflareLog.findMany({
       orderBy: { createdAt: 'desc' },
@@ -25,8 +35,13 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       settings: {
-        cloudflareApiToken: rawToken, // Returned to authenticated Global Admin for form view
-        maskedToken: maskSecret(rawToken),
+        cloudflareApiToken: tokenResult.value, // Returned to authenticated Global Admin for form view
+        maskedToken: maskSecret(tokenResult.value),
+        cloudflareTokenStatus: tokenResult.status,
+        cloudflareTokenError:
+          tokenResult.status === 'undecryptable'
+            ? 'The stored Cloudflare API Token could not be decrypted — SECRET_ENCRYPTION_KEY (or JWT_SECRET, if you have not set SECRET_ENCRYPTION_KEY) changed since it was saved. Paste the token again to re-save it under the current key.'
+            : null,
         cloudflareZoneId: settingsMap['CLOUDFLARE_ZONE_ID'] || '',
         defaultDomain: settingsMap['DEFAULT_DOMAIN'] || 'retr0net.com',
       },

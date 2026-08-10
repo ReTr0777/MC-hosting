@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { runSchedule } from '@/lib/scheduler';
 
+export const dynamic = 'force-dynamic';
+
+/** Runs a schedule immediately, using the same code path the timer uses. */
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string; scheduleId: string } }
@@ -10,20 +14,25 @@ export async function POST(
     const user = await getUserFromRequest(req);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const server = await prisma.server.findUnique({
-      where: { id: params.id },
-      include: { node: true },
+    const schedule = await prisma.serverSchedule.findUnique({
+      where: { id: params.scheduleId },
+      include: { server: { include: { node: true } } },
     });
 
-    if (!server) return NextResponse.json({ error: 'Server not found' }, { status: 404 });
+    if (!schedule || schedule.serverId !== params.id) {
+      return NextResponse.json({ error: 'Schedule not found' }, { status: 404 });
+    }
 
-    const res = await fetch(`http://${server.node.host}:${server.node.port}/api/v1/servers/${params.id}/schedules/${params.scheduleId}/trigger`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${server.node.apiKey}` },
-    });
+    const result = await runSchedule(schedule as any, { notify: false });
 
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    if (!result.ok) {
+      return NextResponse.json(
+        { error: `Schedule '${schedule.name}' failed`, details: result.message },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({ success: true, message: result.message });
   } catch (err: any) {
     return NextResponse.json({ error: 'Failed to trigger schedule', details: err.message }, { status: 500 });
   }

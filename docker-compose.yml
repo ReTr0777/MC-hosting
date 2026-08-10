@@ -26,6 +26,9 @@ services:
     environment:
       DATABASE_URL: "postgresql://mcuser:mcpassword@db:5432/mcmanager?schema=public"
       JWT_SECRET: "super-secret-local-testing-jwt-key"
+      # Encrypts secrets at rest. Keep stable across deploys — changing it makes
+      # the stored Cloudflare API token undecryptable.
+      SECRET_ENCRYPTION_KEY: "super-secret-local-testing-encryption-key"
       PORT: 3000
     depends_on:
       - db

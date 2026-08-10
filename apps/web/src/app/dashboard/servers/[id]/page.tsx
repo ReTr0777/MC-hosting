@@ -9,11 +9,15 @@ import { FileExplorer } from '@/components/FileExplorer';
 import { ServerPermissionsModal } from '@/components/ServerPermissionsModal';
 import AnalyticsWidget from '@/components/AnalyticsWidget';
 import PlayersTab from '@/components/PlayersTab';
+import WhitelistTab from '@/components/WhitelistTab';
+import MapTab from '@/components/MapTab';
+import SleepTab from '@/components/SleepTab';
 import PropertiesTab from '@/components/PropertiesTab';
 import BackupsTab from '@/components/BackupsTab';
 import SubdomainTab from '@/components/SubdomainTab';
 import UpdateCenterTab from '@/components/UpdateCenterTab';
 import { SchedulesTab } from '@/components/SchedulesTab';
+import ModBrowserTab from '@/components/ModBrowserTab';
 
 interface ServerDetail {
   id: string;
@@ -43,6 +47,7 @@ function StatusBadge({ status }: { status: string }) {
     status === 'RUNNING' ? 'cc-badge-running' :
     status === 'STARTING' ? 'cc-badge-starting' :
     status === 'ERROR' ? 'cc-badge-error' :
+    status === 'SLEEPING' ? 'cc-badge-starting' :
     'cc-badge-offline';
   return <span className={cls}>{status}</span>;
 }
@@ -50,12 +55,16 @@ function StatusBadge({ status }: { status: string }) {
 const TABS = [
   { key: 'console', label: 'Console' },
   { key: 'players', label: 'Players & Admin' },
+  { key: 'whitelist', label: 'Whitelist' },
   { key: 'properties', label: 'Server Properties' },
   { key: 'update', label: 'Update Centre' },
   { key: 'schedules', label: 'Automated Schedules' },
   { key: 'backups', label: 'Backups' },
   { key: 'domain', label: 'Domain Routing' },
   { key: 'files', label: 'File Explorer' },
+  { key: 'mods', label: 'Mod Browser' },
+  { key: 'map', label: 'World Map' },
+  { key: 'sleep', label: 'Sleep & Wake' },
 ] as const;
 
 type TabKey = typeof TABS[number]['key'];
@@ -461,6 +470,14 @@ export default function ServerConsolePage() {
         )}
 
         {activeTab === 'players' && <PlayersTab serverId={server.id} />}
+        {activeTab === 'whitelist' && (
+          <div className="animate-fadeIn">
+            <WhitelistTab
+              serverId={server.id}
+              canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
+          </div>
+        )}
         {activeTab === 'properties' && <PropertiesTab serverId={server.id} />}
         {activeTab === 'update' && <UpdateCenterTab server={server} onUpdateSuccess={fetchServerDetails} />}
         {activeTab === 'schedules' && <SchedulesTab serverId={server.id} />}
@@ -473,6 +490,38 @@ export default function ServerConsolePage() {
             </div>
             <FileExplorer
               serverId={server.id}
+              canManageFiles={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
+          </div>
+        )}
+
+        {activeTab === 'map' && (
+          <div className="animate-fadeIn">
+            <MapTab
+              serverId={server.id}
+              serverStatus={server.status}
+              canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
+          </div>
+        )}
+
+        {activeTab === 'sleep' && (
+          <div className="animate-fadeIn">
+            <SleepTab
+              serverId={server.id}
+              serverStatus={server.status}
+              canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+              onChanged={fetchServerDetails}
+            />
+          </div>
+        )}
+
+        {activeTab === 'mods' && (
+          <div className="animate-fadeIn">
+            <ModBrowserTab
+              serverId={server.id}
+              serverType={server.serverType}
+              mcVersion={server.mcVersion}
               canManageFiles={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
             />
           </div>

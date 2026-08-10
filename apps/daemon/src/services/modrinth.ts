@@ -211,3 +211,90 @@ export async function filterServerCompatibleMods(downloads: ModrinthModDownload[
     return downloads;
   }
 }
+
+export interface ModrinthSearchResult {
+  project_id: string;
+  slug: string;
+  title: string;
+  description: string;
+  categories: string[];
+  client_side: ModrinthEnvType;
+  server_side: ModrinthEnvType;
+  downloads: number;
+  follows: number;
+  icon_url: string;
+  versions: string[];
+  loaders: string[];
+  game_versions: string[];
+}
+
+/**
+ * Search Modrinth for mods/modpacks
+ */
+export async function searchModrinth(query: string, options: {
+  gameVersion?: string;
+  loader?: string;
+  limit?: number;
+  offset?: number;
+  facets?: string[][];
+  projectType?: 'mod' | 'modpack';
+} = {}): Promise<{ hits: ModrinthSearchResult[]; total_hits: number }> {
+  const { gameVersion, loader, limit = 20, offset = 0, facets = [], projectType = 'mod' } = options;
+  
+  const params = new URLSearchParams();
+  params.set('query', query);
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  
+  if (gameVersion) {
+    facets.push(['versions:' + gameVersion]);
+  }
+  if (loader) {
+    facets.push(['categories:' + loader]);
+  }
+  
+  // Filter by project type (mod vs modpack) - default to mods only
+  facets.push(['project_type:' + projectType]);
+  
+  // Add default facets for server-side mods
+  facets.push(['server_side:required', 'server_side:optional']);
+  params.set('facets', JSON.stringify(facets));
+
+  const res = await fetch(`${MODRINTH_API}/search?${params}`, {
+    headers: { 'User-Agent': 'CraftControl-Daemon/1.0.0 (https://github.com/mc-server-manager)' },
+  });
+
+  if (!res.ok) throw new Error(`Modrinth search failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Get available versions for a mod project
+ */
+export async function getModrinthProjectVersions(projectId: string, options: {
+  gameVersion?: string;
+  loader?: string;
+} = {}): Promise<any[]> {
+  const { gameVersion, loader } = options;
+  const params = new URLSearchParams();
+  if (gameVersion) params.set('game_versions', JSON.stringify([gameVersion]));
+  if (loader) params.set('loaders', JSON.stringify([loader]));
+
+  const res = await fetch(`${MODRINTH_API}/project/${projectId}/version?${params}`, {
+    headers: { 'User-Agent': 'CraftControl-Daemon/1.0.0 (https://github.com/mc-server-manager)' },
+  });
+
+  if (!res.ok) throw new Error(`Failed to fetch versions: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Download a specific mod file
+ */
+export async function downloadModrinthFile(fileUrl: string, outputPath: string): Promise<void> {
+  const res = await fetch(fileUrl);
+  if (!res.ok) throw new Error(`Failed to download mod file: ${res.status}`);
+  
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(outputPath, buf);
+}

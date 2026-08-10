@@ -14,6 +14,7 @@ import {
   removeServerContainer,
   syncServerDirToContainer,
   syncContainerToHost,
+  syncContainerFileToHost,
   getContainerByIdOrName,
   getItzgImageTag,
   ensureDockerImage,
@@ -24,10 +25,96 @@ import { backupManager } from '../services/backup';
 import { CreateServerContainerDto, ExecutionMode } from '@mc-manager/shared';
 import { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
+import {
+  searchModrinth,
+  getModrinthProjectVersions,
+  downloadModrinthFile,
+} from '../services/modrinth';
+import { schedulerService } from '../services/scheduler';
+import { sendServerCommand } from '../services/console';
+import { tryPing } from '../services/mc-ping';
+import { sleep as sleepServer, wake as wakeServer, cancelSleep, isSleeping, sleepInfo, listSleeping } from '../services/sleeper';
+import { startTarget, stopTarget, serverPortFor, bareServerId } from '../services/lifecycle';
+import {
+  platformForServerType,
+  layoutForPlatform,
+  resolveLatestArtifact,
+  downloadArtifact,
+  writeConfig as writeBlueMapConfig,
+  findInstalledJar,
+  requiredDependencies,
+  dependencyInstalled,
+} from '../services/bluemap';
 
 const router = Router();
 const config = loadConfig();
 const prisma = new PrismaClient();
+
+// GET /api/v1/servers/statuses?ids=a,b,c
+// Bulk liveness probe used by the web panel's monitor loop to reconcile DB state
+// against reality and detect crashes. Declared before the /:serverId routes.
+router.get('/statuses', async (req: Request, res: Response) => {
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map((s) => s.trim().replace('process-', '').replace('mc-server-', ''))
+    .filter(Boolean);
+
+  const statuses: Record<
+    string,
+    {
+      running: boolean;
+      mode: 'process' | 'docker' | 'unknown';
+      sleeping: boolean;
+      players: number | null;
+      maxPlayers: number | null;
+    }
+  > = {};
+
+  await Promise.all(
+    ids.map(async (id) => {
+      const sleeping = isSleeping(id);
+      let running = false;
+      let mode: 'process' | 'docker' | 'unknown' = 'unknown';
+
+      if (processManager.isRunning(id)) {
+        running = true;
+        mode = 'process';
+      } else {
+        try {
+          const container = await getContainerByIdOrName(id);
+          const info = await container.inspect();
+          running = !!info.State?.Running;
+          mode = 'docker';
+        } catch (e) {
+          // No process and no container — genuinely not running anywhere
+        }
+      }
+
+      // Player counts come from a Server List Ping rather than the console, so the
+      // number is available in Docker mode too. A sleeping server has no players by
+      // definition; pinging it would only reach our own sleep listener.
+      let players: number | null = null;
+      let maxPlayers: number | null = null;
+
+      if (running && !sleeping) {
+        const port = serverPortFor(id);
+        if (port) {
+          const ping = await tryPing('127.0.0.1', port, 2000);
+          if (ping) {
+            players = ping.online;
+            maxPlayers = ping.max;
+          }
+        }
+      } else if (sleeping) {
+        players = 0;
+      }
+
+      statuses[id] = { running, mode, sleeping, players, maxPlayers };
+    })
+  );
+
+  res.json({ statuses, sleeping: listSleeping() });
+});
 
 // POST /api/v1/servers/create
 router.post('/create', async (req: Request, res: Response) => {
@@ -586,6 +673,9 @@ router.post('/:containerId/start', async (req: Request, res: Response) => {
     const { containerId } = req.params;
     console.log('[Daemon API] Starting server container/process:', containerId);
 
+    // A sleeping server is holding its own port; release it before binding
+    await cancelSleep(containerId);
+
     if (containerId.startsWith('process-')) {
       const serverId = containerId.replace('process-', '');
       const serverDir = path.join(config.dataDir, serverId);
@@ -1085,6 +1175,223 @@ router.post('/:serverId/players/action', (req: Request, res: Response) => {
   res.json({ success, message: `Dispatched command: ${cmd}` });
 });
 
+// ── Whitelist Monitoring ────────────────────────────────────────────────────
+
+const WHITELIST_ACTIONS = ['add', 'remove', 'on', 'off', 'reload'] as const;
+type WhitelistAction = typeof WHITELIST_ACTIONS[number];
+
+function readJsonArray(filePath: string | null): any[] {
+  if (!filePath || !fs.existsSync(filePath)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function readServerProperties(targetId: string): Record<string, string> {
+  const propsPath = getSafeServerPath(targetId, 'server.properties');
+  const properties: Record<string, string> = {};
+  if (!propsPath || !fs.existsSync(propsPath)) return properties;
+
+  try {
+    for (const line of fs.readFileSync(propsPath, 'utf8').split(/\r?\n/)) {
+      if (line.trim().startsWith('#') || !line.includes('=')) continue;
+      const idx = line.indexOf('=');
+      properties[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
+    }
+  } catch (e) {}
+  return properties;
+}
+
+/**
+ * In Docker mode a *running* container owns these files, so pull the live copies onto the host.
+ * While stopped the host copy is authoritative (startServerContainer pushes it into the volume),
+ * so only backfill files that are missing locally — overwriting would discard offline edits.
+ */
+async function hydrateRosterFiles(serverId: string, targetId: string, live: boolean): Promise<void> {
+  if (serverId.startsWith('process-')) return;
+
+  await Promise.all(
+    ['whitelist.json', 'ops.json', 'server.properties'].map((f) => {
+      const hostPath = getSafeServerPath(targetId, f);
+      if (!live && hostPath && fs.existsSync(hostPath)) return Promise.resolve(false);
+      return syncContainerFileToHost(targetId, f);
+    })
+  );
+}
+
+async function isServerLive(serverId: string, targetId: string): Promise<boolean> {
+  if (processManager.isRunning(targetId)) return true;
+  if (serverId.startsWith('process-')) return false;
+
+  try {
+    const container = await getContainerByIdOrName(targetId);
+    const info = await container.inspect();
+    return !!info.State?.Running;
+  } catch (e) {
+    return false;
+  }
+}
+
+function toDashedUuid(raw: string): string {
+  if (raw.includes('-')) return raw;
+  return raw.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+}
+
+async function resolveMojangProfile(username: string): Promise<{ id: string; name: string } | null> {
+  try {
+    const res = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`);
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    if (!data?.id || !data?.name) return null;
+    return { id: data.id, name: data.name };
+  } catch (e) {
+    return null;
+  }
+}
+
+// GET /api/v1/servers/:serverId/whitelist
+router.get('/:serverId/whitelist', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+
+  try {
+    const live = await isServerLive(serverId, targetId);
+    await hydrateRosterFiles(serverId, targetId, live);
+
+    const whitelist = readJsonArray(getSafeServerPath(targetId, 'whitelist.json'));
+    const ops = readJsonArray(getSafeServerPath(targetId, 'ops.json'));
+    const properties = readServerProperties(targetId);
+
+    const opLevels = new Map<string, number>();
+    for (const op of ops) {
+      if (op?.name) opLevels.set(String(op.name).toLowerCase(), typeof op.level === 'number' ? op.level : 4);
+    }
+
+    const onlineNames = new Set(
+      processManager.getOnlinePlayers(targetId).map((p) => p.username.toLowerCase())
+    );
+
+    const entries = whitelist
+      .filter((e: any) => e && e.name)
+      .map((e: any) => {
+        const key = String(e.name).toLowerCase();
+        return {
+          uuid: e.uuid || '',
+          name: String(e.name),
+          isOp: opLevels.has(key),
+          opLevel: opLevels.get(key) ?? null,
+          online: onlineNames.has(key),
+          avatarUrl: `https://mc-heads.net/avatar/${encodeURIComponent(e.name)}/64`,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // Ops that are not on the whitelist still get kicked when enforcement is on — surface them
+    const whitelistedKeys = new Set(entries.map((e) => e.name.toLowerCase()));
+    const unlistedOps = ops
+      .filter((op: any) => op?.name && !whitelistedKeys.has(String(op.name).toLowerCase()))
+      .map((op: any) => String(op.name));
+
+    res.json({
+      enabled: properties['white-list'] === 'true',
+      enforce: properties['enforce-whitelist'] === 'true',
+      onlineMode: properties['online-mode'] !== 'false',
+      live,
+      count: entries.length,
+      entries,
+      unlistedOps,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to read whitelist', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/whitelist
+router.post('/:serverId/whitelist', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const action = req.body?.action as WhitelistAction;
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+
+  if (!WHITELIST_ACTIONS.includes(action)) {
+    return res.status(400).json({ error: `Unsupported whitelist action '${action}'` });
+  }
+  if ((action === 'add' || action === 'remove') && !/^[a-zA-Z0-9_]{3,16}$/.test(username)) {
+    return res.status(400).json({ error: 'Invalid Minecraft username (3-16 letters, digits or underscores)' });
+  }
+
+  try {
+    const live = await isServerLive(serverId, targetId);
+
+    // A running server owns whitelist.json in memory — go through the console so it
+    // stays authoritative, otherwise a direct file write gets overwritten on shutdown.
+    if (live) {
+      const cmd =
+        action === 'add' ? `whitelist add ${username}` :
+        action === 'remove' ? `whitelist remove ${username}` :
+        action === 'on' ? 'whitelist on' :
+        action === 'off' ? 'whitelist off' :
+        'whitelist reload';
+
+      await sendServerCommand(targetId, cmd);
+      // Give the server a moment to flush whitelist.json before the client re-reads it
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return res.json({ success: true, live: true, message: `Dispatched command: ${cmd}` });
+    }
+
+    await hydrateRosterFiles(serverId, targetId, false);
+
+    if (action === 'on' || action === 'off') {
+      applyServerProperties(targetId, { 'white-list': action === 'on' ? 'true' : 'false' });
+      return res.json({
+        success: true,
+        live: false,
+        message: `Whitelist enforcement turned ${action.toUpperCase()} — applies on next start`,
+      });
+    }
+
+    if (action === 'reload') {
+      return res.json({ success: true, live: false, message: 'Server is offline; whitelist.json is already current' });
+    }
+
+    const wlPath = getSafeServerPath(targetId, 'whitelist.json');
+    if (!wlPath) return res.status(403).json({ error: 'Access denied' });
+
+    const list = readJsonArray(wlPath);
+    const matches = (e: any) => String(e?.name || '').toLowerCase() === username.toLowerCase();
+
+    if (action === 'add') {
+      if (list.some(matches)) {
+        return res.json({ success: true, live: false, message: `${username} is already whitelisted` });
+      }
+
+      const profile = await resolveMojangProfile(username);
+      if (!profile) {
+        return res.status(404).json({
+          error: `No Mojang account found for '${username}'. Start the server to whitelist offline-mode players.`,
+        });
+      }
+
+      list.push({ uuid: toDashedUuid(profile.id), name: profile.name });
+      fs.writeFileSync(wlPath, JSON.stringify(list, null, 2), 'utf8');
+      return res.json({ success: true, live: false, message: `Added ${profile.name} to whitelist.json` });
+    }
+
+    const remaining = list.filter((e) => !matches(e));
+    if (remaining.length === list.length) {
+      return res.json({ success: true, live: false, message: `${username} was not on the whitelist` });
+    }
+
+    fs.writeFileSync(wlPath, JSON.stringify(remaining, null, 2), 'utf8');
+    res.json({ success: true, live: false, message: `Removed ${username} from whitelist.json` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Whitelist action failed', details: err.message });
+  }
+});
+
 // GET /api/v1/servers/:serverId/properties
 router.get('/:serverId/properties', (req: Request, res: Response) => {
   const { serverId } = req.params;
@@ -1112,6 +1419,37 @@ router.get('/:serverId/properties', (req: Request, res: Response) => {
   }
 });
 
+// Merges the given key/value pairs into server.properties, preserving comments and ordering
+function applyServerProperties(targetId: string, properties: Record<string, any>): void {
+  const propsPath = getSafeServerPath(targetId, 'server.properties');
+  if (!propsPath) throw new Error('Access denied: Invalid server path');
+
+  let lines: string[] = [];
+  if (fs.existsSync(propsPath)) {
+    lines = fs.readFileSync(propsPath, 'utf8').split(/\r?\n/);
+  }
+
+  const updatedKeys = new Set<string>();
+  const newLines = lines.map((line) => {
+    if (line.trim().startsWith('#') || !line.includes('=')) return line;
+    const idx = line.indexOf('=');
+    const key = line.substring(0, idx).trim();
+    if (key in properties) {
+      updatedKeys.add(key);
+      return `${key}=${properties[key]}`;
+    }
+    return line;
+  });
+
+  for (const [k, v] of Object.entries(properties)) {
+    if (!updatedKeys.has(k)) {
+      newLines.push(`${k}=${v}`);
+    }
+  }
+
+  fs.writeFileSync(propsPath, newLines.join('\n'), 'utf8');
+}
+
 // POST /api/v1/servers/:serverId/properties
 router.post('/:serverId/properties', (req: Request, res: Response) => {
   const { serverId } = req.params;
@@ -1122,34 +1460,8 @@ router.post('/:serverId/properties', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid properties payload' });
   }
 
-  const propsPath = getSafeServerPath(targetId, 'server.properties');
-  if (!propsPath) return res.status(403).json({ error: 'Access denied' });
-
   try {
-    let lines: string[] = [];
-    if (fs.existsSync(propsPath)) {
-      lines = fs.readFileSync(propsPath, 'utf8').split(/\r?\n/);
-    }
-
-    const updatedKeys = new Set<string>();
-    const newLines = lines.map((line) => {
-      if (line.trim().startsWith('#') || !line.includes('=')) return line;
-      const idx = line.indexOf('=');
-      const key = line.substring(0, idx).trim();
-      if (key in properties) {
-        updatedKeys.add(key);
-        return `${key}=${properties[key]}`;
-      }
-      return line;
-    });
-
-    for (const [k, v] of Object.entries(properties)) {
-      if (!updatedKeys.has(k)) {
-        newLines.push(`${k}=${v}`);
-      }
-    }
-
-    fs.writeFileSync(propsPath, newLines.join('\n'), 'utf8');
+    applyServerProperties(targetId, properties);
     res.json({ success: true, message: 'Updated server.properties successfully' });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to update server.properties', details: err.message });
@@ -1561,12 +1873,507 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/v1/servers/:serverId/recreate-container
+// Docker cannot add a port binding to an existing container, so gaining the BlueMap
+// port means rebuilding it. The named volume (mc_data_<id>) is untouched, and the
+// live volume is pulled to the host first, so world data survives.
+router.post('/:serverId/recreate-container', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+
+  if (serverId.startsWith('process-')) {
+    return res.json({ success: true, skipped: true, message: 'Process-mode servers have no container to rebuild.' });
+  }
+
+  const { bluemapPort } = req.body || {};
+  const serverDir = getSafeServerPath(targetId, '');
+  if (!serverDir) return res.status(403).json({ error: 'Access denied' });
+
+  const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+  if (!fs.existsSync(metaPath)) {
+    return res.status(400).json({
+      error: 'Cannot rebuild container',
+      details: 'craftcontrol-meta.json is missing, so the original container settings are unknown.',
+    });
+  }
+
+  try {
+    let dto: CreateServerContainerDto = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+
+    // 1. Preserve anything written inside the volume since the last host sync
+    try {
+      await syncContainerToHost(targetId);
+    } catch (e: any) {
+      console.warn(`[Recreate] Pre-rebuild sync warning for ${targetId}: ${e.message}`);
+    }
+
+    // 2. Drop the old container (named volume survives — only anonymous volumes are pruned)
+    const containerName = `mc-server-${targetId}`;
+    try {
+      await removeServerContainer(containerName, false, targetId);
+    } catch (e: any) {
+      console.warn(`[Recreate] Remove warning for ${targetId}: ${e.message}`);
+    }
+
+    // 3. Rebuild with the map port published
+    if (bluemapPort) dto.bluemapPort = parseInt(String(bluemapPort), 10);
+    dto.eulaAccepted = true;
+    fs.writeFileSync(metaPath, JSON.stringify(dto, null, 2));
+
+    const containerId = await createServerContainer(dto);
+
+    res.json({
+      success: true,
+      containerId,
+      message: `Container rebuilt${bluemapPort ? ` with map port ${bluemapPort} published` : ''}. Start the server when ready.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Container rebuild failed', details: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// BLUEMAP LIVE WORLD MAP
+// ─────────────────────────────────────────────────────────────
+
+// GET /api/v1/servers/:serverId/bluemap
+router.get('/:serverId/bluemap', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const serverType = String(req.query.serverType || '');
+  const loaderHint = String(req.query.loader || '');
+
+  const platform = platformForServerType(serverType, loaderHint);
+  if (!platform) {
+    return res.json({
+      supported: false,
+      installed: false,
+      reason: 'BlueMap needs a plugin or mod loader. Vanilla servers cannot run it — switch to Paper or Fabric.',
+    });
+  }
+
+  const serverDir = getSafeServerPath(targetId, '');
+  if (!serverDir) return res.status(403).json({ error: 'Access denied' });
+
+  // In Docker mode the live jar/config sit in the volume, not on the host
+  if (!serverId.startsWith('process-')) {
+    const { jarDir, configDir } = layoutForPlatform(platform);
+    await syncContainerFileToHost(targetId, `${jarDir.replace(/\\/g, '/')}`).catch(() => false);
+    await syncContainerFileToHost(targetId, `${configDir.replace(/\\/g, '/')}/webserver.conf`).catch(() => false);
+  }
+
+  const jarPath = findInstalledJar(serverDir, platform);
+  const { configDir } = layoutForPlatform(platform);
+  const webserverConf = path.join(serverDir, configDir, 'webserver.conf');
+
+  let configuredPort: number | null = null;
+  if (fs.existsSync(webserverConf)) {
+    const match = fs.readFileSync(webserverConf, 'utf8').match(/^\s*port:\s*(\d+)/m);
+    if (match) configuredPort = parseInt(match[1], 10);
+  }
+
+  res.json({
+    supported: true,
+    installed: !!jarPath,
+    platform,
+    jarName: jarPath ? path.basename(jarPath) : null,
+    configuredPort,
+  });
+});
+
+// GET /api/v1/servers/:serverId/logs/tail?lines=60
+// Last lines of console output, so a failed start can be explained without
+// opening a WebSocket console session.
+router.get('/:serverId/logs/tail', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const lines = Math.min(parseInt(String(req.query.lines || '60'), 10) || 60, 300);
+
+  // 1. Live in-memory buffer — only exists while a managed process is still alive
+  const mp = processManager.getProcess(targetId);
+  if (mp && mp.logBuffer.length > 0) {
+    return res.json({ source: 'process', lines: mp.logBuffer.slice(-lines) });
+  }
+
+  const isDocker = !serverId.startsWith('process-');
+  const serverDir = getSafeServerPath(targetId, '');
+
+  // 2. Crash reports first: Fabric/Forge mod-resolution failures land here, and they
+  //    are the whole reason a server refuses to boot after a bad mod install.
+  if (serverDir) {
+    if (isDocker) {
+      await syncContainerFileToHost(targetId, 'crash-reports').catch(() => false);
+      await syncContainerFileToHost(targetId, 'logs/latest.log').catch(() => false);
+    }
+
+    try {
+      const crashDir = path.join(serverDir, 'crash-reports');
+      if (fs.existsSync(crashDir)) {
+        const newest = fs
+          .readdirSync(crashDir)
+          .filter((f) => f.endsWith('.txt'))
+          .map((f) => ({ f, mtime: fs.statSync(path.join(crashDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime)[0];
+
+        // Only surface a crash report from this run, not a months-old one
+        if (newest && Date.now() - newest.mtime < 24 * 3600 * 1000) {
+          const content = fs.readFileSync(path.join(crashDir, newest.f), 'utf8').split(/\r?\n/).filter(Boolean);
+          return res.json({ source: `crash-reports/${newest.f}`, lines: content.slice(0, lines) });
+        }
+      }
+    } catch (e) {}
+
+    // 3. logs/latest.log — where a crashed server's output actually survives on disk
+    for (const rel of ['logs/latest.log', 'logs/console.log']) {
+      try {
+        const logPath = path.join(serverDir, rel);
+        if (fs.existsSync(logPath)) {
+          const content = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+          if (content.length > 0) return res.json({ source: rel, lines: content.slice(-lines) });
+        }
+      } catch (e) {}
+    }
+  }
+
+  // 4. Docker retains stdout after exit even when no log file was written
+  if (isDocker) {
+    try {
+      const container = await getContainerByIdOrName(targetId);
+      const raw = await container.logs({ stdout: true, stderr: true, tail: lines, follow: false });
+      const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      // Strip Docker's 8-byte stream framing headers
+      const cleaned = text
+        .split('\n')
+        .map((l) => l.replace(/^[\x00-\x08\x0b-\x1f]+/, ''))
+        .filter(Boolean);
+      return res.json({ source: 'docker', lines: cleaned.slice(-lines) });
+    } catch (err: any) {
+      return res.json({ source: 'none', lines: [], error: err.message });
+    }
+  }
+
+  res.json({ source: 'none', lines: [] });
+});
+
+// GET /api/v1/servers/:serverId/bluemap/probe
+// Answers "why can't the panel reach the map?" from the node's own vantage point.
+router.get('/:serverId/bluemap/probe', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const isProcessMode = serverId.startsWith('process-');
+  const expectedHostPort = parseInt(String(req.query.hostPort || ''), 10) || null;
+
+  const result: any = {
+    isProcessMode,
+    expectedHostPort,
+    containerRunning: null,
+    publishedMapPort: null,
+    portBindings: null,
+    listening: false,
+    listenError: null,
+    renderedMaps: null,
+  };
+
+  // Has BlueMap actually produced any map data yet? An empty webroot renders as
+  // "error trying to load this map" in the BlueMap UI, which looks like a proxy fault.
+  const serverDirForMaps = getSafeServerPath(targetId, '');
+  if (serverDirForMaps) {
+    if (!isProcessMode) {
+      await syncContainerFileToHost(targetId, 'bluemap/web/maps').catch(() => false);
+    }
+    try {
+      const mapsDir = path.join(serverDirForMaps, 'bluemap', 'web', 'maps');
+      result.renderedMaps = fs.existsSync(mapsDir)
+        ? fs.readdirSync(mapsDir).filter((f) => !f.startsWith('.')).length
+        : 0;
+    } catch (e) {
+      result.renderedMaps = null;
+    }
+  }
+
+  if (!isProcessMode) {
+    try {
+      const container = await getContainerByIdOrName(targetId);
+      const info = await container.inspect();
+      result.containerRunning = !!info.State?.Running;
+
+      const bindings = info.HostConfig?.PortBindings || {};
+      result.portBindings = Object.keys(bindings);
+
+      const mapBinding = bindings['8100/tcp'];
+      if (Array.isArray(mapBinding) && mapBinding[0]?.HostPort) {
+        result.publishedMapPort = parseInt(mapBinding[0].HostPort, 10);
+      }
+    } catch (err: any) {
+      result.containerError = err.message;
+    }
+  } else {
+    result.containerRunning = processManager.isRunning(targetId);
+  }
+
+  // The daemon runs on the host network, so the published port should be reachable locally
+  const probePort = result.publishedMapPort || expectedHostPort;
+  if (probePort) {
+    result.listening = await new Promise<boolean>((resolve) => {
+      const socket = new (require('net').Socket)();
+      const done = (ok: boolean, err?: string) => {
+        if (err) result.listenError = err;
+        try { socket.destroy(); } catch (e) {}
+        resolve(ok);
+      };
+      socket.setTimeout(3000);
+      socket.once('connect', () => done(true));
+      socket.once('timeout', () => done(false, `No response from 127.0.0.1:${probePort} within 3s`));
+      socket.once('error', (e: any) => done(false, e.message));
+      socket.connect(probePort, '127.0.0.1');
+    });
+  } else {
+    result.listenError = 'No map port is published for this server';
+  }
+
+  res.json(result);
+});
+
+// POST /api/v1/servers/:serverId/bluemap/install
+router.post('/:serverId/bluemap/install', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { serverType, mcVersion, loader, port } = req.body;
+
+  const platform = platformForServerType(String(serverType || ''), String(loader || ''));
+  if (!platform) {
+    return res.status(400).json({
+      error: 'BlueMap requires a plugin or mod loader',
+      details: 'Vanilla servers cannot load BlueMap. Switch the server to Paper (plugin) or Fabric/Forge (mod).',
+    });
+  }
+
+  const internalPort = parseInt(String(port), 10);
+  if (!internalPort || isNaN(internalPort)) {
+    return res.status(400).json({ error: 'A valid BlueMap web server port is required' });
+  }
+
+  const serverDir = getSafeServerPath(targetId, '');
+  if (!serverDir) return res.status(403).json({ error: 'Access denied' });
+
+  try {
+    const artifact = await resolveLatestArtifact(platform, mcVersion ? String(mcVersion) : undefined);
+    const { jarDir, configDir } = layoutForPlatform(platform);
+
+    // Replace any previous BlueMap build so two versions never load at once
+    const existing = findInstalledJar(serverDir, platform);
+    if (existing) fs.rmSync(existing, { force: true });
+
+    await downloadArtifact(artifact, path.join(serverDir, jarDir, artifact.fileName));
+    writeBlueMapConfig(path.join(serverDir, configDir), internalPort);
+
+    // Resolve hard dependencies, or the server refuses to boot at all (not just BlueMap)
+    const installedDeps: string[] = [];
+    const failedDeps: string[] = [];
+
+    const deps = requiredDependencies(platform);
+    if (deps.length > 0) fs.mkdirSync(path.join(serverDir, 'mods'), { recursive: true });
+
+    for (const dep of deps) {
+      if (dependencyInstalled(serverDir, dep.slug)) continue;
+
+      try {
+        const versions = await getModrinthProjectVersions(dep.slug, {
+          gameVersion: mcVersion ? String(mcVersion) : undefined,
+          loader: platform,
+        });
+
+        const file = versions?.[0]?.files?.find((f: any) => f.primary) || versions?.[0]?.files?.[0];
+        if (!file?.url) {
+          failedDeps.push(`${dep.name} (no build for ${mcVersion} / ${platform})`);
+          continue;
+        }
+
+        await downloadModrinthFile(file.url, path.join(serverDir, 'mods', file.filename));
+        installedDeps.push(`${dep.name} ${versions[0].version_number || ''}`.trim());
+      } catch (depErr: any) {
+        failedDeps.push(`${dep.name} (${depErr.message})`);
+      }
+    }
+
+    // A missing hard dependency bricks startup — refuse rather than leave a dead server
+    if (failedDeps.length > 0) {
+      const jarPath = findInstalledJar(serverDir, platform);
+      if (jarPath) fs.rmSync(jarPath, { force: true });
+
+      return res.status(502).json({
+        error: 'BlueMap needs a dependency that could not be installed',
+        details:
+          `Could not install: ${failedDeps.join('; ')}. BlueMap was removed again so your server still starts. ` +
+          'Install the dependency manually from the Mod Browser tab, then retry.',
+      });
+    }
+
+    // Push jar + config into the container volume so a restart picks them up
+    if (!serverId.startsWith('process-')) {
+      try {
+        await syncServerDirToContainer(`mc-server-${targetId}`, targetId);
+      } catch (syncErr: any) {
+        console.warn(`[BlueMap] Volume sync warning for ${targetId}: ${syncErr.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      platform,
+      jarName: artifact.fileName,
+      version: artifact.version,
+      port: internalPort,
+      installedDependencies: installedDeps,
+      message:
+        `Installed ${artifact.fileName}` +
+        (installedDeps.length ? ` plus required ${installedDeps.join(', ')}` : '') +
+        '. Restart the server to start rendering.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'BlueMap install failed', details: err.message });
+  }
+});
+
+// DELETE /api/v1/servers/:serverId/bluemap
+router.delete('/:serverId/bluemap', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const platform = platformForServerType(String(req.body?.serverType || ''), String(req.body?.loader || ''));
+
+  if (!platform) return res.status(400).json({ error: 'Unknown server platform' });
+
+  const serverDir = getSafeServerPath(targetId, '');
+  if (!serverDir) return res.status(403).json({ error: 'Access denied' });
+
+  try {
+    const jarPath = findInstalledJar(serverDir, platform);
+    if (jarPath) fs.rmSync(jarPath, { force: true });
+
+    if (!serverId.startsWith('process-')) {
+      try {
+        await syncServerDirToContainer(`mc-server-${targetId}`, targetId);
+      } catch (e) {}
+    }
+
+    res.json({ success: true, message: 'BlueMap removed. Restart the server to unload it.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'BlueMap uninstall failed', details: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// SLEEP-ON-EMPTY / WAKE-ON-JOIN
+// ─────────────────────────────────────────────────────────────
+
+// POST /api/v1/servers/:serverId/command — run a single console command
+// The console is otherwise only reachable over WebSocket, which the scheduler cannot use.
+router.post('/:serverId/command', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const command = String(req.body?.command || '').trim();
+
+  if (!command) return res.status(400).json({ error: 'Missing command' });
+
+  try {
+    await sendServerCommand(bareServerId(serverId), command);
+    res.json({ success: true, message: `Dispatched command: ${command}` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to send command', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/sleep
+router.get('/:serverId/sleep', (req: Request, res: Response) => {
+  const id = bareServerId(req.params.serverId);
+  res.json(sleepInfo(id) || { sleeping: false, state: null, port: serverPortFor(id) });
+});
+
+// POST /api/v1/servers/:serverId/sleep — stop the server and hold its port
+router.post('/:serverId/sleep', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const id = bareServerId(serverId);
+  const { serverName, sleepingMotd, wakeMessage } = req.body || {};
+
+  const port = Number(req.body?.port) || serverPortFor(id);
+  if (!port) {
+    return res.status(400).json({
+      error: 'Unknown server port',
+      details: 'No serverPort in craftcontrol-meta.json and none supplied in the request body.',
+    });
+  }
+
+  if (isSleeping(id)) {
+    return res.json({ success: true, alreadySleeping: true, ...sleepInfo(id) });
+  }
+
+  try {
+    await stopTarget(serverId);
+
+    // The OS does not free a listening socket the instant the process dies; a short
+    // wait here avoids an EADDRINUSE that would leave the server neither up nor asleep.
+    await new Promise((r) => setTimeout(r, 3000));
+
+    await sleepServer(id, { target: serverId, port, serverName, sleepingMotd, wakeMessage });
+    res.json({ success: true, ...sleepInfo(id) });
+  } catch (err: any) {
+    // Sleeping failed after the stop succeeded — leaving the port unheld is safe,
+    // the server is simply offline and the panel will show that.
+    console.error(`[Daemon API Error] Sleep failed for '${id}':`, err.message);
+    res.status(500).json({ error: 'Failed to put server to sleep', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/wake — release the port and start the server
+router.post('/:serverId/wake', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const id = bareServerId(serverId);
+
+  try {
+    if (isSleeping(id)) {
+      await wakeServer(id);
+      return res.json({ success: true, message: 'Server woken from sleep' });
+    }
+
+    // Not asleep — treat wake as a plain start so the button always does the obvious thing
+    await startTarget(serverId);
+    res.json({ success: true, message: 'Server was not sleeping; started normally' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to wake server', details: err.message });
+  }
+});
+
+// DELETE /api/v1/servers/:serverId/sleep — stop holding the port, leave server off
+router.delete('/:serverId/sleep', async (req: Request, res: Response) => {
+  try {
+    await cancelSleep(bareServerId(req.params.serverId));
+    res.json({ success: true, message: 'Sleep cancelled; server left offline' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to cancel sleep', details: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────
 // SCHEDULE & CRON MANAGEMENT ENDPOINTS
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Schedules live in the shared Postgres database, so the daemon needs DATABASE_URL.
+ * Without it every query fails with an opaque Prisma error — say so plainly instead,
+ * and note that SchedulerService also silently stops firing schedules in that state.
+ */
+const SCHEDULES_DB_ERROR =
+  'This daemon node has no DATABASE_URL configured, so it cannot read or run schedules. ' +
+  'Set DATABASE_URL on the daemon container to the same Postgres database the web panel uses, then restart it.';
+
+function schedulesDbAvailable(res: Response): boolean {
+  if (process.env.DATABASE_URL) return true;
+  res.status(503).json({ error: 'Schedules unavailable on this node', details: SCHEDULES_DB_ERROR });
+  return false;
+}
+
 // GET /api/v1/servers/:serverId/schedules
 router.get('/:serverId/schedules', async (req: Request, res: Response) => {
+  if (!schedulesDbAvailable(res)) return;
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
   try {
@@ -1582,6 +2389,7 @@ router.get('/:serverId/schedules', async (req: Request, res: Response) => {
 
 // POST /api/v1/servers/:serverId/schedules
 router.post('/:serverId/schedules', async (req: Request, res: Response) => {
+  if (!schedulesDbAvailable(res)) return;
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
   const { name, cronExpression, actionType, payload, isEnabled } = req.body;
@@ -1609,6 +2417,7 @@ router.post('/:serverId/schedules', async (req: Request, res: Response) => {
 
 // PUT /api/v1/servers/:serverId/schedules/:scheduleId
 router.put('/:serverId/schedules/:scheduleId', async (req: Request, res: Response) => {
+  if (!schedulesDbAvailable(res)) return;
   const { scheduleId } = req.params;
   const { name, cronExpression, actionType, payload, isEnabled } = req.body;
 
@@ -1631,6 +2440,7 @@ router.put('/:serverId/schedules/:scheduleId', async (req: Request, res: Respons
 
 // DELETE /api/v1/servers/:serverId/schedules/:scheduleId
 router.delete('/:serverId/schedules/:scheduleId', async (req: Request, res: Response) => {
+  if (!schedulesDbAvailable(res)) return;
   const { scheduleId } = req.params;
 
   try {
@@ -1645,6 +2455,7 @@ router.delete('/:serverId/schedules/:scheduleId', async (req: Request, res: Resp
 
 // POST /api/v1/servers/:serverId/schedules/:scheduleId/trigger
 router.post('/:serverId/schedules/:scheduleId/trigger', async (req: Request, res: Response) => {
+  if (!schedulesDbAvailable(res)) return;
   const { scheduleId } = req.params;
 
   try {
@@ -1657,12 +2468,204 @@ router.post('/:serverId/schedules/:scheduleId/trigger', async (req: Request, res
       return res.status(404).json({ error: 'Schedule not found' });
     }
 
-    const { schedulerService } = require('../services/scheduler');
     await schedulerService.executeSchedule(schedule);
 
     res.json({ success: true, message: `Schedule '${schedule.name}' executed manually!` });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to trigger schedule', details: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// MOD MANAGEMENT ENDPOINTS
+// ─────────────────────────────────────────────────────────────
+
+// GET /api/v1/servers/:serverId/mods/search - Search Modrinth for mods
+router.get('/:serverId/mods/search', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    const url = new URL(req.url, `http://localhost`);
+    const query = url.searchParams.get('q') || '';
+    const gameVersion = url.searchParams.get('gameVersion') || undefined;
+    const loader = url.searchParams.get('loader') || undefined;
+    const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+    const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+
+    if (!query.trim()) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    // Get server info for version/loader context
+    const serverDir = path.join(config.dataDir, serverId);
+    let detectedVersion = gameVersion;
+    let detectedLoader = loader;
+
+    if (!detectedVersion || !detectedLoader) {
+      const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          detectedVersion = detectedVersion || meta.mcVersion || meta.installedVersion;
+          detectedLoader = detectedLoader || meta.serverType;
+        } catch (e) {}
+      }
+    }
+
+    const results = await searchModrinth(query, {
+      gameVersion: detectedVersion,
+      loader: detectedLoader?.toLowerCase(),
+      limit,
+      offset,
+      projectType: url.searchParams.get('projectType') as 'mod' | 'modpack' || 'mod',
+    });
+
+    res.json(results);
+  } catch (err: any) {
+    console.error('[Mod Search Error]', err.message);
+    res.status(500).json({ error: 'Failed to search mods', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/mods/versions/:projectId - Get available versions for a mod
+router.get('/:serverId/mods/versions/:projectId', async (req: Request, res: Response) => {
+  try {
+    const { serverId, projectId } = req.params;
+    const url = new URL(req.url, `http://localhost`);
+    const gameVersion = url.searchParams.get('gameVersion') || undefined;
+    const loader = url.searchParams.get('loader') || undefined;
+
+    // Get server info for version/loader context
+    const serverDir = path.join(config.dataDir, serverId);
+    let detectedVersion = gameVersion;
+    let detectedLoader = loader;
+
+    if (!detectedVersion || !detectedLoader) {
+      const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          detectedVersion = detectedVersion || meta.mcVersion || meta.installedVersion;
+          detectedLoader = detectedLoader || meta.serverType;
+        } catch (e) {}
+      }
+    }
+
+    const versions = await getModrinthProjectVersions(projectId, {
+      gameVersion: detectedVersion,
+      loader: detectedLoader?.toLowerCase(),
+    });
+
+    res.json({ versions });
+  } catch (err: any) {
+    console.error('[Mod Versions Error]', err.message);
+    res.status(500).json({ error: 'Failed to fetch mod versions', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/mods/install - Install a mod
+router.post('/:serverId/mods/install', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    const { projectId, versionId, fileUrl, fileName } = req.body;
+
+    if (!projectId || !versionId || !fileUrl || !fileName) {
+      return res.status(400).json({ error: 'Missing required parameters: projectId, versionId, fileUrl, fileName' });
+    }
+
+    const serverDir = path.join(config.dataDir, serverId);
+    const modsDir = path.join(serverDir, 'mods');
+    
+    if (!fs.existsSync(modsDir)) {
+      fs.mkdirSync(modsDir, { recursive: true });
+    }
+
+    const outputPath = path.join(modsDir, fileName);
+    
+    // Check if file already exists
+    if (fs.existsSync(outputPath)) {
+      return res.status(409).json({ error: 'Mod already installed', fileName });
+    }
+
+    await downloadModrinthFile(fileUrl, outputPath);
+
+    // Fix permissions
+    try {
+      execSync(`chown -R 1000:1000 "${modsDir}"`);
+      execSync(`chmod -R 775 "${modsDir}"`);
+    } catch (e) {}
+
+    // Sync to container if running in Docker mode
+    const containerName = `mc-server-${serverId}`;
+    try {
+      const { syncServerDirToContainer } = require('../services/docker');
+      await syncServerDirToContainer(containerName, serverId);
+    } catch (syncErr: any) {
+      // ignore container sync if process mode
+    }
+
+    res.json({ success: true, message: `Mod ${fileName} installed successfully`, fileName });
+  } catch (err: any) {
+    console.error('[Mod Install Error]', err.message);
+    res.status(500).json({ error: 'Failed to install mod', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/mods/list - List installed mods
+router.get('/:serverId/mods/list', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    const serverDir = path.join(config.dataDir, serverId);
+    const modsDir = path.join(serverDir, 'mods');
+
+    if (!fs.existsSync(modsDir)) {
+      return res.json({ mods: [] });
+    }
+
+    const files = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar'));
+    const mods = files.map(fileName => {
+      const filePath = path.join(modsDir, fileName);
+      const stats = fs.statSync(filePath);
+      return {
+        fileName,
+        size: stats.size,
+        modifiedAt: stats.mtime.toISOString(),
+      };
+    });
+
+    res.json({ mods });
+  } catch (err: any) {
+    console.error('[Mod List Error]', err.message);
+    res.status(500).json({ error: 'Failed to list mods', details: err.message });
+  }
+});
+
+// DELETE /api/v1/servers/:serverId/mods/:fileName - Uninstall a mod
+router.delete('/:serverId/mods/:fileName', async (req: Request, res: Response) => {
+  try {
+    const { serverId, fileName } = req.params;
+    const serverDir = path.join(config.dataDir, serverId);
+    const modsDir = path.join(serverDir, 'mods');
+    const filePath = path.join(modsDir, fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Mod not found' });
+    }
+
+    fs.unlinkSync(filePath);
+
+    // Sync to container if running in Docker mode
+    const containerName = `mc-server-${serverId}`;
+    try {
+      const { syncServerDirToContainer } = require('../services/docker');
+      await syncServerDirToContainer(containerName, serverId);
+    } catch (syncErr: any) {
+      // ignore container sync if process mode
+    }
+
+    res.json({ success: true, message: `Mod ${fileName} uninstalled successfully` });
+  } catch (err: any) {
+    console.error('[Mod Uninstall Error]', err.message);
+    res.status(500).json({ error: 'Failed to uninstall mod', details: err.message });
   }
 });
 

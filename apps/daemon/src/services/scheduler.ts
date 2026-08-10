@@ -18,12 +18,17 @@ export class SchedulerService {
   private timer: NodeJS.Timeout | null = null;
   private isRunning = false;
 
+  /**
+   * Schedule *firing* now lives in the web panel's monitor loop, which always has
+   * DATABASE_URL. This daemon-side poller only ever ran when the daemon happened to be
+   * given database credentials — in practice it never did, so schedules silently never
+   * fired. Leaving it running would double-fire every schedule on any node that does
+   * have DATABASE_URL set, so it stays off.
+   *
+   * executeSchedule() below is still used, by the manual "trigger now" endpoint.
+   */
   public start(): void {
-    if (this.timer) return;
-    console.log('[SchedulerService] Starting background schedule manager (checking every 60s)...');
-    this.timer = setInterval(() => this.tick(), 60000);
-    // Initial tick after 5s startup
-    setTimeout(() => this.tick(), 5000);
+    console.log('[SchedulerService] Schedule polling is handled by the web panel; daemon poller disabled.');
   }
 
   public stop(): void {
