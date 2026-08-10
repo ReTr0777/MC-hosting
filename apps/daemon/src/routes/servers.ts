@@ -67,6 +67,9 @@ router.get('/statuses', async (req: Request, res: Response) => {
       sleeping: boolean;
       players: number | null;
       maxPlayers: number | null;
+      playerNames: string[] | null;
+      cpuPercent: number | null;
+      memoryMb: number | null;
     }
   > = {};
 
@@ -95,6 +98,7 @@ router.get('/statuses', async (req: Request, res: Response) => {
       // definition; pinging it would only reach our own sleep listener.
       let players: number | null = null;
       let maxPlayers: number | null = null;
+      let playerNames: string[] | null = null;
 
       if (running && !sleeping) {
         const port = serverPortFor(id);
@@ -103,13 +107,23 @@ router.get('/statuses', async (req: Request, res: Response) => {
           if (ping) {
             players = ping.online;
             maxPlayers = ping.max;
+            playerNames = ping.sampleNames;
           }
         }
       } else if (sleeping) {
         players = 0;
       }
 
-      statuses[id] = { running, mode, sleeping, players, maxPlayers };
+      // Only PROCESS mode has an in-memory sample loop today; Docker containers report null here.
+      let cpuPercent: number | null = null;
+      let memoryMb: number | null = null;
+      if (running && !sleeping && mode === 'process') {
+        const procStats = processManager.getProcessStats(id);
+        cpuPercent = procStats.cpuPercent;
+        memoryMb = procStats.memoryMb;
+      }
+
+      statuses[id] = { running, mode, sleeping, players, maxPlayers, playerNames, cpuPercent, memoryMb };
     })
   );
 
@@ -544,7 +558,7 @@ router.post('/:serverId/upload-chunk', async (req: Request, res: Response) => {
 router.post('/:serverId/upload-complete', async (req: Request, res: Response) => {
   try {
     const { serverId } = req.params;
-    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '' } = req.body;
+    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '', isFullImport = false } = req.body;
 
     if (!uploadId || !totalChunks || totalChunks <= 0) {
       return res.status(400).json({ error: 'Missing required parameters: uploadId, totalChunks' });
@@ -566,7 +580,9 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
     }
 
     let destinationPath: string;
-    if (isServerpack) {
+    if (isFullImport) {
+      destinationPath = path.join(serverDir, 'full_import_uploaded.tmp');
+    } else if (isServerpack) {
       destinationPath = path.join(serverDir, 'serverpack_uploaded.tmp');
     } else {
       const cleanRel = path.normalize(targetPath || '').replace(/^(\.\.[\/\\])+/, '');
@@ -595,6 +611,26 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
 
     // Cleanup temporary upload directory
     fs.rmSync(uploadTmpDir, { recursive: true, force: true });
+
+    if (isFullImport) {
+      return await new Promise<void>((resolve) => {
+        const tar = spawn('tar', ['-xzf', destinationPath, '-C', serverDir]);
+        tar.stderr.on('data', (data) => console.warn(`[tar full-import stderr] ${data}`));
+        tar.on('close', (code) => {
+          fs.rmSync(destinationPath, { force: true });
+          if (code !== 0) {
+            res.status(500).json({ error: `Archive extraction failed with code ${code}` });
+            return resolve();
+          }
+          try {
+            execSync(`chown -R 1000:1000 "${serverDir}"`);
+            execSync(`chmod -R 775 "${serverDir}"`);
+          } catch (e) {}
+          res.json({ message: 'Server archive imported successfully' });
+          resolve();
+        });
+      });
+    }
 
     if (isServerpack) {
       return await processAndExtractServerpack(serverId, destinationPath, res);
@@ -1214,7 +1250,7 @@ async function hydrateRosterFiles(serverId: string, targetId: string, live: bool
   if (serverId.startsWith('process-')) return;
 
   await Promise.all(
-    ['whitelist.json', 'ops.json', 'server.properties'].map((f) => {
+    ['whitelist.json', 'ops.json', 'server.properties', 'banned-players.json'].map((f) => {
       const hostPath = getSafeServerPath(targetId, f);
       if (!live && hostPath && fs.existsSync(hostPath)) return Promise.resolve(false);
       return syncContainerFileToHost(targetId, f);
@@ -1389,6 +1425,105 @@ router.post('/:serverId/whitelist', async (req: Request, res: Response) => {
     res.json({ success: true, live: false, message: `Removed ${username} from whitelist.json` });
   } catch (err: any) {
     res.status(500).json({ error: 'Whitelist action failed', details: err.message });
+  }
+});
+
+const BAN_ACTIONS = ['ban', 'unban'] as const;
+type BanAction = typeof BAN_ACTIONS[number];
+
+// GET /api/v1/servers/:serverId/bans
+router.get('/:serverId/bans', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+
+  try {
+    const live = await isServerLive(serverId, targetId);
+    await hydrateRosterFiles(serverId, targetId, live);
+
+    const banned = readJsonArray(getSafeServerPath(targetId, 'banned-players.json'));
+
+    const entries = banned
+      .filter((e: any) => e && e.name)
+      .map((e: any) => ({
+        uuid: e.uuid || '',
+        name: String(e.name),
+        reason: e.reason || 'Banned by an operator',
+        source: e.source || 'Server',
+        created: e.created || null,
+        expires: e.expires && e.expires !== 'forever' ? e.expires : null,
+        avatarUrl: `https://mc-heads.net/avatar/${encodeURIComponent(e.name)}/64`,
+      }))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+    res.json({ live, count: entries.length, entries });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to read ban list', details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/bans
+router.post('/:serverId/bans', async (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const action = req.body?.action as BanAction;
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : 'Banned by an operator';
+
+  if (!BAN_ACTIONS.includes(action)) {
+    return res.status(400).json({ error: `Unsupported ban action '${action}'` });
+  }
+  if (!/^[a-zA-Z0-9_]{3,16}$/.test(username)) {
+    return res.status(400).json({ error: 'Invalid Minecraft username (3-16 letters, digits or underscores)' });
+  }
+
+  try {
+    const live = await isServerLive(serverId, targetId);
+
+    // A running server owns banned-players.json in memory — go through the console so it
+    // stays authoritative, otherwise a direct file write gets overwritten on shutdown.
+    if (live) {
+      const cmd = action === 'ban' ? `ban ${username} ${reason}` : `pardon ${username}`;
+      await sendServerCommand(targetId, cmd);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return res.json({ success: true, live: true, message: `Dispatched command: ${cmd}` });
+    }
+
+    await hydrateRosterFiles(serverId, targetId, false);
+
+    const banPath = getSafeServerPath(targetId, 'banned-players.json');
+    if (!banPath) return res.status(403).json({ error: 'Access denied' });
+
+    const list = readJsonArray(banPath);
+    const matches = (e: any) => String(e?.name || '').toLowerCase() === username.toLowerCase();
+
+    if (action === 'ban') {
+      if (list.some(matches)) {
+        return res.json({ success: true, live: false, message: `${username} is already banned` });
+      }
+
+      const profile = await resolveMojangProfile(username);
+      const now = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' +0000';
+      list.push({
+        uuid: profile ? toDashedUuid(profile.id) : '',
+        name: profile?.name || username,
+        created: now,
+        source: 'Server',
+        expires: 'forever',
+        reason,
+      });
+      fs.writeFileSync(banPath, JSON.stringify(list, null, 2), 'utf8');
+      return res.json({ success: true, live: false, message: `Banned ${username}` });
+    }
+
+    const remaining = list.filter((e) => !matches(e));
+    if (remaining.length === list.length) {
+      return res.json({ success: true, live: false, message: `${username} was not banned` });
+    }
+
+    fs.writeFileSync(banPath, JSON.stringify(remaining, null, 2), 'utf8');
+    res.json({ success: true, live: false, message: `Unbanned ${username}` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Ban action failed', details: err.message });
   }
 });
 
@@ -2566,7 +2701,7 @@ router.get('/:serverId/mods/versions/:projectId', async (req: Request, res: Resp
 router.post('/:serverId/mods/install', async (req: Request, res: Response) => {
   try {
     const { serverId } = req.params;
-    const { projectId, versionId, fileUrl, fileName } = req.body;
+    const { projectId, versionId, fileUrl, fileName, createBackup } = req.body;
 
     if (!projectId || !versionId || !fileUrl || !fileName) {
       return res.status(400).json({ error: 'Missing required parameters: projectId, versionId, fileUrl, fileName' });
@@ -2574,7 +2709,16 @@ router.post('/:serverId/mods/install', async (req: Request, res: Response) => {
 
     const serverDir = path.join(config.dataDir, serverId);
     const modsDir = path.join(serverDir, 'mods');
-    
+
+    if (createBackup !== false && fs.existsSync(serverDir)) {
+      try {
+        console.log(`[ModInstall] Creating pre-install safety backup for '${serverId}'...`);
+        await backupManager.createBackup(serverId, `pre_mod_install_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+      } catch (backupErr: any) {
+        console.error('[ModInstall] Pre-install backup failed, continuing without it:', backupErr.message);
+      }
+    }
+
     if (!fs.existsSync(modsDir)) {
       fs.mkdirSync(modsDir, { recursive: true });
     }

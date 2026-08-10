@@ -162,10 +162,10 @@ export class DaemonClient {
     });
   }
 
-  async completeChunkedUpload(serverId: string, uploadId: string, fileName: string, totalChunks: number, isServerpack = true, targetPath = ''): Promise<{ message: string }> {
+  async completeChunkedUpload(serverId: string, uploadId: string, fileName: string, totalChunks: number, isServerpack = true, targetPath = '', isFullImport = false): Promise<{ message: string }> {
     return this.request<{ message: string }>(`/servers/${serverId}/upload-complete`, {
       method: 'POST',
-      body: JSON.stringify({ uploadId, fileName, totalChunks, isServerpack, targetPath }),
+      body: JSON.stringify({ uploadId, fileName, totalChunks, isServerpack, targetPath, isFullImport }),
     });
   }
 
@@ -190,10 +190,22 @@ export class DaemonClient {
     return this.request<{ versions: any[] }>(`/servers/${serverId}/mods/versions/${projectId}?${params}`);
   }
 
-  async installMod(serverId: string, projectId: string, versionId: string, fileUrl: string, fileName: string): Promise<{ success: boolean; message: string; fileName: string }> {
+  async sendCommand(serverId: string, command: string): Promise<{ success: boolean; message: string }> {
+    return this.request<{ success: boolean; message: string }>(`/servers/${serverId}/command`, {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    });
+  }
+
+  async broadcast(serverId: string, message: string): Promise<{ success: boolean; message: string }> {
+    const payload = JSON.stringify({ text: `[Broadcast] ${message}`, color: 'yellow', bold: true });
+    return this.sendCommand(serverId, `tellraw @a ${payload}`);
+  }
+
+  async installMod(serverId: string, projectId: string, versionId: string, fileUrl: string, fileName: string, createBackup: boolean = true): Promise<{ success: boolean; message: string; fileName: string }> {
     return this.request<{ success: boolean; message: string; fileName: string }>(`/servers/${serverId}/mods/install`, {
       method: 'POST',
-      body: JSON.stringify({ projectId, versionId, fileUrl, fileName }),
+      body: JSON.stringify({ projectId, versionId, fileUrl, fileName, createBackup }),
     });
   }
 
@@ -218,6 +230,18 @@ export class DaemonClient {
       body: JSON.stringify({ action, username }),
     });
   }
+
+  // Ban list API Methods
+  async getBans(serverId: string): Promise<BanSnapshot> {
+    return this.request<BanSnapshot>(`/servers/${serverId}/bans`);
+  }
+
+  async banAction(serverId: string, action: BanAction, username: string, reason?: string): Promise<{ success: boolean; live: boolean; message: string }> {
+    return this.request<{ success: boolean; live: boolean; message: string }>(`/servers/${serverId}/bans`, {
+      method: 'POST',
+      body: JSON.stringify({ action, username, reason }),
+    });
+  }
 }
 
 export type WhitelistAction = 'add' | 'remove' | 'on' | 'off' | 'reload';
@@ -239,4 +263,22 @@ export interface WhitelistSnapshot {
   count: number;
   entries: WhitelistEntry[];
   unlistedOps: string[];
+}
+
+export type BanAction = 'ban' | 'unban';
+
+export interface BanEntry {
+  uuid: string;
+  name: string;
+  reason: string;
+  source: string;
+  created: string | null;
+  expires: string | null;
+  avatarUrl: string;
+}
+
+export interface BanSnapshot {
+  live: boolean;
+  count: number;
+  entries: BanEntry[];
 }

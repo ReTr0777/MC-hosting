@@ -4,6 +4,8 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 import { uploadFileInChunks } from '@/lib/chunked-upload';
+import GlobalSearch from '@/components/GlobalSearch';
+import DiscordLinkButton from '@/components/DiscordLinkButton';
 
 interface NodeItem {
   id: string;
@@ -602,6 +604,9 @@ export default function DashboardPage() {
             </Link>
           </div>
 
+          {/* Center: Global Search */}
+          <GlobalSearch />
+
           {/* Right: User Profile & Sign Out */}
           <div className="flex items-center gap-3 ml-auto">
             <div className="flex items-center gap-2">
@@ -613,6 +618,7 @@ export default function DashboardPage() {
                 <div className="text-[10px] text-slate-400">{user.email}</div>
               </div>
             </div>
+            <DiscordLinkButton />
             <button
               onClick={() => logout()}
               className="text-xs text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-500/30 px-2.5 py-1 rounded-md transition"
@@ -1111,8 +1117,17 @@ export default function DashboardPage() {
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Target Worker Node</label>
                     <select value={selectedNodeId} onChange={e => setSelectedNodeId(e.target.value)} className="cc-input">
                       <option value="AUTO">Auto-Select (Smart Priority)</option>
-                      {nodes.map(n => <option key={n.id} value={n.id}>{n.name} (Priority: {n.offloadPriority})</option>)}
+                      {nodes.map(n => (
+                        <option key={n.id} value={n.id} disabled={!n.isOnline}>
+                          {n.name} (Priority: {n.offloadPriority}){!n.isOnline ? ' — OFFLINE' : ''}
+                        </option>
+                      ))}
                     </select>
+                    {selectedNodeId !== 'AUTO' && nodes.find(n => n.id === selectedNodeId)?.isOnline === false && (
+                      <p style={{ fontSize: '0.7rem', color: 'var(--danger)', marginTop: '5px' }}>
+                        ⚠️ This node is currently unreachable — the server cannot be provisioned here until it comes back online.
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>

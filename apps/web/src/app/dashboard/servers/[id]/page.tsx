@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { ConsoleViewer } from '@/components/ConsoleViewer';
 import { FileExplorer } from '@/components/FileExplorer';
@@ -10,6 +10,7 @@ import { ServerPermissionsModal } from '@/components/ServerPermissionsModal';
 import AnalyticsWidget from '@/components/AnalyticsWidget';
 import PlayersTab from '@/components/PlayersTab';
 import WhitelistTab from '@/components/WhitelistTab';
+import BanListTab from '@/components/BanListTab';
 import MapTab from '@/components/MapTab';
 import SleepTab from '@/components/SleepTab';
 import PropertiesTab from '@/components/PropertiesTab';
@@ -18,6 +19,9 @@ import SubdomainTab from '@/components/SubdomainTab';
 import UpdateCenterTab from '@/components/UpdateCenterTab';
 import { SchedulesTab } from '@/components/SchedulesTab';
 import ModBrowserTab from '@/components/ModBrowserTab';
+import BroadcastBar from '@/components/BroadcastBar';
+import ResourceHistoryChart from '@/components/ResourceHistoryChart';
+import ExportImportCard from '@/components/ExportImportCard';
 
 interface ServerDetail {
   id: string;
@@ -56,6 +60,7 @@ const TABS = [
   { key: 'console', label: 'Console' },
   { key: 'players', label: 'Players & Admin' },
   { key: 'whitelist', label: 'Whitelist' },
+  { key: 'bans', label: 'Ban List' },
   { key: 'properties', label: 'Server Properties' },
   { key: 'update', label: 'Update Centre' },
   { key: 'schedules', label: 'Automated Schedules' },
@@ -72,6 +77,7 @@ type TabKey = typeof TABS[number]['key'];
 export default function ServerConsolePage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const serverId = params.id as string;
   const { user } = useAuth();
 
@@ -83,7 +89,8 @@ export default function ServerConsolePage() {
   const [migrationDestId, setMigrationDestId] = useState('');
   const [error, setError] = useState('');
 
-  const [activeTab, setActiveTab] = useState<TabKey>('console');
+  const initialTab = TABS.some((t) => t.key === searchParams.get('tab')) ? (searchParams.get('tab') as TabKey) : 'console';
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
 
   const [iconKey, setIconKey] = useState<number>(Date.now());
@@ -415,6 +422,13 @@ export default function ServerConsolePage() {
 
             {/* Analytics */}
             <AnalyticsWidget serverId={server.id} memoryLimitMb={server.memoryMb} />
+            <ResourceHistoryChart serverId={server.id} />
+
+            {/* Broadcast */}
+            <BroadcastBar
+              serverId={server.id}
+              canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
 
             {/* Console */}
             <div>
@@ -466,6 +480,12 @@ export default function ServerConsolePage() {
                 </button>
               </div>
             </div>
+
+            {/* Export / Import */}
+            <ExportImportCard
+              serverId={server.id}
+              canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
           </div>
         )}
 
@@ -473,6 +493,14 @@ export default function ServerConsolePage() {
         {activeTab === 'whitelist' && (
           <div className="animate-fadeIn">
             <WhitelistTab
+              serverId={server.id}
+              canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
+            />
+          </div>
+        )}
+        {activeTab === 'bans' && (
+          <div className="animate-fadeIn">
+            <BanListTab
               serverId={server.id}
               canManage={user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN'}
             />

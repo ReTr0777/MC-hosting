@@ -29,11 +29,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     config: {
       sleepEnabled: server.sleepEnabled,
       sleepAfterMinutes: server.sleepAfterMinutes,
+      autoRestartEnabled: server.autoRestartEnabled,
     },
     status: server.status,
     sleepEmptySince: server.sleepEmptySince,
     lastSleptAt: server.lastSleptAt,
     lastWokeAt: server.lastWokeAt,
+    crashCount: server.crashCount,
+    crashWindowStartedAt: server.crashWindowStartedAt,
     daemon,
     daemonError,
   });
@@ -69,7 +72,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));
-  const { sleepEnabled, sleepAfterMinutes } = body || {};
+  const { sleepEnabled, sleepAfterMinutes, autoRestartEnabled } = body || {};
 
   if (sleepAfterMinutes !== undefined) {
     const minutes = Number(sleepAfterMinutes);
@@ -86,6 +89,9 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     data: {
       ...(sleepEnabled !== undefined ? { sleepEnabled: Boolean(sleepEnabled) } : {}),
       ...(sleepAfterMinutes !== undefined ? { sleepAfterMinutes: Number(sleepAfterMinutes) } : {}),
+      ...(autoRestartEnabled !== undefined
+        ? { autoRestartEnabled: Boolean(autoRestartEnabled), crashCount: 0, crashWindowStartedAt: null }
+        : {}),
       // Turning the feature on or changing the threshold restarts the idle clock
       sleepEmptySince: null,
     },
@@ -93,7 +99,11 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
 
   return NextResponse.json({
     success: true,
-    config: { sleepEnabled: server.sleepEnabled, sleepAfterMinutes: server.sleepAfterMinutes },
+    config: {
+      sleepEnabled: server.sleepEnabled,
+      sleepAfterMinutes: server.sleepAfterMinutes,
+      autoRestartEnabled: server.autoRestartEnabled,
+    },
   });
 }
 

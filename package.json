@@ -8,8 +8,10 @@
   "scripts": {
     "dev:web": "npm --prefix apps/web run dev",
     "dev:daemon": "npm --prefix apps/daemon run dev",
+    "dev:discord-bot": "npm --prefix apps/discord-bot run dev",
     "build:web": "npm --prefix apps/web run build",
     "build:daemon": "npm --prefix apps/daemon run build",
+    "build:discord-bot": "npm --prefix apps/discord-bot run build",
     "prisma:generate": "npm --prefix apps/web run prisma:generate",
     "prisma:migrate": "npm --prefix apps/web run prisma:migrate"
   },

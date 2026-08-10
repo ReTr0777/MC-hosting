@@ -3,6 +3,8 @@ export interface ChunkedUploadOptions {
   file: File;
   isServerpack?: boolean;
   targetPath?: string;
+  /** Extracts the uploaded .tar.gz over the server's root directory instead of treating it as a serverpack or a plain file. */
+  isFullImport?: boolean;
   chunkSizeMB?: number; // Default 20MB per chunk, well below Cloudflare's 100MB payload limit
   onProgress?: (percent: number, uploadedBytes: number, totalBytes: number) => void;
 }
@@ -13,6 +15,7 @@ export async function uploadFileInChunks(options: ChunkedUploadOptions): Promise
     file,
     isServerpack = true,
     targetPath = '',
+    isFullImport = false,
     chunkSizeMB = 20,
     onProgress,
   } = options;
@@ -80,6 +83,7 @@ export async function uploadFileInChunks(options: ChunkedUploadOptions): Promise
       totalChunks,
       isServerpack,
       targetPath,
+      isFullImport,
     }),
   });
 

@@ -56,6 +56,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
   const [searchLoading, setSearchLoading] = useState(false);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [backupBeforeInstall, setBackupBeforeInstall] = useState(true);
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [page, setPage] = useState(0);
@@ -169,6 +170,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
           versionId: selectedVersion.id,
           fileUrl: primaryFile.url,
           fileName: primaryFile.filename,
+          createBackup: backupBeforeInstall,
         }),
       });
 
@@ -482,6 +484,14 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
                             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
                               Size: {formatBytes(0)} • SHA1: {primaryFile.hashes?.sha1?.substring(0, 16)}...
                             </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: '12px', cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={backupBeforeInstall}
+                                onChange={(e) => setBackupBeforeInstall(e.target.checked)}
+                              />
+                              Backup before installing
+                            </label>
                             <button
                               onClick={handleInstall}
                               disabled={installing === selectedMod?.project_id}

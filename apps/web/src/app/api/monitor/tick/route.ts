@@ -5,6 +5,7 @@ import { dispatchNotification } from '@/lib/notifications';
 import { monitorKey } from '@/lib/monitor-auth';
 import { runDueSchedules } from '@/lib/scheduler';
 import { evaluateSleep, requestSleep } from '@/lib/sleep';
+import { evaluateCrashRestart, attemptAutoRestart } from '@/lib/crash-restart';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,9 +24,19 @@ interface BulkStatus {
       sleeping?: boolean;
       players?: number | null;
       maxPlayers?: number | null;
+      playerNames?: string[] | null;
+      cpuPercent?: number | null;
+      memoryMb?: number | null;
     }
   >;
 }
+
+/**
+ * Best-effort last-seen player names per server, for join/leave notifications.
+ * In-memory only (resets on deploy) — names come from the status ping's "sample" field,
+ * which some servers omit or truncate, so this is a nice-to-have, not authoritative.
+ */
+const lastSeenPlayers = new Map<string, Set<string>>();
 
 export async function POST(request: NextRequest) {
   if (request.headers.get('x-monitor-key') !== monitorKey()) {
@@ -106,6 +117,52 @@ export async function POST(request: NextRequest) {
         const live = bulk.statuses?.[server.id];
         if (!live) continue;
 
+        // ── Player join/leave (best-effort, only when the status ping publishes names) ──
+        if (live.running && !live.sleeping && live.playerNames) {
+          const nowSeen = new Set(live.playerNames);
+          const previouslySeen = lastSeenPlayers.get(server.id);
+
+          if (previouslySeen) {
+            for (const name of Array.from(nowSeen)) {
+              if (!previouslySeen.has(name)) {
+                await dispatchNotification({
+                  type: 'PLAYER_JOINED',
+                  title: `👋 ${name} joined "${server.name}"`,
+                  body: `${name} connected to the server.`,
+                  fields: [{ name: 'Node', value: node.name }],
+                });
+              }
+            }
+            for (const name of Array.from(previouslySeen)) {
+              if (!nowSeen.has(name)) {
+                await dispatchNotification({
+                  type: 'PLAYER_LEFT',
+                  title: `👋 ${name} left "${server.name}"`,
+                  body: `${name} disconnected from the server.`,
+                  fields: [{ name: 'Node', value: node.name }],
+                });
+              }
+            }
+          }
+
+          lastSeenPlayers.set(server.id, nowSeen);
+        } else if (!live.running || live.sleeping) {
+          lastSeenPlayers.delete(server.id);
+        }
+
+        // ── Resource history sample ──
+        // Docker-mode servers report null cpu/memory today (no in-process sampler), so skip them.
+        if (live.running && !live.sleeping && live.cpuPercent !== null && live.cpuPercent !== undefined) {
+          await prisma.serverStatSample.create({
+            data: {
+              serverId: server.id,
+              cpuPercent: live.cpuPercent,
+              memoryMb: live.memoryMb ?? 0,
+              playerCount: live.players ?? null,
+            },
+          }).catch(() => {});
+        }
+
         // ── Sleeping servers first ──
         // A sleeping server is deliberately not running, so it must be handled before
         // crash detection or every nap would be reported as a crash.
@@ -175,6 +232,47 @@ export async function POST(request: NextRequest) {
               { name: 'Version', value: `${server.serverType} ${server.mcVersion}` },
             ],
           });
+
+          const now = new Date();
+          const verdict = evaluateCrashRestart({
+            autoRestartEnabled: server.autoRestartEnabled,
+            crashCount: server.crashCount,
+            crashWindowStartedAt: server.crashWindowStartedAt,
+            lastCrashAt: server.lastCrashAt,
+            now,
+          });
+
+          if (verdict.action === 'restart') {
+            await prisma.server.update({
+              where: { id: server.id },
+              data: { crashCount: verdict.crashCount, crashWindowStartedAt: verdict.crashWindowStartedAt, lastCrashAt: now },
+            }).catch(() => {});
+            try {
+              await attemptAutoRestart(node, server);
+              summary.events.push(`${server.name}: AUTO-RESTARTED (attempt ${verdict.crashCount}/3)`);
+              await prisma.server.update({ where: { id: server.id }, data: { status: 'STARTING' } }).catch(() => {});
+            } catch (err: any) {
+              summary.events.push(`${server.name}: auto-restart failed (${err.message})`);
+            }
+          } else if (verdict.action === 'loop') {
+            await prisma.server.update({
+              where: { id: server.id },
+              data: { crashCount: verdict.crashCount, crashWindowStartedAt: verdict.crashWindowStartedAt, lastCrashAt: now },
+            }).catch(() => {});
+            summary.events.push(`${server.name}: CRASH LOOP (${verdict.crashCount} crashes)`);
+            await dispatchNotification({
+              type: 'SERVER_CRASH_LOOP',
+              title: `🔁 "${server.name}" is stuck in a crash loop`,
+              body: `The server has crashed ${verdict.crashCount} times in the last 30 minutes. Auto-restart has been paused — check the console for a crash report before restarting manually.`,
+              fields: [{ name: 'Node', value: node.name }],
+            });
+          } else if (verdict.action === 'backoff') {
+            await prisma.server.update({
+              where: { id: server.id },
+              data: { crashCount: verdict.crashCount, crashWindowStartedAt: verdict.crashWindowStartedAt },
+            }).catch(() => {});
+          }
+
           continue;
         }
 
@@ -254,6 +352,14 @@ export async function POST(request: NextRequest) {
           }
         }
       }
+    }
+
+    // ── Resource history retention ──
+    // Runs probabilistically (~once per 20 min at the default 45s tick) rather than every
+    // tick — a prune DELETE doesn't need to run every 45 seconds.
+    if (Math.random() < 0.04) {
+      const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+      await prisma.serverStatSample.deleteMany({ where: { createdAt: { lt: cutoff } } }).catch(() => {});
     }
 
     // ── Scheduled tasks ──

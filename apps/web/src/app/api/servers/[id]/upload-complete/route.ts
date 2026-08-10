@@ -24,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         return NextResponse.json({ error: 'Forbidden: OPERATOR or ADMIN role required' }, { status: 403 });
     }
 
-    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '' } = await req.json();
+    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '', isFullImport = false } = await req.json();
 
     if (!uploadId || !totalChunks) {
         return NextResponse.json({ error: 'Missing uploadId or totalChunks' }, { status: 400 });
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     });
 
     try {
-        const result = await daemon.completeChunkedUpload(params.id, uploadId, fileName || 'uploaded_file', totalChunks, isServerpack, targetPath);
+        const result = await daemon.completeChunkedUpload(params.id, uploadId, fileName || 'uploaded_file', totalChunks, isServerpack, targetPath, isFullImport);
         return NextResponse.json(result);
     } catch (err: any) {
         console.error('[API /upload-complete POST error]', err);

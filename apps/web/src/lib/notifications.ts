@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma';
 
 export const NOTIFICATION_EVENT_TYPES = [
   'SERVER_CRASHED',
+  'SERVER_CRASH_LOOP',
   'SERVER_STARTED',
   'SERVER_STOPPED',
   'NODE_OFFLINE',
@@ -12,6 +13,8 @@ export const NOTIFICATION_EVENT_TYPES = [
   'SCHEDULE_FAILED',
   'SERVER_SLEPT',
   'SERVER_WOKE',
+  'PLAYER_JOINED',
+  'PLAYER_LEFT',
   'TEST',
 ] as const;
 
@@ -36,6 +39,7 @@ const SEVERITY_COLOR: Record<Severity, number> = {
 
 const DEFAULT_SEVERITY: Record<NotificationEventType, Severity> = {
   SERVER_CRASHED: 'critical',
+  SERVER_CRASH_LOOP: 'critical',
   SERVER_STARTED: 'info',
   SERVER_STOPPED: 'info',
   NODE_OFFLINE: 'critical',
@@ -46,11 +50,14 @@ const DEFAULT_SEVERITY: Record<NotificationEventType, Severity> = {
   SCHEDULE_FAILED: 'warning',
   SERVER_SLEPT: 'info',
   SERVER_WOKE: 'info',
+  PLAYER_JOINED: 'info',
+  PLAYER_LEFT: 'info',
   TEST: 'info',
 };
 
 export const EVENT_LABELS: Record<NotificationEventType, string> = {
   SERVER_CRASHED: 'Server crashed',
+  SERVER_CRASH_LOOP: 'Server stuck in a crash loop',
   SERVER_STARTED: 'Server started',
   SERVER_STOPPED: 'Server stopped',
   NODE_OFFLINE: 'Node went offline',
@@ -61,6 +68,8 @@ export const EVENT_LABELS: Record<NotificationEventType, string> = {
   SCHEDULE_FAILED: 'Scheduled task failed',
   SERVER_SLEPT: 'Server went to sleep',
   SERVER_WOKE: 'Server woke up',
+  PLAYER_JOINED: 'Player joined',
+  PLAYER_LEFT: 'Player left',
   TEST: 'Test message',
 };
 

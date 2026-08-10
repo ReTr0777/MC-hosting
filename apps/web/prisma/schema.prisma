@@ -48,19 +48,31 @@ enum ExecutionMode {
 }
 
 model User {
-  id           String             @id @default(uuid())
-  email        String             @unique
-  username     String             @unique
-  passwordHash String
-  globalRole   GlobalRole         @default(USER)
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  id            String             @id @default(uuid())
+  email         String             @unique
+  username      String             @unique
+  passwordHash  String
+  globalRole    GlobalRole         @default(USER)
+  discordUserId String?            @unique // Linked via /link in the Discord bot
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
-  permissions  ServerPermission[]
-  auditLogs    AuditLog[]
-  inviteCodes  InviteCode[]
+  permissions   ServerPermission[]
+  auditLogs     AuditLog[]
+  inviteCodes   InviteCode[]
 
   @@map("users")
+}
+
+/// Short-lived one-time code used to link a Discord account to a panel User via /link.
+model DiscordLinkCode {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("discord_link_codes")
 }
 
 model Node {
@@ -131,14 +143,35 @@ model Server {
   lastSleptAt       DateTime?
   lastWokeAt        DateTime?
 
+  // Crash auto-restart
+  autoRestartEnabled   Boolean         @default(false)
+  crashCount           Int             @default(0)    // Crashes seen within the current crashWindowStartedAt window
+  crashWindowStartedAt DateTime?       // Start of the current 30-minute crash-loop detection window
+  lastCrashAt          DateTime?       // Used to compute exponential backoff before the next restart attempt
+
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
   permissions       ServerPermission[]
   schedules         ServerSchedule[]
   mapShares         MapShare[]
+  statSamples       ServerStatSample[]
 
   @@map("servers")
+}
+
+/// One CPU/RAM/player-count reading per running server per monitor tick, for trend graphs.
+model ServerStatSample {
+  id          String   @id @default(uuid())
+  serverId    String
+  server      Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  cpuPercent  Float
+  memoryMb    Int
+  playerCount Int?
+  createdAt   DateTime @default(now())
+
+  @@index([serverId, createdAt])
+  @@map("server_stat_samples")
 }
 
 /// A public, revocable link that grants access to one server's BlueMap and nothing else.

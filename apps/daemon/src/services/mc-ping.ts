@@ -18,6 +18,8 @@ export interface PingResult {
   version: string;
   protocol: number;
   latencyMs: number;
+  /** Player names from the status response's "sample" field, if the server publishes one (not every player when online > sample size). Null if absent. */
+  sampleNames: string[] | null;
 }
 
 export function writeVarInt(value: number): Buffer {
@@ -179,6 +181,8 @@ export async function pingServer(
 
         const json = JSON.parse(buffer.subarray(cursor, cursor + jsonLen.value).toString('utf8'));
 
+        const sample = Array.isArray(json?.players?.sample) ? json.players.sample : null;
+
         finish(null, {
           online: Number(json?.players?.online ?? 0),
           max: Number(json?.players?.max ?? 0),
@@ -186,6 +190,7 @@ export async function pingServer(
           version: String(json?.version?.name ?? 'unknown'),
           protocol: Number(json?.version?.protocol ?? -1),
           latencyMs: Date.now() - startedAt,
+          sampleNames: sample ? sample.map((p: any) => String(p?.name || '')).filter(Boolean) : null,
         });
       } catch (err: any) {
         finish(err);

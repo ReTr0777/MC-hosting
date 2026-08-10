@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 interface SleepConfig {
   sleepEnabled: boolean;
   sleepAfterMinutes: number;
+  autoRestartEnabled: boolean;
 }
 
 interface DaemonSleep {
@@ -23,6 +24,8 @@ interface SleepSnapshot {
   lastWokeAt: string | null;
   daemon: DaemonSleep | null;
   daemonError: string | null;
+  crashCount: number;
+  crashWindowStartedAt: string | null;
 }
 
 const PRESETS = [5, 10, 15, 30, 60, 120];
@@ -127,7 +130,7 @@ export default function SleepTab({
     return <div className="text-slate-500 text-sm p-6">Loading sleep settings…</div>;
   }
 
-  const config = snap?.config || { sleepEnabled: false, sleepAfterMinutes: 15 };
+  const config = snap?.config || { sleepEnabled: false, sleepAfterMinutes: 15, autoRestartEnabled: false };
   const sleeping = snap?.status === 'SLEEPING' || snap?.daemon?.sleeping;
   const running = serverStatus === 'RUNNING';
 
@@ -289,6 +292,32 @@ export default function SleepTab({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Crash auto-restart */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <span>
+            <span className="text-white font-semibold text-sm">Auto-restart on crash</span>
+            <span className="block text-slate-500 text-xs mt-0.5">
+              If the process dies unexpectedly, restart it automatically. Pauses after 3 crashes in 30 minutes to
+              avoid a restart loop.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={config.autoRestartEnabled}
+            disabled={!canManage || busy !== null}
+            onChange={(e) => saveConfig({ autoRestartEnabled: e.target.checked })}
+            className="w-11 h-6 accent-emerald-500 cursor-pointer"
+          />
+        </label>
+        {config.autoRestartEnabled && snap && snap.crashCount > 0 && (
+          <p className="text-xs text-amber-300">
+            {snap.crashCount} crash{snap.crashCount === 1 ? '' : 'es'} in the current 30-minute window
+            {snap.crashCount >= 3 ? ' — auto-restart is paused until this window expires or you restart manually.' : '.'}
+          </p>
+        )}
       </div>
 
       {/* History */}
