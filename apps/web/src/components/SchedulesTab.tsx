@@ -1,408 +1,342 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useToast } from '@/context/ToastContext';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { formatDateTime } from '@/lib/format';
+import { Chip, ChipTone, EmptyState, InlineError, Modal, PanelHeader, SkeletonRows } from '@/components/ui';
+
+type ActionType = 'BACKUP' | 'COMMAND' | 'START' | 'RESTART' | 'STOP';
 
 interface ServerSchedule {
   id: string;
   name: string;
   cronExpression: string;
-  actionType: 'BACKUP' | 'COMMAND' | 'START' | 'RESTART' | 'STOP';
+  actionType: ActionType;
   payload?: string | null;
   isEnabled: boolean;
   lastRunAt?: string | null;
   createdAt: string;
 }
 
-interface SchedulesTabProps {
-  serverId: string;
-}
-
 const FREQUENCY_PRESETS = [
-  { label: 'Every 6 Hours', cron: '0 */6 * * *' },
-  { label: 'Every 12 Hours', cron: '0 */12 * * *' },
-  { label: 'Daily at Midnight', cron: '0 0 * * *' },
+  { label: 'Every 15 minutes', cron: '*/15 * * * *' },
+  { label: 'Every 6 hours', cron: '0 */6 * * *' },
+  { label: 'Every 12 hours', cron: '0 */12 * * *' },
+  { label: 'Daily at midnight', cron: '0 0 * * *' },
   { label: 'Daily at 4 AM', cron: '0 4 * * *' },
-  { label: 'Every 15 Minutes', cron: '*/15 * * * *' },
-  { label: 'Custom Cron', cron: 'CUSTOM' },
+  { label: 'Custom cron…', cron: 'CUSTOM' },
 ];
 
-export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
-  const confirm = useConfirm();
-  const [schedules, setSchedules] = useState<ServerSchedule[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+const ACTION_META: Record<ActionType, { label: string; tone: ChipTone; option: string }> = {
+  BACKUP: { label: 'Backup', tone: 'accent', option: 'Take a backup' },
+  COMMAND: { label: 'Command', tone: 'default', option: 'Run a console command' },
+  START: { label: 'Start', tone: 'accent', option: 'Start the server' },
+  RESTART: { label: 'Restart', tone: 'warning', option: 'Restart the server' },
+  STOP: { label: 'Stop', tone: 'danger', option: 'Stop the server' },
+};
 
-  // Modal / Form state
+/** Rough sanity check for standard 5-field cron, so obvious typos fail before the round trip. */
+const CRON_PATTERN = /^(\S+\s+){4}\S+$/;
+
+const DEFAULT_COMMAND = '/say Automated broadcast message';
+
+export const SchedulesTab: React.FC<{ serverId: string; canManage?: boolean }> = ({ serverId, canManage = true }) => {
+  const confirm = useConfirm();
+  const toast = useToast();
+
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState('');
-  const [actionType, setActionType] = useState<'BACKUP' | 'COMMAND' | 'START' | 'RESTART' | 'STOP'>('BACKUP');
-  const [payload, setPayload] = useState('/say Automated broadcast message');
-  const [selectedPreset, setSelectedPreset] = useState('0 */6 * * *');
+  const [actionType, setActionType] = useState<ActionType>('BACKUP');
+  const [payload, setPayload] = useState(DEFAULT_COMMAND);
+  const [selectedPreset, setSelectedPreset] = useState(FREQUENCY_PRESETS[1].cron);
   const [customCron, setCustomCron] = useState('0 0 * * *');
   const [submitting, setSubmitting] = useState(false);
-  const [triggeringId, setTriggeringId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const fetchSchedules = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch(`/api/servers/${serverId}/schedules`);
-      if (res.ok) {
-        const data = await res.json();
-        setSchedules(data.schedules || []);
-      }
-    } catch (err: any) {
-      console.error('Failed to load schedules:', err.message);
-    } finally {
-      setLoading(false);
-    }
+  const { data: schedules, loading, error, refresh } = usePolledResource<ServerSchedule[]>(
+    `/api/servers/${serverId}/schedules`,
+    [],
+    { select: (raw) => raw?.schedules ?? [] }
+  );
+
+  const resetForm = () => {
+    setName('');
+    setActionType('BACKUP');
+    setPayload(DEFAULT_COMMAND);
+    setSelectedPreset(FREQUENCY_PRESETS[1].cron);
+    setCustomCron('0 0 * * *');
   };
 
-  useEffect(() => {
-    fetchSchedules();
-  }, [serverId]);
+  const closeModal = () => {
+    setShowModal(false);
+    resetForm();
+  };
 
   const handleCreateSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    setActionMessage(null);
-
     const cronExpression = selectedPreset === 'CUSTOM' ? customCron.trim() : selectedPreset;
+
     if (!name.trim()) {
-      setActionMessage({ type: 'error', text: 'Please enter a schedule name' });
+      toast.error('Give the schedule a name');
       return;
     }
-    if (!cronExpression) {
-      setActionMessage({ type: 'error', text: 'Please enter a valid cron expression' });
+    if (!CRON_PATTERN.test(cronExpression)) {
+      toast.error('That cron expression looks wrong', 'Use five fields: minute hour day month weekday.');
+      return;
+    }
+    if (actionType === 'COMMAND' && !payload.trim()) {
+      toast.error('Enter the command to run');
       return;
     }
 
+    setSubmitting(true);
     try {
-      setSubmitting(true);
-      const res = await fetch(`/api/servers/${serverId}/schedules`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          cronExpression,
-          actionType,
-          payload: actionType === 'COMMAND' ? payload.trim() : null,
-          isEnabled: true,
-        }),
+      await apiPost(`/api/servers/${serverId}/schedules`, {
+        name: name.trim(),
+        cronExpression,
+        actionType,
+        payload: actionType === 'COMMAND' ? payload.trim() : null,
+        isEnabled: true,
       });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setActionMessage({ type: 'success', text: `Schedule '${name}' created successfully!` });
-        setShowModal(false);
-        setName('');
-        setPayload('/say Automated broadcast message');
-        fetchSchedules();
-      } else {
-        setActionMessage({ type: 'error', text: data.error || 'Failed to create schedule' });
-      }
-    } catch (err: any) {
-      setActionMessage({ type: 'error', text: err.message });
+      toast.success(`Schedule “${name.trim()}” created`);
+      closeModal();
+      await refresh();
+    } catch (err) {
+      toast.error('Could not create the schedule', errorMessage(err));
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleToggleSchedule = async (schedule: ServerSchedule) => {
+    setBusyId(schedule.id);
     try {
-      const res = await fetch(`/api/servers/${serverId}/schedules/${schedule.id}`, {
+      await apiRequest(`/api/servers/${serverId}/schedules/${schedule.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isEnabled: !schedule.isEnabled }),
       });
-      if (res.ok) {
-        fetchSchedules();
-      }
-    } catch (e) {}
+      toast.success(schedule.isEnabled ? `Paused “${schedule.name}”` : `Enabled “${schedule.name}”`);
+      await refresh();
+    } catch (err) {
+      // This used to swallow the error, leaving the toggle looking stuck.
+      toast.error('Could not update the schedule', errorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
   };
 
-  const handleDeleteSchedule = async (id: string, schedName: string) => {
+  const handleDeleteSchedule = async (schedule: ServerSchedule) => {
     const ok = await confirm({
       title: 'Delete this schedule?',
       message: (
         <>
-          <strong style={{ color: 'var(--text-primary)' }}>{schedName}</strong> will stop running. Nothing already done by it is
-          undone.
+          <strong style={{ color: 'var(--text-primary)' }}>{schedule.name}</strong> will stop running. Anything it has already
+          done is left alone.
         </>
       ),
       confirmLabel: 'Delete schedule',
       danger: true,
     });
     if (!ok) return;
-    try {
-      const res = await fetch(`/api/servers/${serverId}/schedules/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        setActionMessage({ type: 'success', text: `Schedule '${schedName}' deleted.` });
-        fetchSchedules();
-      }
-    } catch (e) {}
-  };
 
-  const handleTriggerSchedule = async (id: string, schedName: string) => {
+    setBusyId(schedule.id);
     try {
-      setTriggeringId(id);
-      setActionMessage(null);
-      const res = await fetch(`/api/servers/${serverId}/schedules/${id}/trigger`, {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setActionMessage({ type: 'success', text: `Executed schedule '${schedName}'` });
-        fetchSchedules();
-      } else {
-        setActionMessage({ type: 'error', text: data.error || 'Failed to run schedule' });
-      }
-    } catch (err: any) {
-      setActionMessage({ type: 'error', text: err.message });
+      await apiRequest(`/api/servers/${serverId}/schedules/${schedule.id}`, { method: 'DELETE' });
+      toast.success(`Deleted “${schedule.name}”`);
+      await refresh();
+    } catch (err) {
+      toast.error('Could not delete the schedule', errorMessage(err));
     } finally {
-      setTriggeringId(null);
+      setBusyId(null);
     }
   };
 
-  const getActionBadge = (type: string) => {
-    switch (type) {
-      case 'BACKUP':
-        return <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">AUTO BACKUP</span>;
-      case 'COMMAND':
-        return <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">COMMAND</span>;
-      case 'START':
-        return <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">▶ AUTO START</span>;
-      case 'RESTART':
-        return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">↺ RESTART</span>;
-      case 'STOP':
-        return <span className="bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">■ STOP</span>;
-      default:
-        return <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[11px]">{type}</span>;
+  const handleTriggerSchedule = async (schedule: ServerSchedule) => {
+    setBusyId(schedule.id);
+    try {
+      await apiPost(`/api/servers/${serverId}/schedules/${schedule.id}/trigger`, {});
+      toast.success(`Ran “${schedule.name}”`);
+      await refresh();
+    } catch (err) {
+      toast.error('Could not run the schedule', errorMessage(err));
+    } finally {
+      setBusyId(null);
     }
   };
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      {/* Overview Card */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-            Automated Schedules &amp; Tasks
-          </h2>
-          <p className="text-xs text-slate-400">
-            Configure automated background backups, scheduled console commands, and automatic server restarts.
-          </p>
-        </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="cc-btn-primary flex-shrink-0 w-full sm:w-auto text-center"
-        >
-          + Create New Schedule
-        </button>
-      </div>
+    <div style={{ display: 'grid', gap: '16px', maxWidth: '72rem' }}>
+      <PanelHeader
+        title="Schedules"
+        chips={schedules.length > 0 ? <Chip>{schedules.length} configured</Chip> : undefined}
+        description="Run backups, console commands, restarts and shutdowns automatically on a cron schedule."
+        actions={canManage && <button onClick={() => setShowModal(true)} className="cc-btn-primary">New schedule</button>}
+      />
 
-      {actionMessage && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${actionMessage.type === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {actionMessage.text}
-        </div>
-      )}
+      {error && <InlineError message={error} onRetry={refresh} />}
 
-      {/* Schedules List */}
       {loading ? (
-        <div className="text-xs text-slate-400 text-center py-12">Loading schedules...</div>
+        <SkeletonRows rows={2} height={84} />
       ) : schedules.length === 0 ? (
-        <div className="bg-slate-950 border border-dashed border-slate-800 rounded-2xl p-10 text-center space-y-3">
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>No schedules</div>
-          <div className="text-sm font-bold text-white">No Schedules Configured</div>
-          <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            Set up automatic server backups every 6 hours or scheduled console commands (e.g. broadcast warnings).
-          </p>
-          <button
-            onClick={() => setShowModal(true)}
-            className="cc-btn-primary mt-2"
-          >
-            Create Your First Schedule
-          </button>
-        </div>
+        <EmptyState
+          title="No schedules configured"
+          description="Set up an automatic backup every few hours, or a nightly restart with a warning broadcast beforehand."
+        />
       ) : (
-        <div className="grid grid-cols-1 gap-3.5">
-          {schedules.map((schedule) => (
-            <div
-              key={schedule.id}
-              className={`bg-slate-900 border rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${
-                schedule.isEnabled ? 'border-slate-800 hover:border-slate-700' : 'border-slate-850 opacity-60'
-              }`}
-            >
-              <div className="space-y-1.5 min-w-0">
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="font-bold text-sm text-white">{schedule.name}</span>
-                  {getActionBadge(schedule.actionType)}
-                  <span className="text-[11px] font-mono text-slate-400 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded">
-                    {schedule.cronExpression}
-                  </span>
+        <div style={{ display: 'grid', gap: '10px' }}>
+          {schedules.map((schedule) => {
+            const meta = ACTION_META[schedule.actionType] ?? { label: schedule.actionType, tone: 'default' as ChipTone };
+            const busy = busyId === schedule.id;
+            return (
+              <div
+                key={schedule.id}
+                className="cc-row"
+                style={{ alignItems: 'flex-start', flexWrap: 'wrap', opacity: schedule.isEnabled ? 1 : 0.6 }}
+              >
+                <div style={{ display: 'grid', gap: '6px', minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-primary)' }}>{schedule.name}</span>
+                    <Chip tone={meta.tone}>{meta.label}</Chip>
+                    {!schedule.isEnabled && <Chip>Paused</Chip>}
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--text-muted)',
+                        background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '4px', padding: '1px 7px',
+                      }}
+                    >
+                      {schedule.cronExpression}
+                    </span>
+                  </div>
+
+                  {schedule.actionType === 'COMMAND' && schedule.payload && (
+                    <code
+                      style={{
+                        fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-primary)',
+                        background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '6px',
+                        padding: '6px 10px', wordBreak: 'break-all',
+                      }}
+                    >
+                      {schedule.payload}
+                    </code>
+                  )}
+
+                  <span className="cc-row-sub">Last run: {schedule.lastRunAt ? formatDateTime(schedule.lastRunAt) : 'Never'}</span>
                 </div>
 
-                {schedule.actionType === 'COMMAND' && schedule.payload && (
-                  <div className="text-xs font-mono text-indigo-300 bg-indigo-950/40 border border-indigo-900/30 px-3 py-1.5 rounded-lg">
-                    › {schedule.payload}
+                {canManage && (
+                  <div className="cc-row-actions">
+                    <button onClick={() => handleTriggerSchedule(schedule)} disabled={busy} className="cc-btn-ghost" style={{ padding: '4px 10px' }} title="Run this schedule now">
+                      {busy ? '…' : 'Run now'}
+                    </button>
+                    <button onClick={() => handleToggleSchedule(schedule)} disabled={busy} className="cc-btn-ghost" style={{ padding: '4px 10px' }}>
+                      {schedule.isEnabled ? 'Pause' : 'Enable'}
+                    </button>
+                    <button onClick={() => handleDeleteSchedule(schedule)} disabled={busy} className="cc-btn-danger" style={{ padding: '4px 10px' }}>
+                      Delete
+                    </button>
                   </div>
                 )}
-
-                <div className="text-[11px] text-slate-400 flex items-center gap-3">
-                  <span>
-                    Last Run:{' '}
-                    <strong className="text-slate-300">
-                      {schedule.lastRunAt ? new Date(schedule.lastRunAt).toLocaleString() : 'Never'}
-                    </strong>
-                  </span>
-                </div>
               </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2 w-full sm:w-auto justify-end border-t sm:border-t-0 border-slate-800 pt-3 sm:pt-0 flex-shrink-0">
-                <button
-                  onClick={() => handleTriggerSchedule(schedule.id, schedule.name)}
-                  disabled={triggeringId === schedule.id}
-                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-bold px-3 py-1.5 rounded-lg transition"
-                  title="Run Schedule Now"
-                >
-                  {triggeringId === schedule.id ? 'Executing...' : 'Run Now'}
-                </button>
-
-                <button
-                  onClick={() => handleToggleSchedule(schedule)}
-                  className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition ${
-                    schedule.isEnabled
-                      ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-750'
-                      : 'bg-emerald-600/20 text-emerald-300 border-emerald-500/30'
-                  }`}
-                >
-                  {schedule.isEnabled ? 'Pause' : 'Enable'}
-                </button>
-
-                <button
-                  onClick={() => handleDeleteSchedule(schedule.id, schedule.name)}
-                  className="text-xs font-bold text-red-400 hover:text-red-300 bg-red-500/10 border border-red-500/20 px-3 py-1.5 rounded-lg transition"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* Create Schedule Modal */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 space-y-5 animate-fadeIn">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                Create Automated Schedule
-              </h3>
-              <button
-                onClick={() => setShowModal(false)}
-                className="text-slate-400 hover:text-white text-lg font-bold"
-              >
-                ✕
+        <Modal
+          title="Create a schedule"
+          onClose={closeModal}
+          footer={
+            <>
+              <button type="button" onClick={closeModal} className="cc-btn-ghost">Cancel</button>
+              <button type="submit" form="schedule-form" disabled={submitting} className="cc-btn-primary">
+                {submitting ? 'Creating…' : 'Create schedule'}
               </button>
+            </>
+          }
+        >
+          <form id="schedule-form" onSubmit={handleCreateSchedule} style={{ display: 'grid', gap: '16px' }}>
+            <div>
+              <label className="cc-label" htmlFor="sch-name">Name</label>
+              <input
+                id="sch-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Nightly backup"
+                className="cc-input"
+                required
+              />
             </div>
 
-            <form onSubmit={handleCreateSchedule} className="space-y-4">
+            <div>
+              <label className="cc-label" htmlFor="sch-action">What should it do?</label>
+              <select
+                id="sch-action"
+                value={actionType}
+                onChange={(e) => setActionType(e.target.value as ActionType)}
+                className="cc-input"
+              >
+                {(Object.keys(ACTION_META) as ActionType[]).map((key) => (
+                  <option key={key} value={key}>{ACTION_META[key].option}</option>
+                ))}
+              </select>
+            </div>
+
+            {actionType === 'COMMAND' && (
               <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1">Schedule Name</label>
+                <label className="cc-label" htmlFor="sch-payload">Console command</label>
                 <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Nightly Auto-Backup or Hourly Broadcast"
+                  id="sch-payload"
+                  value={payload}
+                  onChange={(e) => setPayload(e.target.value)}
+                  placeholder="/say Server restarting in 5 minutes"
                   className="cc-input"
+                  style={{ fontFamily: 'var(--font-mono)' }}
                   required
                 />
               </div>
+            )}
 
+            <div>
+              <label className="cc-label" htmlFor="sch-freq">How often?</label>
+              <select
+                id="sch-freq"
+                value={selectedPreset}
+                onChange={(e) => setSelectedPreset(e.target.value)}
+                className="cc-input"
+              >
+                {FREQUENCY_PRESETS.map((p) => (
+                  <option key={p.cron} value={p.cron}>
+                    {p.label}{p.cron !== 'CUSTOM' ? ` (${p.cron})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedPreset === 'CUSTOM' && (
               <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1">Action Type</label>
-                <select
-                  value={actionType}
-                  onChange={(e) => setActionType(e.target.value as any)}
+                <label className="cc-label" htmlFor="sch-cron">Cron expression</label>
+                <input
+                  id="sch-cron"
+                  value={customCron}
+                  onChange={(e) => setCustomCron(e.target.value)}
+                  placeholder="0 0 * * *"
                   className="cc-input"
-                >
-                  <option value="BACKUP">Automated Server Backup</option>
-                  <option value="COMMAND">Execute Console Command</option>
-                  <option value="START">▶ Automated Server Auto-Start</option>
-                  <option value="RESTART">↺ Automated Server Restart</option>
-                  <option value="STOP">■ Automated Server Shutdown</option>
-                </select>
+                  style={{ fontFamily: 'var(--font-mono)' }}
+                  required
+                />
+                <p className="cc-help">Five fields: minute, hour, day of month, month, day of week.</p>
               </div>
-
-              {actionType === 'COMMAND' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">Console Command</label>
-                  <input
-                    type="text"
-                    value={payload}
-                    onChange={(e) => setPayload(e.target.value)}
-                    placeholder="e.g. /say Server restarting in 5 minutes! or /save-all"
-                    className="cc-input font-mono text-xs"
-                    required
-                  />
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1">Frequency Preset</label>
-                <select
-                  value={selectedPreset}
-                  onChange={(e) => setSelectedPreset(e.target.value)}
-                  className="cc-input"
-                >
-                  {FREQUENCY_PRESETS.map((p) => (
-                    <option key={p.cron} value={p.cron}>
-                      {p.label} {p.cron !== 'CUSTOM' ? `(${p.cron})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {selectedPreset === 'CUSTOM' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">Custom Cron Expression</label>
-                  <input
-                    type="text"
-                    value={customCron}
-                    onChange={(e) => setCustomCron(e.target.value)}
-                    placeholder="e.g. 0 0 * * * (minute hour day month wday)"
-                    className="cc-input font-mono text-xs"
-                    required
-                  />
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    Standard 5-part cron syntax: <code className="font-mono text-emerald-400">minute hour day month wday</code>
-                  </p>
-                </div>
-              )}
-
-              <div className="flex items-center justify-end gap-3 border-t border-slate-800 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="cc-btn-ghost"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="cc-btn-primary"
-                >
-                  {submitting ? 'Creating...' : 'Create Schedule'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            )}
+          </form>
+        </Modal>
       )}
     </div>
   );
 };
+
+export default SchedulesTab;

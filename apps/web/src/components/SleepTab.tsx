@@ -1,6 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { apiRequest, errorMessage } from '@/lib/api';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
+import { Chip, InlineError, LoadingLine, Notice, PanelHeader, StatTile } from '@/components/ui';
 
 interface SleepConfig {
   sleepEnabled: boolean;
@@ -30,16 +35,32 @@ interface SleepSnapshot {
 
 const PRESETS = [5, 10, 15, 30, 60, 120];
 
+const DEFAULT_CONFIG: SleepConfig = { sleepEnabled: false, sleepAfterMinutes: 15, autoRestartEnabled: false };
+
+const EMPTY: SleepSnapshot = {
+  config: DEFAULT_CONFIG,
+  status: '',
+  sleepEmptySince: null,
+  lastSleptAt: null,
+  lastWokeAt: null,
+  daemon: null,
+  daemonError: null,
+  crashCount: 0,
+  crashWindowStartedAt: null,
+};
+
 function relative(iso: string | null | undefined): string {
-  if (!iso) return 'never';
+  if (!iso) return 'Never';
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diff / 60000);
-  if (mins < 1) return 'just now';
+  if (mins < 1) return 'Just now';
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.round(mins / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
 }
+
+const formatPreset = (m: number) => (m < 60 ? `${m} min` : m % 60 === 0 ? `${m / 60} hr` : `${m} min`);
 
 export default function SleepTab({
   serverId,
@@ -52,124 +73,106 @@ export default function SleepTab({
   canManage: boolean;
   onChanged?: () => void;
 }) {
-  const [snap, setSnap] = useState<SleepSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+  const confirm = useConfirm();
   const [busy, setBusy] = useState<string | null>(null);
-  const [minutes, setMinutes] = useState(15);
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [minutes, setMinutes] = useState(DEFAULT_CONFIG.sleepAfterMinutes);
 
-  const load = async () => {
-    try {
-      const res = await fetch(`/api/servers/${serverId}/sleep`);
-      const data = await res.json();
-      if (res.ok) {
-        setSnap(data);
-        setMinutes(data.config.sleepAfterMinutes);
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Failed to load sleep settings' });
-      }
-    } catch {
-      setMessage({ kind: 'err', text: 'Network error loading sleep settings' });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: snap, loading, error, refresh } = usePolledResource<SleepSnapshot>(
+    `/api/servers/${serverId}/sleep`,
+    EMPTY,
+    { intervalMs: 15000, select: (raw) => ({ ...EMPTY, ...raw, config: { ...DEFAULT_CONFIG, ...raw?.config } }) }
+  );
 
+  const config = snap.config;
+
+  // Only follow the server's value when the server's value actually changes. Copying it on every
+  // poll would wipe out a custom number the user is part-way through typing.
+  const lastServerMinutes = useRef<number | null>(null);
   useEffect(() => {
-    load();
-    const interval = setInterval(load, 15000);
-    return () => clearInterval(interval);
-  }, [serverId]);
+    if (lastServerMinutes.current !== config.sleepAfterMinutes) {
+      lastServerMinutes.current = config.sleepAfterMinutes;
+      setMinutes(config.sleepAfterMinutes);
+    }
+  }, [config.sleepAfterMinutes]);
 
   const saveConfig = async (patch: Partial<SleepConfig>) => {
     setBusy('config');
-    setMessage(null);
     try {
-      const res = await fetch(`/api/servers/${serverId}/sleep`, {
+      await apiRequest(`/api/servers/${serverId}/sleep`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: 'Sleep settings saved' });
-        await load();
-      } else {
-        setMessage({ kind: 'err', text: data.details || data.error || 'Save failed' });
-      }
-    } catch {
-      setMessage({ kind: 'err', text: 'Network error saving settings' });
+      toast.success('Sleep settings saved');
+      await refresh();
+    } catch (err) {
+      toast.error('Could not save sleep settings', errorMessage(err));
     } finally {
       setBusy(null);
     }
   };
 
   const act = async (kind: 'sleep' | 'wake' | 'cancel') => {
+    if (kind === 'sleep') {
+      const ok = await confirm({
+        title: 'Put this server to sleep?',
+        message:
+          'The server process stops now. It stays listed as online, and the next player who joins wakes it — that first player is asked to reconnect after about 30 seconds.',
+        confirmLabel: 'Sleep now',
+      });
+      if (!ok) return;
+    }
+    if (kind === 'cancel') {
+      const ok = await confirm({
+        title: 'Stop holding the port?',
+        message:
+          'The node will release this server\'s port. Players will see it as offline instead of sleeping, and joining will no longer wake it automatically.',
+        confirmLabel: 'Stop holding',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
     setBusy(kind);
-    setMessage(null);
     try {
       const url = kind === 'wake' ? `/api/servers/${serverId}/wake` : `/api/servers/${serverId}/sleep`;
-      const method = kind === 'cancel' ? 'DELETE' : 'POST';
-      const res = await fetch(url, { method });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: data.message || 'Done' });
-        await load();
-        onChanged?.();
-      } else {
-        setMessage({ kind: 'err', text: data.details || data.error || 'Action failed' });
-      }
-    } catch {
-      setMessage({ kind: 'err', text: 'Network error' });
+      const data = await apiRequest(url, { method: kind === 'cancel' ? 'DELETE' : 'POST' });
+      toast.success(data?.message || (kind === 'wake' ? 'Waking the server' : 'Done'));
+      await refresh();
+      onChanged?.();
+    } catch (err) {
+      toast.error('Action failed', errorMessage(err));
     } finally {
       setBusy(null);
     }
   };
 
-  if (loading) {
-    return <div className="text-slate-500 text-sm p-6">Loading sleep settings…</div>;
-  }
+  if (loading) return <LoadingLine>Loading sleep settings…</LoadingLine>;
 
-  const config = snap?.config || { sleepEnabled: false, sleepAfterMinutes: 15, autoRestartEnabled: false };
-  const sleeping = snap?.status === 'SLEEPING' || snap?.daemon?.sleeping;
+  const sleeping = Boolean(snap.status === 'SLEEPING' || snap.daemon?.sleeping);
   const running = serverStatus === 'RUNNING';
+  const state = sleeping ? 'Sleeping' : running ? 'Awake' : 'Offline';
 
-  const emptyForMins = snap?.sleepEmptySince
+  const emptyForMins = snap.sleepEmptySince
     ? Math.floor((Date.now() - new Date(snap.sleepEmptySince).getTime()) / 60000)
     : null;
-  const remaining =
-    emptyForMins !== null ? Math.max(0, config.sleepAfterMinutes - emptyForMins) : null;
+  const remaining = emptyForMins !== null ? Math.max(0, config.sleepAfterMinutes - emptyForMins) : null;
 
   return (
-    <div className="animate-fadeIn space-y-4">
-      {/* Header */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-white font-bold text-lg">
-            {sleeping ? 'Sleeping' : running ? 'Awake' : 'Offline'}
-          </h2>
-          <p className="text-slate-400 text-xs mt-1 max-w-xl leading-relaxed">
-            When nobody is online, the server can stop itself to free memory and CPU. It stays visible in the
-            multiplayer list the whole time — the moment someone tries to join, it starts back up.
-          </p>
-        </div>
-
-        {canManage && (
-          <div className="flex items-center gap-2">
-            {sleeping ? (
+    <div className="animate-fadeIn" style={{ display: 'grid', gap: '16px' }}>
+      <PanelHeader
+        title="Sleep & Auto-restart"
+        chips={<Chip tone={sleeping ? 'warning' : running ? 'accent' : 'default'}>{state}</Chip>}
+        description="When nobody is online the server can stop itself to free memory and CPU. It stays visible in the multiplayer list, and starts back up the moment someone joins."
+        actions={
+          canManage && (
+            sleeping ? (
               <>
-                <button
-                  onClick={() => act('wake')}
-                  disabled={busy !== null}
-                  className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl px-4 py-2.5"
-                >
+                <button onClick={() => act('wake')} disabled={busy !== null} className="cc-btn-primary">
                   {busy === 'wake' ? 'Waking…' : 'Wake now'}
                 </button>
-                <button
-                  onClick={() => act('cancel')}
-                  disabled={busy !== null}
-                  className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 font-semibold text-xs rounded-xl px-4 py-2.5 border border-slate-700"
-                >
+                <button onClick={() => act('cancel')} disabled={busy !== null} className="cc-btn-ghost">
                   Stop holding port
                 </button>
               </>
@@ -177,166 +180,147 @@ export default function SleepTab({
               <button
                 onClick={() => act('sleep')}
                 disabled={busy !== null || !running}
-                title={running ? '' : 'The server must be running before it can be put to sleep'}
-                className="bg-indigo-500/15 hover:bg-indigo-500/25 disabled:opacity-40 text-indigo-300 font-bold text-xs rounded-xl px-4 py-2.5 border border-indigo-500/30"
+                title={running ? 'Stop the server but keep it listed as online' : 'The server must be running before it can sleep'}
+                className="cc-btn-ghost"
               >
                 {busy === 'sleep' ? 'Sleeping…' : 'Sleep now'}
               </button>
-            )}
-          </div>
-        )}
-      </div>
+            )
+          )
+        }
+      />
 
-      {message && (
-        <div
-          className={`p-4 rounded-xl text-xs font-semibold ${
-            message.kind === 'err'
-              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
+      {error && <InlineError message={error} onRetry={refresh} />}
 
-      {snap?.daemonError && (
-        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300">
-          Could not read live sleep state from the node: {snap.daemonError}
-        </div>
+      {snap.daemonError && (
+        <Notice tone="warning">Could not read live sleep state from the node: {snap.daemonError}</Notice>
       )}
 
       {sleeping && (
-        <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4 text-xs text-indigo-200 leading-relaxed">
-          The node is holding port <strong>{snap?.daemon?.port ?? '—'}</strong> for this server. Players see it as
-          online with a &quot;sleeping&quot; message, and joining wakes it automatically — they will be asked to
-          reconnect once after about 30 seconds.
-          {snap?.daemon?.lastWakeError && (
-            <div className="mt-2 text-red-300">Last wake attempt failed: {snap.daemon.lastWakeError}</div>
+        <Notice>
+          The node is holding port <strong style={{ color: 'var(--text-primary)' }}>{snap.daemon?.port ?? '—'}</strong> for
+          this server. Players see it as online with a “sleeping” message, and joining wakes it automatically — they are
+          asked to reconnect once after about 30 seconds.
+          {snap.daemon?.lastWakeError && (
+            <div style={{ marginTop: '8px', color: 'var(--danger)' }}>Last wake attempt failed: {snap.daemon.lastWakeError}</div>
           )}
-        </div>
+        </Notice>
       )}
 
-      {/* Countdown */}
       {!sleeping && running && config.sleepEnabled && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+        <Notice>
           {emptyForMins === null ? (
-            <p className="text-xs text-slate-400">
-              Players are online (or the server has not been polled yet). The idle timer starts once the server is
-              empty.
-            </p>
+            <>Players are online (or the server hasn&apos;t been polled yet). The idle timer starts once it is empty.</>
           ) : (
-            <p className="text-xs text-slate-300">
-              Empty for <strong className="text-white">{emptyForMins} min</strong> — sleeping in{' '}
-              <strong className="text-emerald-400">{remaining} min</strong> unless somebody joins.
-            </p>
+            <>
+              Empty for <strong style={{ color: 'var(--text-primary)' }}>{emptyForMins} min</strong> — sleeping in{' '}
+              <strong style={{ color: 'var(--accent)' }}>{remaining} min</strong> unless somebody joins.
+            </>
           )}
-        </div>
+        </Notice>
       )}
 
-      {/* Settings */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
-        <label className="flex items-center justify-between gap-4 cursor-pointer">
-          <span>
-            <span className="text-white font-semibold text-sm">Sleep when empty</span>
-            <span className="block text-slate-500 text-xs mt-0.5">
-              Automatically stop the server after a period with no players.
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={config.sleepEnabled}
-            disabled={!canManage || busy !== null}
-            onChange={(e) => saveConfig({ sleepEnabled: e.target.checked })}
-            className="w-11 h-6 accent-emerald-500 cursor-pointer"
-          />
-        </label>
+      {/* Sleep settings */}
+      <section className="cc-panel" style={{ display: 'grid', gap: '18px' }}>
+        <ToggleRow
+          title="Sleep when empty"
+          help="Automatically stop the server after a period with no players."
+          checked={config.sleepEnabled}
+          disabled={!canManage || busy !== null}
+          onChange={(v) => saveConfig({ sleepEnabled: v })}
+        />
 
-        <div className={config.sleepEnabled ? '' : 'opacity-40 pointer-events-none'}>
-          <span className="text-white font-semibold text-sm">Idle time before sleeping</span>
-          <div className="flex items-center gap-2 flex-wrap mt-3">
-            {PRESETS.map((preset) => (
-              <button
-                key={preset}
-                onClick={() => {
-                  setMinutes(preset);
-                  saveConfig({ sleepAfterMinutes: preset });
-                }}
-                disabled={!canManage || busy !== null}
-                className={`text-xs font-semibold rounded-xl px-3 py-2 border ${
-                  config.sleepAfterMinutes === preset
-                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                    : 'bg-slate-950 text-slate-400 border-slate-700 hover:border-slate-600'
-                }`}
-              >
-                {preset < 60 ? `${preset} min` : `${preset / 60} hr`}
-              </button>
-            ))}
+        <div style={{ opacity: config.sleepEnabled ? 1 : 0.45, pointerEvents: config.sleepEnabled ? 'auto' : 'none' }}>
+          <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>Idle time before sleeping</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
+            {PRESETS.map((preset) => {
+              const active = config.sleepAfterMinutes === preset;
+              return (
+                <button
+                  key={preset}
+                  onClick={() => saveConfig({ sleepAfterMinutes: preset })}
+                  disabled={!canManage || busy !== null}
+                  aria-pressed={active}
+                  className="cc-btn-ghost"
+                  style={active ? { background: 'var(--accent-dim)', color: 'var(--accent)', borderColor: 'var(--accent-border)', fontWeight: 700 } : undefined}
+                >
+                  {formatPreset(preset)}
+                </button>
+              );
+            })}
 
-            <div className="flex items-center gap-2 ml-auto">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
+              <label className="cc-label" htmlFor="sleep-custom" style={{ margin: 0 }}>Custom</label>
               <input
+                id="sleep-custom"
                 type="number"
                 min={1}
                 max={1440}
                 value={minutes}
                 onChange={(e) => setMinutes(Number(e.target.value))}
                 disabled={!canManage}
-                className="w-24 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/60"
+                className="cc-input"
+                style={{ width: '90px' }}
               />
               <button
                 onClick={() => saveConfig({ sleepAfterMinutes: minutes })}
-                disabled={!canManage || busy !== null || minutes === config.sleepAfterMinutes}
-                className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-semibold text-xs rounded-xl px-4 py-2 border border-slate-700"
+                disabled={!canManage || busy !== null || minutes === config.sleepAfterMinutes || minutes < 1 || minutes > 1440}
+                className="cc-btn-ghost"
               >
                 Save
               </button>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* Crash auto-restart */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
-        <label className="flex items-center justify-between gap-4 cursor-pointer">
-          <span>
-            <span className="text-white font-semibold text-sm">Auto-restart on crash</span>
-            <span className="block text-slate-500 text-xs mt-0.5">
-              If the process dies unexpectedly, restart it automatically. Pauses after 3 crashes in 30 minutes to
-              avoid a restart loop.
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={config.autoRestartEnabled}
-            disabled={!canManage || busy !== null}
-            onChange={(e) => saveConfig({ autoRestartEnabled: e.target.checked })}
-            className="w-11 h-6 accent-emerald-500 cursor-pointer"
-          />
-        </label>
-        {config.autoRestartEnabled && snap && snap.crashCount > 0 && (
-          <p className="text-xs text-amber-300">
+      <section className="cc-panel" style={{ display: 'grid', gap: '10px' }}>
+        <ToggleRow
+          title="Auto-restart on crash"
+          help="If the process dies unexpectedly, restart it automatically. Pauses after 3 crashes in 30 minutes to avoid a restart loop."
+          checked={config.autoRestartEnabled}
+          disabled={!canManage || busy !== null}
+          onChange={(v) => saveConfig({ autoRestartEnabled: v })}
+        />
+        {config.autoRestartEnabled && snap.crashCount > 0 && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--warning)', margin: 0 }}>
             {snap.crashCount} crash{snap.crashCount === 1 ? '' : 'es'} in the current 30-minute window
-            {snap.crashCount >= 3 ? ' — auto-restart is paused until this window expires or you restart manually.' : '.'}
+            {snap.crashCount >= 3 ? ' — auto-restart is paused until the window expires or you restart manually.' : '.'}
           </p>
         )}
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+        <StatTile label="Last slept" value={relative(snap.lastSleptAt)} />
+        <StatTile label="Last woke" value={relative(snap.lastWokeAt)} />
       </div>
 
-      {/* History */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-          <div className="text-slate-500 text-[0.65rem] uppercase tracking-wider font-bold">Last slept</div>
-          <div className="text-white font-bold mt-1 text-sm">{relative(snap?.lastSleptAt)}</div>
-        </div>
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-          <div className="text-slate-500 text-[0.65rem] uppercase tracking-wider font-bold">Last woke</div>
-          <div className="text-white font-bold mt-1 text-sm">{relative(snap?.lastWokeAt)}</div>
-        </div>
-      </div>
-
-      <div className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 text-xs text-slate-400 leading-relaxed">
-        <strong className="text-slate-300">Worth knowing:</strong> waking takes as long as a normal start — usually
-        20&ndash;60 seconds, longer for big modpacks. The first player to knock gets disconnected with a
-        &quot;waking up&quot; message and needs to reconnect. Everyone joining after that connects normally.
-      </div>
+      <Notice>
+        <strong style={{ color: 'var(--text-primary)' }}>Worth knowing:</strong> waking takes as long as a normal start —
+        usually 20–60 seconds, longer for big modpacks. The first player to knock is disconnected with a “waking up”
+        message and needs to reconnect. Everyone joining after that connects normally.
+      </Notice>
     </div>
+  );
+}
+
+function ToggleRow({
+  title, help, checked, disabled, onChange,
+}: { title: string; help: string; checked: boolean; disabled: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', cursor: disabled ? 'not-allowed' : 'pointer' }}>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>{title}</span>
+        <span className="cc-help" style={{ display: 'block' }}>{help}</span>
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ width: 18, height: 18, accentColor: 'var(--accent)', flexShrink: 0, cursor: 'inherit' }}
+      />
+    </label>
   );
 }

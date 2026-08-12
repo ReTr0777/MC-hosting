@@ -1,7 +1,12 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useToast } from '@/context/ToastContext';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { apiPost, errorMessage } from '@/lib/api';
+import { formatBytes, formatDateTime } from '@/lib/format';
+import { Chip, EmptyState, InlineError, PanelHeader, SkeletonRows } from '@/components/ui';
 
 interface Backup {
   name: string;
@@ -10,52 +15,37 @@ interface Backup {
   location?: 'local' | 'remote' | 'both';
 }
 
-export default function BackupsTab({ serverId }: { serverId: string }) {
+const LOCATION_LABEL: Record<string, { text: string; tone: 'default' | 'accent' }> = {
+  remote: { text: 'Off-site only', tone: 'default' },
+  both: { text: 'Local + off-site', tone: 'accent' },
+  local: { text: 'Local only', tone: 'default' },
+};
+
+export default function BackupsTab({ serverId, canManage = true }: { serverId: string; canManage?: boolean }) {
   const confirm = useConfirm();
-  const [backups, setBackups] = useState<Backup[]>([]);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [backupName, setBackupName] = useState('');
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchBackups();
-  }, [serverId]);
-
-  const fetchBackups = async () => {
-    try {
-      const res = await fetch(`/api/servers/${serverId}/backups`);
-      if (res.ok) {
-        const data = await res.json();
-        setBackups(data.backups || []);
-      }
-    } catch (e) {
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: backups, loading, error, refresh } = usePolledResource<Backup[]>(
+    `/api/servers/${serverId}/backups`,
+    [],
+    { select: (raw) => raw?.backups ?? [] }
+  );
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreating(true);
-    setMessage(null);
+    // Archiving a big world takes a while; a sticky toast beats a button that just sits there.
+    const toastId = toast.toast('info', 'Creating backup…', 'Archiving the world and configs.', { sticky: true });
     try {
-      const res = await fetch(`/api/servers/${serverId}/backups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: backupName }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: 'Backup snapshot created successfully!' });
-        setBackupName('');
-        fetchBackups();
-      } else {
-        setMessage({ kind: 'err', text: `Error: ${data.error}` });
-      }
-    } catch (err: any) {
-      setMessage({ kind: 'err', text: `Error: ${err.message}` });
+      await apiPost(`/api/servers/${serverId}/backups`, { name: backupName.trim() });
+      toast.toast('success', 'Backup created', undefined, { id: toastId });
+      setBackupName('');
+      await refresh();
+    } catch (err) {
+      toast.toast('error', 'Backup failed', errorMessage(err), { id: toastId });
     } finally {
       setCreating(false);
     }
@@ -74,22 +64,14 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
       danger: true,
     });
     if (!ok) return;
+
     setActionLoading(`restore-${name}`);
-    setMessage(null);
+    const toastId = toast.toast('info', 'Restoring backup…', 'The server is being stopped and rolled back.', { sticky: true });
     try {
-      const res = await fetch(`/api/servers/${serverId}/backups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'restore', name }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: 'Backup restored successfully!' });
-      } else {
-        setMessage({ kind: 'err', text: `Error: ${data.error}` });
-      }
-    } catch (err: any) {
-      setMessage({ kind: 'err', text: `Error: ${err.message}` });
+      await apiPost(`/api/servers/${serverId}/backups`, { action: 'restore', name });
+      toast.toast('success', 'Backup restored', 'Start the server to play on the restored world.', { id: toastId });
+    } catch (err) {
+      toast.toast('error', 'Restore failed', errorMessage(err), { id: toastId });
     } finally {
       setActionLoading(null);
     }
@@ -110,125 +92,128 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
     if (!ok) return;
 
     setActionLoading(`delete-${name}`);
-    setMessage(null);
     try {
-      const res = await fetch(`/api/servers/${serverId}/backups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete', name }),
-      });
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: 'Backup deleted.' });
-        fetchBackups();
-      }
-    } catch (e) {
+      await apiPost(`/api/servers/${serverId}/backups`, { action: 'delete', name });
+      toast.success('Backup deleted');
+      await refresh();
+    } catch (err) {
+      // Previously this failed completely silently — the row just stayed put.
+      toast.error('Could not delete the backup', errorMessage(err));
     } finally {
       setActionLoading(null);
     }
   };
 
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  const totalBytes = backups.reduce((sum, b) => sum + (b.sizeBytes || 0), 0);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>Scheduled Backups & Snapshots</span>
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">Create compressed `.zip` world snapshots and perform 1-click server rollbacks.</p>
-        </div>
-      </div>
+    <div style={{ display: 'grid', gap: '16px' }}>
+      <PanelHeader
+        title="Backups"
+        chips={
+          backups.length > 0 ? (
+            <>
+              <Chip>{backups.length} snapshot{backups.length === 1 ? '' : 's'}</Chip>
+              <Chip>{formatBytes(totalBytes)}</Chip>
+            </>
+          ) : undefined
+        }
+        description="Compressed snapshots of the world, configs and player data, with one-click rollback."
+        actions={<button onClick={refresh} className="cc-btn-ghost" disabled={loading}>Refresh</button>}
+      />
 
-      {message && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${message.kind === 'err' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {message.text}
-        </div>
+      {error && <InlineError message={error} onRetry={refresh} />}
+
+      {canManage && (
+        <form onSubmit={handleCreate} className="cc-panel" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <input
+            value={backupName}
+            onChange={(e) => setBackupName(e.target.value)}
+            placeholder="Snapshot label (e.g. pre-modpack-update)"
+            aria-label="Backup name"
+            className="cc-input"
+            style={{ flex: 1, minWidth: '220px' }}
+            disabled={creating}
+          />
+          <button type="submit" disabled={creating} className="cc-btn-primary">
+            {creating ? 'Archiving…' : 'Take snapshot'}
+          </button>
+        </form>
       )}
 
-      {/* Create Backup Form */}
-      <form onSubmit={handleCreate} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex items-center space-x-3">
-        <input
-          type="text"
-          value={backupName}
-          onChange={(e) => setBackupName(e.target.value)}
-          placeholder="Snapshot label (e.g. pre_modpack_update)..."
-          className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none"
-        />
-        <button
-          type="submit"
-          disabled={creating}
-          className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition"
-        >
-          {creating ? 'Archiving...' : 'Take Backup Snapshot'}
-        </button>
-      </form>
-
-      {/* Backup List */}
       {loading ? (
-        <div className="text-center py-12 text-slate-500 text-sm animate-pulse">Scanning backup vault...</div>
+        <SkeletonRows rows={3} />
       ) : backups.length === 0 ? (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>No backups</div>
-          <h3 className="text-base font-bold text-white mb-1">No Backups Created Yet</h3>
-          <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            Take a backup snapshot above to safeguard your Minecraft world, configuration, and player progress.
-          </p>
-        </div>
+        <EmptyState
+          title="No backups yet"
+          description={
+            canManage
+              ? 'Take a snapshot above to safeguard your world, configuration and player progress.'
+              : 'No snapshots have been taken for this server yet.'
+          }
+        />
       ) : (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
-          <table className="w-full text-left border-collapse">
+        /* The table scrolls inside its own container so the page never scrolls sideways. */
+        <div className="cc-card" style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '640px' }}>
             <thead>
-              <tr className="border-b border-slate-800 bg-slate-950/50 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                <th className="px-6 py-4">Snapshot Archive</th>
-                <th className="px-6 py-4">File Size</th>
-                <th className="px-6 py-4">Created Date</th>
-                <th className="px-6 py-4">Storage</th>
-                <th className="px-6 py-4 text-right">Actions</th>
+              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+                {['Snapshot', 'Size', 'Created', 'Storage', ''].map((h, i) => (
+                  <th
+                    key={h || i}
+                    style={{
+                      padding: '12px 16px', textAlign: i === 4 ? 'right' : 'left', fontSize: '0.62rem', fontWeight: 800,
+                      letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-muted)', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800 text-xs">
-              {backups.map((backup) => (
-                <tr key={backup.name} className="hover:bg-slate-800/40 transition">
-                  <td className="px-6 py-4 font-mono text-emerald-300 font-semibold">{backup.name}</td>
-                  <td className="px-6 py-4 text-slate-300 font-mono">{formatBytes(backup.sizeBytes)}</td>
-                  <td className="px-6 py-4 text-slate-400">{new Date(backup.createdAt).toLocaleString()}</td>
-                  <td className="px-6 py-4">
-                    <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${
-                      backup.location === 'remote'
-                        ? 'bg-sky-500/10 text-sky-300 border-sky-500/30'
-                        : backup.location === 'both'
-                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                        : 'bg-slate-800 text-slate-400 border-slate-700'
-                    }`}>
-                      {backup.location === 'remote' ? 'Off-site only' : backup.location === 'both' ? 'Local + off-site' : 'Local only'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-right space-x-2">
-                    <button
-                      onClick={() => handleRestore(backup.name)}
-                      disabled={!!actionLoading}
-                      className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-semibold px-3 py-1.5 rounded-lg border border-amber-500/20 transition"
-                    >
-                      ↺ 1-Click Restore
-                    </button>
-
-                    <button
-                      onClick={() => handleDelete(backup.name)}
-                      disabled={!!actionLoading}
-                      className="bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold px-3 py-1.5 rounded-lg border border-red-500/20 transition"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
+            <tbody>
+              {backups.map((backup) => {
+                const loc = LOCATION_LABEL[backup.location || 'local'] ?? LOCATION_LABEL.local;
+                const busy = actionLoading === `restore-${backup.name}` || actionLoading === `delete-${backup.name}`;
+                return (
+                  <tr key={backup.name} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '12px 16px', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--accent)', fontWeight: 600 }}>
+                      {backup.name}
+                    </td>
+                    <td style={{ padding: '12px 16px', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                      {formatBytes(backup.sizeBytes)}
+                    </td>
+                    <td style={{ padding: '12px 16px', fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                      {formatDateTime(backup.createdAt)}
+                    </td>
+                    <td style={{ padding: '12px 16px' }}>
+                      <Chip tone={loc.tone}>{loc.text}</Chip>
+                    </td>
+                    <td style={{ padding: '12px 16px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {canManage && (
+                        <span style={{ display: 'inline-flex', gap: '6px' }}>
+                          <button
+                            onClick={() => handleRestore(backup.name)}
+                            disabled={!!actionLoading}
+                            className="cc-btn-warning"
+                            style={{ padding: '4px 10px' }}
+                          >
+                            {busy && actionLoading?.startsWith('restore') ? 'Restoring…' : 'Restore'}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(backup.name)}
+                            disabled={!!actionLoading}
+                            className="cc-btn-danger"
+                            style={{ padding: '4px 10px' }}
+                          >
+                            Delete
+                          </button>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

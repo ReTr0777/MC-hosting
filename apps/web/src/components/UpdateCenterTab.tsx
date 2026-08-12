@@ -2,6 +2,9 @@
 
 import React, { useState } from 'react';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useToast } from '@/context/ToastContext';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { Chip, Mono, Notice, PanelHeader } from '@/components/ui';
 
 interface UpdateCenterTabProps {
   server: {
@@ -13,54 +16,42 @@ interface UpdateCenterTabProps {
     memoryMb: number;
     serverPort: number;
   };
+  canManage?: boolean;
   onUpdateSuccess?: () => void;
 }
 
 const ENGINE_OPTIONS = [
-  { id: 'FABRIC', name: 'Fabric', desc: 'Lightweight & highly moddable loader', label: 'FA', color: '#a78bfa' },
-  { id: 'FORGE', name: 'Forge', desc: 'Classic heavy modpack framework', label: 'FO', color: '#fb923c' },
-  { id: 'PAPER', name: 'Paper', desc: 'High performance Spigot/Bukkit server', label: 'PA', color: '#60a5fa' },
-  { id: 'PURPUR', name: 'Purpur', desc: 'Ultra configurable high performance Paper fork', label: 'PU', color: '#c084fc' },
-  { id: 'VANILLA', name: 'Vanilla', desc: 'Official unmodified Mojang server', label: 'VA', color: '#34d399' },
+  { id: 'FABRIC', name: 'Fabric', desc: 'Lightweight, fast-updating mod loader.', label: 'FA', color: '#a78bfa' },
+  { id: 'FORGE', name: 'Forge', desc: 'The classic loader most large modpacks target.', label: 'FO', color: '#fb923c' },
+  { id: 'PAPER', name: 'Paper', desc: 'High-performance Spigot/Bukkit plugin server.', label: 'PA', color: '#60a5fa' },
+  { id: 'PURPUR', name: 'Purpur', desc: 'Paper fork with many extra config options.', label: 'PU', color: '#c084fc' },
+  { id: 'VANILLA', name: 'Vanilla', desc: 'The unmodified server from Mojang.', label: 'VA', color: '#34d399' },
 ];
 
 const MC_VERSIONS = [
-  '26.2',
-  '1.21.4',
-  '1.21.1',
-  '1.21',
-  '1.20.6',
-  '1.20.4',
-  '1.20.2',
-  '1.20.1',
-  '1.20',
-  '1.19.4',
-  '1.19.2',
-  '1.19',
-  '1.18.2',
-  '1.18.1',
-  '1.18',
-  '1.17.1',
-  '1.16.5',
-  '1.12.2',
-  '1.8.9',
-  'CUSTOM',
+  '26.2', '1.21.4', '1.21.1', '1.21', '1.20.6', '1.20.4', '1.20.2', '1.20.1', '1.20',
+  '1.19.4', '1.19.2', '1.19', '1.18.2', '1.18.1', '1.18', '1.17.1', '1.16.5', '1.12.2', '1.8.9', 'CUSTOM',
 ];
 
-export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCenterTabProps) {
-  const confirm = useConfirm();
-  const [selectedEngine, setSelectedEngine] = useState<string>(server.serverType || 'FABRIC');
-  const [selectedMcVersion, setSelectedMcVersion] = useState<string>(server.mcVersion || '26.2');
-  const [customMcVersion, setCustomMcVersion] = useState<string>('');
-  const [updating, setUpdating] = useState<boolean>(false);
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+const DEFAULT_VERSION = '26.2';
 
-  const currentMcVersion = server.mcVersion || '26.2';
-  const effectiveVersion = selectedMcVersion === 'CUSTOM' ? customMcVersion : selectedMcVersion;
+export default function UpdateCenterTab({ server, canManage = true, onUpdateSuccess }: UpdateCenterTabProps) {
+  const confirm = useConfirm();
+  const toast = useToast();
+
+  const [selectedEngine, setSelectedEngine] = useState(server.serverType || 'FABRIC');
+  const [selectedMcVersion, setSelectedMcVersion] = useState(server.mcVersion || DEFAULT_VERSION);
+  const [customMcVersion, setCustomMcVersion] = useState('');
+  const [updating, setUpdating] = useState(false);
+
+  const currentMcVersion = server.mcVersion || DEFAULT_VERSION;
+  const effectiveVersion = selectedMcVersion === 'CUSTOM' ? customMcVersion.trim() : selectedMcVersion;
+  const isLocked = server.serverType === 'CUSTOM_ZIP';
+  const noChange = selectedEngine === server.serverType && effectiveVersion === currentMcVersion;
 
   const handleApplyUpdate = async () => {
     if (selectedMcVersion === 'CUSTOM' && !customMcVersion.trim()) {
-      setStatusMessage({ type: 'error', text: 'Please specify a custom Minecraft version string.' });
+      toast.error('Enter a version', 'Type the snapshot or version string you want to install.');
       return;
     }
 
@@ -68,11 +59,11 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
       title: 'Change the server version?',
       message: (
         <>
-          <strong style={{ color: 'var(--text-primary)' }}>{server.name}</strong> will switch from{' '}
-          {server.serverType} {currentMcVersion} to <strong style={{ color: 'var(--text-primary)' }}>{selectedEngine} {effectiveVersion}</strong>.
+          <strong style={{ color: 'var(--text-primary)' }}>{server.name}</strong> will switch from {server.serverType}{' '}
+          {currentMcVersion} to <strong style={{ color: 'var(--text-primary)' }}>{selectedEngine} {effectiveVersion}</strong>.
           The server stops, its loader files are replaced, and it restarts.
           <br /><br />
-          A safety backup is always taken first, and the previous engine files are restored automatically if the new download fails.
+          A safety backup is taken first, and the previous engine files are restored automatically if the download fails.
         </>
       ),
       confirmLabel: 'Apply update',
@@ -80,27 +71,16 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
     if (!ok) return;
 
     setUpdating(true);
-    setStatusMessage(null);
-
+    const toastId = toast.toast('info', 'Updating server engine…', 'Taking a safety backup and downloading the new files.', { sticky: true });
     try {
-      const res = await fetch(`/api/servers/${server.id}/update-engine`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          serverType: selectedEngine,
-          mcVersion: effectiveVersion,
-        }),
+      await apiPost(`/api/servers/${server.id}/update-engine`, {
+        serverType: selectedEngine,
+        mcVersion: effectiveVersion,
       });
-
-      const data = await res.json();
-      if (res.ok) {
-        setStatusMessage({ type: 'success', text: `Server engine updated successfully to ${selectedEngine} (${effectiveVersion})!` });
-        if (onUpdateSuccess) onUpdateSuccess();
-      } else {
-        setStatusMessage({ type: 'error', text: `Update failed: ${data.error || data.details || 'Unknown error'}` });
-      }
-    } catch (err: any) {
-      setStatusMessage({ type: 'error', text: `Network error: ${err.message}` });
+      toast.toast('success', 'Engine updated', `Now running ${selectedEngine} ${effectiveVersion}.`, { id: toastId });
+      onUpdateSuccess?.();
+    } catch (err) {
+      toast.toast('error', 'Update failed', errorMessage(err), { id: toastId });
     } finally {
       setUpdating(false);
     }
@@ -109,214 +89,167 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
   const handleRepairWorld = async () => {
     const ok = await confirm({
       title: 'Repair the world headers?',
-      message: 'This restores level.dat from its backup copy, or resets invalid generator keys inside it. Your blocks, regions and player inventories are not touched.',
+      message:
+        'This restores level.dat from its backup copy, or resets invalid generator keys inside it. Your blocks, regions and player inventories are not touched.',
       confirmLabel: 'Repair world',
     });
     if (!ok) return;
 
     setUpdating(true);
-    setStatusMessage(null);
-
+    const toastId = toast.toast('info', 'Repairing world headers…', undefined, { sticky: true });
     try {
-      const res = await fetch(`/api/servers/${server.id}/repair-world`, {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setStatusMessage({ type: 'success', text: `${data.message}` });
-        if (onUpdateSuccess) onUpdateSuccess();
-      } else {
-        setStatusMessage({ type: 'error', text: `Repair failed: ${data.error || data.details || 'Unknown error'}` });
-      }
-    } catch (err: any) {
-      setStatusMessage({ type: 'error', text: `Network error: ${err.message}` });
+      const data = await apiRequest(`/api/servers/${server.id}/repair-world`, { method: 'POST' });
+      toast.toast('success', 'World repaired', data?.message, { id: toastId });
+      onUpdateSuccess?.();
+    } catch (err) {
+      toast.toast('error', 'Repair failed', errorMessage(err), { id: toastId });
     } finally {
       setUpdating(false);
     }
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      {/* Header Overview */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-3 mb-1">
-            <h2 className="text-xl font-bold text-white">Server Update &amp; Engine Centre</h2>
-            <span className="bg-indigo-500/20 text-indigo-400 text-xs px-2.5 py-0.5 rounded-full border border-indigo-500/30 font-mono font-bold">
-              v1.0
-            </span>
-          </div>
-          <p className="text-xs text-slate-400">
-            Switch Minecraft server engines (Fabric, Paper, Purpur, Forge, Vanilla) or change target Minecraft versions seamlessly.
-          </p>
-        </div>
+    <div style={{ display: 'grid', gap: '16px', maxWidth: '64rem' }}>
+      <PanelHeader
+        title="Update Centre"
+        chips={<Chip tone="accent">{server.serverType} {currentMcVersion}</Chip>}
+        description="Switch between server engines or move to a different Minecraft version. A safety backup is always taken first."
+      />
 
-        {/* Current Active Engine Card */}
-        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 flex items-center space-x-3.5 flex-shrink-0">
-          <div className="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center font-mono text-xs font-black text-indigo-400">
-            {server.serverType?.substring(0, 2).toUpperCase() || 'MC'}
-          </div>
-          <div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Active Loader</div>
-            <div className="text-sm font-bold text-white">
-              {server.serverType} <span className="text-emerald-400 font-mono">({currentMcVersion})</span>
+      {isLocked ? (
+        <Notice tone="warning">
+          <strong>Version locked to serverpack.</strong> This instance was deployed from an uploaded serverpack archive, so its
+          engine version (<Mono>{currentMcVersion}</Mono>) comes from the files in that archive and can&apos;t be changed here.
+        </Notice>
+      ) : (
+        <>
+          {/* Engine */}
+          <section className="cc-panel">
+            <h3 className="cc-section-title" style={{ marginBottom: '4px' }}>1. Server engine</h3>
+            <p className="cc-section-sub" style={{ marginBottom: '14px' }}>
+              Changing loader family usually means your existing mods need replacing.
+            </p>
+
+            <div role="radiogroup" aria-label="Server engine" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+              {ENGINE_OPTIONS.map((eng) => {
+                const isSelected = selectedEngine === eng.id;
+                return (
+                  /* A real button, so the choice is reachable by keyboard and announced correctly. */
+                  <button
+                    key={eng.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    onClick={() => setSelectedEngine(eng.id)}
+                    disabled={!canManage || updating}
+                    style={{
+                      textAlign: 'left', padding: '14px', borderRadius: '8px', cursor: canManage ? 'pointer' : 'not-allowed',
+                      background: isSelected ? 'var(--accent-dim)' : 'var(--bg)',
+                      border: `1px solid ${isSelected ? 'var(--accent-border)' : 'var(--border-2)'}`,
+                      display: 'grid', gap: '10px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span
+                        style={{
+                          width: 30, height: 30, borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontFamily: 'var(--font-mono)', fontSize: '0.68rem', fontWeight: 900,
+                          background: `${eng.color}20`, color: eng.color, border: `1px solid ${eng.color}40`,
+                        }}
+                      >
+                        {eng.label}
+                      </span>
+                      {isSelected && <Chip tone="accent">Selected</Chip>}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>{eng.name}</div>
+                      <div className="cc-help">{eng.desc}</div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
-          </div>
-        </div>
-      </div>
+          </section>
 
-      {statusMessage && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${statusMessage.type === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {statusMessage.text}
-        </div>
+          {/* Version */}
+          <section className="cc-panel">
+            <h3 className="cc-section-title" style={{ marginBottom: '14px' }}>2. Minecraft version</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+              <div>
+                <label className="cc-label" htmlFor="uc-version">Release version</label>
+                <select
+                  id="uc-version"
+                  value={selectedMcVersion}
+                  onChange={(e) => setSelectedMcVersion(e.target.value)}
+                  disabled={!canManage || updating}
+                  className="cc-input"
+                  style={{ fontFamily: 'var(--font-mono)' }}
+                >
+                  {MC_VERSIONS.map((ver) => (
+                    <option key={ver} value={ver}>{ver === 'CUSTOM' ? 'Custom / snapshot…' : `Minecraft ${ver}`}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedMcVersion === 'CUSTOM' && (
+                <div>
+                  <label className="cc-label" htmlFor="uc-custom">Custom version string</label>
+                  <input
+                    id="uc-custom"
+                    value={customMcVersion}
+                    onChange={(e) => setCustomMcVersion(e.target.value)}
+                    placeholder="24w10a"
+                    disabled={!canManage || updating}
+                    className="cc-input"
+                    style={{ fontFamily: 'var(--font-mono)' }}
+                  />
+                  <p className="cc-help">Any version string the loader recognises, e.g. a snapshot id.</p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Apply */}
+          <section className="cc-panel" style={{ display: 'grid', gap: '16px' }}>
+            <h3 className="cc-section-title" style={{ margin: 0 }}>3. Apply</h3>
+
+            <Notice>
+              A safety backup of the world, configs and player data is taken before the new engine is downloaded, and the
+              previous engine is restored automatically if that download fails. This can&apos;t be skipped.
+            </Notice>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                Target: <strong style={{ color: 'var(--text-primary)' }}>{selectedEngine} {effectiveVersion || '—'}</strong>
+                {noChange && ' (already current)'}
+              </span>
+              {canManage && (
+                <button onClick={handleApplyUpdate} disabled={updating || noChange || !effectiveVersion} className="cc-btn-primary">
+                  {updating ? 'Updating…' : 'Apply update'}
+                </button>
+              )}
+            </div>
+          </section>
+        </>
       )}
 
-      {/* Step 1: Select Server Engine */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-bold text-emerald-400 uppercase tracking-wider border-b border-slate-800 pb-3 flex items-center justify-between">
-          <span>1. Choose Server Engine / Loader</span>
-        </h3>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-          {ENGINE_OPTIONS.map((eng) => {
-            const isSelected = selectedEngine === eng.id;
-            return (
-              <div
-                key={eng.id}
-                onClick={() => setSelectedEngine(eng.id)}
-                className={`p-4 rounded-xl cursor-pointer border transition flex flex-col justify-between space-y-3 ${
-                  isSelected
-                    ? 'bg-emerald-500/10 border-emerald-500/50 shadow-lg shadow-emerald-500/5'
-                    : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div
-                    className="w-8 h-8 rounded-lg flex items-center justify-center font-mono text-xs font-black"
-                    style={{ background: `${eng.color}20`, color: eng.color, border: `1px solid ${eng.color}40` }}
-                  >
-                    {eng.label}
-                  </div>
-                  {isSelected && (
-                    <span className="text-[10px] bg-emerald-500 text-slate-950 font-bold px-2 py-0.5 rounded-full uppercase">
-                      Selected
-                    </span>
-                  )}
-                </div>
-                <div>
-                  <div className="text-sm font-bold text-white">{eng.name}</div>
-                  <div className="text-[11px] text-slate-400 leading-snug mt-0.5">{eng.desc}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Step 2: Select Minecraft Version */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-bold text-cyan-400 uppercase tracking-wider border-b border-slate-800 pb-3 flex items-center justify-between">
-          <span>2. Select Target Minecraft Version</span>
-          {server.serverType === 'CUSTOM_ZIP' && (
-            <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 rounded-full font-mono">
-              Version Locked to Serverpack
-            </span>
-          )}
-        </h3>
-
-        {server.serverType === 'CUSTOM_ZIP' ? (
-          <div className="bg-slate-950 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300/90 leading-relaxed">
-            <strong>Serverpack Version Locked:</strong> This instance was deployed from an uploaded serverpack archive. The Minecraft engine version (<code className="font-mono text-white font-bold">{currentMcVersion}</code>) is locked to the files provided in your serverpack archive.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1.5">Minecraft Release Version</label>
-              <select
-                value={selectedMcVersion}
-                onChange={(e) => setSelectedMcVersion(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
-              >
-                {MC_VERSIONS.map((ver) => (
-                  <option key={ver} value={ver}>
-                    {ver === 'CUSTOM' ? 'Custom / Snapshot...' : `Minecraft ${ver}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {selectedMcVersion === 'CUSTOM' && (
-              <div>
-                <label className="block text-xs font-semibold text-emerald-400 mb-1.5">Custom Snapshot / Version String</label>
-                <input
-                  type="text"
-                  value={customMcVersion}
-                  onChange={(e) => setCustomMcVersion(e.target.value)}
-                  placeholder="e.g. 24w10a, 1.20.4"
-                  className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
-                />
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Step 3: Safety & Execution */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
-        <h3 className="text-sm font-bold text-amber-400 uppercase tracking-wider border-b border-slate-800 pb-3">
-          3. Safety Snapshot &amp; Execution
-        </h3>
-
-        <div className="flex items-start space-x-3 p-4 bg-slate-950 border border-slate-800 rounded-xl">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-emerald-400, #34d399)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0"><path d="M9 12l2 2 4-4" /><path d="M12 3l8 4v5c0 5-3.5 9-8 10-4.5-1-8-5-8-10V7z" /></svg>
-          <div className="text-xs">
-            <span className="font-bold text-white block">A safety backup is always taken before applying an update</span>
-            <span className="text-slate-400 text-[11px] mt-0.5 block">
-              CraftControl snapshots your world, config, and player inventories before downloading the new engine files, and automatically
-              restores the previous engine if the new download fails — this can&apos;t be skipped.
-            </span>
-          </div>
-        </div>
-
-        <div className="pt-2 flex items-center justify-between">
-          <div className="text-xs text-slate-400">
-            Target Engine: <strong className="text-white">{selectedEngine}</strong> ({effectiveVersion})
-          </div>
-
-          <button
-            onClick={handleApplyUpdate}
-            disabled={updating}
-            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs px-7 py-3 rounded-xl shadow-lg shadow-emerald-600/20 transition flex items-center space-x-2"
-          >
-            {updating ? (
-              <span>Updating Engine &amp; Downloading JAR...</span>
-            ) : (
-              <span>Apply &amp; Switch Server Engine</span>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* World Repair & Level.dat Fix Card */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div>
-            <h3 className="text-sm font-bold text-purple-400 uppercase tracking-wider">
-              WorldGen / Level.dat Repair Utility
-            </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Fixes <code className="text-purple-300 font-mono">WorldGenSettings: No key dimensions in MapLike</code> startup crashes caused by corrupted level.dat or version downgrades.
+      {/* World repair */}
+      <section className="cc-panel">
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <h3 className="cc-section-title" style={{ margin: 0 }}>World header repair</h3>
+            <p className="cc-section-sub">
+              Fixes <Mono>WorldGenSettings: No key dimensions in MapLike</Mono> startup crashes caused by a corrupted
+              level.dat or a version downgrade. Blocks and inventories are left untouched.
             </p>
           </div>
-          <button
-            onClick={handleRepairWorld}
-            disabled={updating}
-            className="bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 font-bold text-xs px-5 py-2.5 rounded-xl transition flex-shrink-0"
-          >
-            Auto-Repair World Header
-          </button>
+          {canManage && (
+            <button onClick={handleRepairWorld} disabled={updating} className="cc-btn-ghost">
+              Repair world header
+            </button>
+          )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }

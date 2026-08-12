@@ -17,7 +17,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-slate-950 text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-white">
+      {/* Colours come from the design tokens in globals.css — utility classes here would
+          out-specify the `body` rule and desync the app background from the token. */}
+      <body>
         <AuthProvider>
           <UIPrefsProvider>
             <ToastProvider>

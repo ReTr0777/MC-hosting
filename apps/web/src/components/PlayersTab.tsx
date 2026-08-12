@@ -1,6 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { apiPost, errorMessage } from '@/lib/api';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
+import { Chip, EmptyState, InlineError, PanelHeader, PlayerAvatar, SkeletonRows } from '@/components/ui';
 
 interface Player {
   username: string;
@@ -8,159 +13,129 @@ interface Player {
   avatarUrl: string;
 }
 
-export default function PlayersTab({ serverId }: { serverId: string }) {
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+type Action = 'op' | 'deop' | 'kick' | 'ban';
 
-  const fetchPlayers = async () => {
-    try {
-      const res = await fetch(`/api/servers/${serverId}/players`);
-      if (res.ok) {
-        const data = await res.json();
-        setPlayers(data.players || []);
-      }
-    } catch (e) {
-    } finally {
-      setLoading(false);
-    }
-  };
+const ACTION_LABEL: Record<Action, string> = {
+  op: 'Granted operator',
+  deop: 'Removed operator',
+  kick: 'Kicked',
+  ban: 'Banned',
+};
 
-  useEffect(() => {
-    fetchPlayers();
-    const interval = setInterval(fetchPlayers, 5000);
-    return () => clearInterval(interval);
-  }, [serverId]);
+export default function PlayersTab({ serverId, canManage = true }: { serverId: string; canManage?: boolean }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState<string | null>(null);
 
-  const handleAction = async (username: string, action: 'op' | 'deop' | 'kick' | 'ban') => {
-    setActionLoading(`${username}-${action}`);
-    setMessage(null);
-    try {
-      const res = await fetch(`/api/servers/${serverId}/players`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, action }),
+  const { data, loading, error, refresh } = usePolledResource<Player[]>(
+    `/api/servers/${serverId}/players`,
+    [],
+    { intervalMs: 5000, select: (raw) => raw?.players ?? [] }
+  );
+
+  const handleAction = async (username: string, action: Action) => {
+    // Kicking and banning are disruptive and were previously one misclick away.
+    if (action === 'kick' || action === 'ban') {
+      const ok = await confirm({
+        title: action === 'ban' ? `Ban ${username}?` : `Kick ${username}?`,
+        message:
+          action === 'ban'
+            ? `${username} will be disconnected and blocked from rejoining until you unban them from the Ban List tab.`
+            : `${username} will be disconnected immediately. They can rejoin straight away unless you also ban them.`,
+        confirmLabel: action === 'ban' ? 'Ban player' : 'Kick player',
+        danger: true,
       });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage(`Successfully executed ${action.toUpperCase()} on ${username}`);
-        fetchPlayers();
-      } else {
-        setMessage(`Error: ${data.error}`);
-      }
-    } catch (e: any) {
-      setMessage(`Error: ${e.message}`);
+      if (!ok) return;
+    }
+
+    setBusy(`${username}-${action}`);
+    try {
+      await apiPost(`/api/servers/${serverId}/players`, { username, action });
+      toast.success(`${ACTION_LABEL[action]} ${username}`);
+      await refresh();
+    } catch (err) {
+      toast.error(`Could not ${action} ${username}`, errorMessage(err));
     } finally {
-      setActionLoading(null);
+      setBusy(null);
     }
   };
+
+  const players = data;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>Online Players</span>
-            <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-              {players.length} Active
-            </span>
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">Live connected player roster and administrator privilege controls.</p>
-        </div>
+    <div style={{ display: 'grid', gap: '16px' }}>
+      <PanelHeader
+        title="Online Players"
+        chips={<Chip tone={players.length > 0 ? 'accent' : 'default'}>{players.length} online</Chip>}
+        description="Live roster of connected players, with operator and moderation controls."
+        actions={
+          <button onClick={refresh} className="cc-btn-ghost" disabled={loading}>
+            Refresh
+          </button>
+        }
+      />
 
-        <button
-          onClick={fetchPlayers}
-          className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition"
-        >
-          Refresh Roster
-        </button>
-      </div>
-
-      {message && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${message.startsWith('Error') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {message}
-        </div>
-      )}
+      {error && <InlineError message={error} onRetry={refresh} />}
 
       {loading ? (
-        <div className="text-center py-12 text-slate-500 text-sm animate-pulse">Scanning server for online players...</div>
+        <SkeletonRows rows={3} />
       ) : players.length === 0 ? (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
-          <h3 className="text-base font-bold text-white mb-1">No Players Currently Online</h3>
-          <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            When players log in to this Minecraft server, their skin avatars and admin privilege tools will automatically show up here.
-          </p>
-        </div>
+        <EmptyState
+          title="No players online"
+          description="When someone joins this server they'll appear here, along with controls to op, kick or ban them."
+        />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '10px' }}>
           {players.map((player) => (
-            <div key={player.username} className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-2xl p-5 flex items-center justify-between transition">
-              <div className="flex items-center space-x-3">
-                <img
-                  src={player.avatarUrl}
-                  alt={player.username}
-                  className="w-12 h-12 rounded-xl bg-slate-950 border border-slate-800 shadow-md"
-                  onError={(e) => {
-                    (e.target as any).src = 'https://mc-heads.net/avatar/MHF_Steve/64';
-                  }}
-                />
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <span className="font-bold text-white text-sm">{player.username}</span>
-                    {player.isOp && (
-                      <span className="bg-amber-500/20 text-amber-300 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-amber-500/30">
-                        OP
-                      </span>
-                    )}
+            <div key={player.username} className="cc-row">
+              <div className="cc-row-main">
+                <PlayerAvatar src={player.avatarUrl} name={player.username} size={40} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span className="cc-row-title">{player.username}</span>
+                    {player.isOp && <Chip tone="warning" title="Server operator">OP</Chip>}
                   </div>
-                  <span className="text-[11px] text-emerald-400 flex items-center space-x-1 mt-0.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>Connected</span>
+                  <span className="cc-row-sub" style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--accent)' }}>
+                    <span
+                      className="pulse-dot"
+                      style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }}
+                    />
+                    Connected
                   </span>
                 </div>
               </div>
 
-              {/* Quick Actions Menu */}
-              <div className="flex items-center space-x-1.5">
-                {player.isOp ? (
+              {canManage && (
+                <div className="cc-row-actions">
                   <button
-                    onClick={() => handleAction(player.username, 'deop')}
-                    disabled={!!actionLoading}
-                    title="De-OP Player"
-                    className="p-2 bg-slate-800 hover:bg-slate-700 text-amber-400 rounded-lg border border-slate-700 text-xs font-bold transition"
+                    onClick={() => handleAction(player.username, player.isOp ? 'deop' : 'op')}
+                    disabled={!!busy}
+                    title={player.isOp ? 'Revoke operator privileges' : 'Grant operator privileges'}
+                    className={player.isOp ? 'cc-btn-warning' : 'cc-btn-ghost'}
+                    style={{ padding: '5px 10px' }}
                   >
-                    De-OP
+                    {player.isOp ? 'De-OP' : 'OP'}
                   </button>
-                ) : (
                   <button
-                    onClick={() => handleAction(player.username, 'op')}
-                    disabled={!!actionLoading}
-                    title="Grant OP Operator Privileges"
-                    className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-xs font-bold transition"
+                    onClick={() => handleAction(player.username, 'kick')}
+                    disabled={!!busy}
+                    title="Disconnect this player"
+                    className="cc-btn-ghost"
+                    style={{ padding: '5px 10px' }}
                   >
-                    OP
+                    Kick
                   </button>
-                )}
-
-                <button
-                  onClick={() => handleAction(player.username, 'kick')}
-                  disabled={!!actionLoading}
-                  title="Kick Player from Server"
-                  className="p-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 rounded-lg border border-amber-500/20 text-xs font-bold transition"
-                >
-                  Kick
-                </button>
-
-                <button
-                  onClick={() => handleAction(player.username, 'ban')}
-                  disabled={!!actionLoading}
-                  title="Ban Player from Server"
-                  className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg border border-red-500/20 text-xs font-bold transition"
-                >
-                  Ban
-                </button>
-              </div>
+                  <button
+                    onClick={() => handleAction(player.username, 'ban')}
+                    disabled={!!busy}
+                    title="Disconnect and block this player"
+                    className="cc-btn-danger"
+                    style={{ padding: '5px 10px' }}
+                  >
+                    Ban
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

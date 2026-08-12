@@ -740,17 +740,17 @@ export default function ServerConsolePage() {
           </div>
         )}
 
-        {activeTab === 'players' && <PlayersTab serverId={server.id} />}
+        {activeTab === 'players' && <PlayersTab serverId={server.id} canManage={canManage} />}
         {activeTab === 'whitelist' && (
           <div className="animate-fadeIn"><WhitelistTab serverId={server.id} canManage={canManage} /></div>
         )}
         {activeTab === 'bans' && (
           <div className="animate-fadeIn"><BanListTab serverId={server.id} canManage={canManage} /></div>
         )}
-        {activeTab === 'properties' && <PropertiesTab serverId={server.id} />}
-        {activeTab === 'update' && <UpdateCenterTab server={server} onUpdateSuccess={fetchServerDetails} />}
-        {activeTab === 'schedules' && <SchedulesTab serverId={server.id} />}
-        {activeTab === 'backups' && <BackupsTab serverId={server.id} />}
+        {activeTab === 'properties' && <PropertiesTab serverId={server.id} canManage={canManage} />}
+        {activeTab === 'update' && <UpdateCenterTab server={server} canManage={canManage} onUpdateSuccess={fetchServerDetails} />}
+        {activeTab === 'schedules' && <SchedulesTab serverId={server.id} canManage={canManage} />}
+        {activeTab === 'backups' && <BackupsTab serverId={server.id} canManage={canManage} />}
         {activeTab === 'domain' && <SubdomainTab serverId={server.id} />}
 
         {activeTab === 'files' && (

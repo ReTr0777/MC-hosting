@@ -1,6 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { apiPost, errorMessage, isValidUsername, USERNAME_HINT } from '@/lib/api';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
+import { Chip, EmptyState, InlineError, LoadingLine, Mono, PanelHeader, PlayerAvatar } from '@/components/ui';
 
 interface BanEntry {
   uuid: string;
@@ -18,147 +23,102 @@ interface BanSnapshot {
   entries: BanEntry[];
 }
 
-const EMPTY: BanSnapshot = {
-  live: false,
-  count: 0,
-  entries: [],
-};
+const EMPTY: BanSnapshot = { live: false, count: 0, entries: [] };
 
 export default function BanListTab({ serverId, canManage }: { serverId: string; canManage: boolean }) {
-  const [snapshot, setSnapshot] = useState<BanSnapshot>(EMPTY);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+  const confirm = useConfirm();
   const [busy, setBusy] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newReason, setNewReason] = useState('');
   const [filter, setFilter] = useState('');
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
-  const fetchBans = async () => {
-    try {
-      const res = await fetch(`/api/servers/${serverId}/bans`);
-      const data = await res.json();
-      if (res.ok) {
-        setSnapshot({ ...EMPTY, ...data });
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Failed to load ban list' });
-      }
-    } catch (e: any) {
-      setMessage({ kind: 'err', text: 'Network error loading ban list' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchBans();
-    const interval = setInterval(fetchBans, 15000);
-    return () => clearInterval(interval);
-  }, [serverId]);
+  const { data: snapshot, loading, error, refresh } = usePolledResource<BanSnapshot>(
+    `/api/servers/${serverId}/bans`,
+    EMPTY,
+    { intervalMs: 15000, select: (raw) => ({ ...EMPTY, ...raw }) }
+  );
 
   const runAction = async (action: 'ban' | 'unban', username: string, reason?: string) => {
     setBusy(`${action}-${username}`);
-    setMessage(null);
     try {
-      const res = await fetch(`/api/servers/${serverId}/bans`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, username, reason }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: data.message });
-        if (action === 'ban') {
-          setNewName('');
-          setNewReason('');
-        }
-        await fetchBans();
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Ban action failed' });
+      const data = await apiPost(`/api/servers/${serverId}/bans`, { action, username, reason });
+      toast.success(data?.message || (action === 'ban' ? `Banned ${username}` : `Unbanned ${username}`));
+      if (action === 'ban') {
+        setNewName('');
+        setNewReason('');
       }
-    } catch (e: any) {
-      setMessage({ kind: 'err', text: e.message || 'Network error' });
+      await refresh();
+    } catch (err) {
+      toast.error(action === 'ban' ? `Could not ban ${username}` : `Could not unban ${username}`, errorMessage(err));
     } finally {
       setBusy(null);
     }
   };
 
-  const handleBan = (e: React.FormEvent) => {
+  const handleBan = async (e: React.FormEvent) => {
     e.preventDefault();
     const name = newName.trim();
     if (!name) return;
-    if (!/^[a-zA-Z0-9_]{3,16}$/.test(name)) {
-      setMessage({ kind: 'err', text: 'Usernames must be 3-16 letters, digits or underscores.' });
+    if (!isValidUsername(name)) {
+      toast.error('That username looks wrong', USERNAME_HINT);
       return;
     }
-    runAction('ban', name, newReason.trim() || undefined);
+    const ok = await confirm({
+      title: `Ban ${name}?`,
+      message: `${name} will be disconnected if online and blocked from rejoining until you unban them here.`,
+      confirmLabel: 'Ban player',
+      danger: true,
+    });
+    if (ok) runAction('ban', name, newReason.trim() || undefined);
   };
 
-  const visible = snapshot.entries.filter((e) =>
-    e.name.toLowerCase().includes(filter.trim().toLowerCase())
-  );
+  const handleUnban = async (name: string) => {
+    const ok = await confirm({
+      title: `Unban ${name}?`,
+      message: `${name} will be able to join this server again straight away.`,
+      confirmLabel: 'Unban',
+    });
+    if (ok) runAction('unban', name);
+  };
 
-  if (loading) {
-    return <div className="text-center py-12 text-slate-500 text-sm animate-pulse">Reading banned-players.json from the server...</div>;
-  }
+  const needle = filter.trim().toLowerCase();
+  const visible = needle ? snapshot.entries.filter((e) => e.name.toLowerCase().includes(needle)) : snapshot.entries;
+
+  if (loading) return <LoadingLine>Reading banned-players.json from the server…</LoadingLine>;
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>Ban List</span>
-            <span className="bg-red-500/20 text-red-400 text-xs px-2.5 py-0.5 rounded-full border border-red-500/30">
-              {snapshot.count} Banned
-            </span>
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Everyone currently banned from this server, read live from <code className="text-slate-300">banned-players.json</code>.
-          </p>
-        </div>
+    <div style={{ display: 'grid', gap: '16px' }}>
+      <PanelHeader
+        title="Ban List"
+        chips={<Chip tone={snapshot.count > 0 ? 'danger' : 'default'}>{snapshot.count} banned</Chip>}
+        description={<>Everyone currently banned, read live from <Mono>banned-players.json</Mono>.</>}
+        actions={<button onClick={refresh} className="cc-btn-ghost">Refresh</button>}
+      />
 
-        <button
-          onClick={fetchBans}
-          className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition"
-        >
-          Refresh
-        </button>
-      </div>
+      {error && <InlineError message={error} onRetry={refresh} />}
 
-      {message && (
-        <div
-          className={`p-4 rounded-xl text-xs font-semibold ${
-            message.kind === 'err'
-              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
-
-      {/* Add + filter controls */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <div className="cc-panel" style={{ display: 'grid', gap: '14px' }}>
         {canManage && (
-          <form onSubmit={handleBan} className="flex items-center gap-2 flex-wrap">
+          <form onSubmit={handleBan} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="Minecraft username"
-              className="flex-1 min-w-[160px] bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-red-500/60"
+              aria-label="Minecraft username to ban"
+              className="cc-input"
+              style={{ flex: 1, minWidth: '160px' }}
             />
             <input
               value={newReason}
               onChange={(e) => setNewReason(e.target.value)}
               placeholder="Reason (optional)"
-              className="flex-1 min-w-[160px] bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-red-500/60"
+              aria-label="Ban reason"
+              className="cc-input"
+              style={{ flex: 1, minWidth: '160px' }}
             />
-            <button
-              type="submit"
-              disabled={!!busy || !newName.trim()}
-              className="bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-red-600/20 transition"
-            >
-              {busy?.startsWith('ban') ? 'Banning...' : 'Ban Player'}
+            <button type="submit" disabled={!!busy || !newName.trim()} className="cc-btn-danger" style={{ fontWeight: 700 }}>
+              {busy?.startsWith('ban') ? 'Banning…' : 'Ban player'}
             </button>
           </form>
         )}
@@ -167,53 +127,49 @@ export default function BanListTab({ serverId, canManage }: { serverId: string; 
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter banned players..."
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-slate-600"
+            placeholder="Filter banned players…"
+            aria-label="Filter banned players"
+            className="cc-input"
           />
         )}
 
         {snapshot.count === 0 ? (
-          <div className="text-center py-10">
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>No bans</div>
-            <h3 className="text-base font-bold text-white mb-1">No One Is Banned</h3>
-            <p className="text-xs text-slate-400 max-w-sm mx-auto">
-              {canManage ? 'Ban a username above to block them from joining.' : 'No players are currently banned.'}
-            </p>
-          </div>
+          <EmptyState
+            title="No one is banned"
+            description={canManage ? 'Ban a username above to block them from joining.' : 'No players are currently banned.'}
+          />
         ) : visible.length === 0 ? (
-          <div className="text-center py-8 text-xs text-slate-500">No banned player matches “{filter}”.</div>
+          <div style={{ textAlign: 'center', padding: '24px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+            No banned player matches “{filter}”.
+          </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '10px' }}>
             {visible.map((entry) => (
-              <div
-                key={entry.uuid || entry.name}
-                className="bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl p-4 flex items-center justify-between gap-3 transition"
-              >
-                <div className="flex items-center space-x-3 min-w-0">
-                  <img
-                    src={entry.avatarUrl}
-                    alt={entry.name}
-                    className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 flex-shrink-0"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = 'https://mc-heads.net/avatar/MHF_Steve/64';
-                    }}
-                  />
-                  <div className="min-w-0">
-                    <span className="font-bold text-white text-sm truncate block">{entry.name}</span>
-                    <span title={entry.reason} className="text-[11px] text-slate-500 truncate block mt-0.5">
-                      {entry.reason}
+              <div key={entry.uuid || entry.name} className="cc-row">
+                <div className="cc-row-main">
+                  <PlayerAvatar src={entry.avatarUrl} name={entry.name} size={36} />
+                  <div style={{ minWidth: 0 }}>
+                    <span className="cc-row-title" style={{ display: 'block' }}>{entry.name}</span>
+                    <span
+                      className="cc-row-sub"
+                      title={entry.reason}
+                      style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {entry.reason || 'No reason recorded'}
                     </span>
                   </div>
                 </div>
 
                 {canManage && (
                   <button
-                    onClick={() => runAction('unban', entry.name)}
+                    onClick={() => handleUnban(entry.name)}
                     disabled={!!busy}
                     title={`Unban ${entry.name}`}
-                    className="p-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-500/20 text-xs font-bold transition disabled:opacity-40 flex-shrink-0"
+                    aria-label={`Unban ${entry.name}`}
+                    className="cc-btn-ghost"
+                    style={{ padding: '4px 10px', color: 'var(--accent)', borderColor: 'var(--accent-border)' }}
                   >
-                    {busy === `unban-${entry.name}` ? '...' : 'Unban'}
+                    {busy === `unban-${entry.name}` ? '…' : 'Unban'}
                   </button>
                 )}
               </div>
@@ -222,7 +178,7 @@ export default function BanListTab({ serverId, canManage }: { serverId: string; 
         )}
       </div>
 
-      <p className="text-[11px] text-slate-600">
+      <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0 }}>
         {snapshot.live
           ? 'Changes are sent as console commands and take effect immediately.'
           : 'The server is offline — changes are written to banned-players.json and apply on next start.'}
