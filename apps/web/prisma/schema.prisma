@@ -48,20 +48,80 @@ enum ExecutionMode {
 }
 
 model User {
-  id            String             @id @default(uuid())
-  email         String             @unique
-  username      String             @unique
-  passwordHash  String
-  globalRole    GlobalRole         @default(USER)
-  discordUserId String?            @unique // Linked via /link in the Discord bot
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  id              String             @id @default(uuid())
+  email           String             @unique
+  username        String             @unique
+  passwordHash    String
+  globalRole      GlobalRole         @default(USER)
+  discordUserId   String?            @unique // Linked via /link in the Discord bot
+  emailVerifiedAt DateTime?
+  // Quotas apply only to servers this user OWNS (ServerPermission role OWNER). null = unlimited.
+  // Ignored entirely for GLOBAL_ADMIN.
+  maxServers      Int?
+  maxMemoryMb     Int?
+  maxCpu          Float?
+  // TOTP 2FA. totpSecret is encrypted at rest with the same scheme as other secrets
+  // (see lib/crypto.ts) and is set as soon as setup begins, but totpEnabled only flips
+  // true once the user proves they can generate a valid code — see /api/account/2fa/enable.
+  totpSecret      String?
+  totpEnabled     Boolean            @default(false)
+  totpBackupCodes String[]           @default([]) // bcrypt-hashed, single use
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
-  permissions   ServerPermission[]
-  auditLogs     AuditLog[]
-  inviteCodes   InviteCode[]
+  permissions        ServerPermission[]
+  auditLogs           AuditLog[]
+  inviteCodes         InviteCode[]
+  passwordResetTokens PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  apiKeys             ApiKey[]
 
   @@map("users")
+}
+
+/// A personal access token letting a user authenticate scripts/CLIs against the panel
+/// API without using their session cookie. Carries the same access as the owning user.
+model ApiKey {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique // sha256 of the raw key; the raw key is only ever shown once at creation
+  prefix     String              // first 8 chars of the raw key, shown in the UI for identification
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+/// Short-lived one-time token used to authorize a password reset via emailed link.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique // sha256 of the raw token; the raw token is only ever in the emailed link
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/// Short-lived one-time token used to confirm a user controls their registered email.
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("email_verification_tokens")
 }
 
 /// Short-lived one-time code used to link a Discord account to a panel User via /link.

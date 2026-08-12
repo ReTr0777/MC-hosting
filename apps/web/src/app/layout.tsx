@@ -1,6 +1,9 @@
 import './globals.css';
 import type { Metadata } from 'next';
 import { AuthProvider } from '@/context/AuthContext';
+import { UIPrefsProvider } from '@/context/UIPrefsContext';
+import { ToastProvider } from '@/context/ToastContext';
+import { ConfirmProvider } from '@/context/ConfirmContext';
 
 export const metadata: Metadata = {
   title: 'CraftControl - Split Architecture Minecraft Server Manager',
@@ -15,7 +18,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-slate-950 text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-white">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <UIPrefsProvider>
+            <ToastProvider>
+              <ConfirmProvider>{children}</ConfirmProvider>
+            </ToastProvider>
+          </UIPrefsProvider>
+        </AuthProvider>
       </body>
     </html>
   );

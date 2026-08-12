@@ -111,7 +111,7 @@ export default function WhitelistTab({ serverId, canManage }: { serverId: string
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>📋 Whitelist</span>
+            <span>Whitelist</span>
             <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2.5 py-0.5 rounded-full border border-emerald-500/30">
               {snapshot.count} Allowed
             </span>
@@ -135,7 +135,7 @@ export default function WhitelistTab({ serverId, canManage }: { serverId: string
             onClick={fetchWhitelist}
             className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition"
           >
-            🔄 Refresh
+            Refresh
           </button>
           {canManage && (
             <button
@@ -147,7 +147,7 @@ export default function WhitelistTab({ serverId, canManage }: { serverId: string
                   : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/20'
               }`}
             >
-              {snapshot.enabled ? '🔓 Turn Whitelist Off' : '🔒 Turn Whitelist On'}
+              {snapshot.enabled ? 'Turn Whitelist Off' : 'Turn Whitelist On'}
             </button>
           )}
         </div>
@@ -183,7 +183,7 @@ export default function WhitelistTab({ serverId, canManage }: { serverId: string
 
       {!snapshot.enabled && snapshot.count > 0 && (
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300">
-          ⚠️ This list has {snapshot.count} {snapshot.count === 1 ? 'entry' : 'entries'} but{' '}
+          This list has {snapshot.count} {snapshot.count === 1 ? 'entry' : 'entries'} but{' '}
           <code className="text-amber-200">white-list=false</code> — anyone can currently join. Turn enforcement on to
           apply it.
         </div>
@@ -191,14 +191,14 @@ export default function WhitelistTab({ serverId, canManage }: { serverId: string
 
       {!snapshot.onlineMode && (
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-xs text-slate-300">
-          ℹ️ This server runs in <strong>offline mode</strong>. Whitelist entries are matched by username rather than
+          This server runs in <strong>offline mode</strong>. Whitelist entries are matched by username rather than
           Mojang UUID, and new names can only be added while the server is running.
         </div>
       )}
 
       {snapshot.unlistedOps.length > 0 && (
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-xs text-slate-300">
-          ⭐ {snapshot.unlistedOps.length} operator{snapshot.unlistedOps.length === 1 ? '' : 's'} not on this list:{' '}
+          {snapshot.unlistedOps.length} operator{snapshot.unlistedOps.length === 1 ? '' : 's'} not on this list:{' '}
           <span className="text-white font-semibold">{snapshot.unlistedOps.join(', ')}</span>. Operators are still
           rejected by an enforced whitelist unless they are added here.
         </div>
@@ -246,7 +246,6 @@ export default function WhitelistTab({ serverId, canManage }: { serverId: string
 
         {snapshot.count === 0 ? (
           <div className="text-center py-10">
-            <div className="text-4xl mb-3">🚪</div>
             <h3 className="text-base font-bold text-white mb-1">Whitelist Is Empty</h3>
             <p className="text-xs text-slate-400 max-w-sm mx-auto">
               No players are on the allow-list yet. {canManage

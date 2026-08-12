@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { verifyPassword, signJwtToken, COOKIE_NAME } from '@/lib/auth';
+import { verifyPassword, signJwtToken, signPreAuthToken, COOKIE_NAME } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,6 +23,11 @@ export async function POST(req: NextRequest) {
     const isPasswordValid = await verifyPassword(password, user.passwordHash);
     if (!isPasswordValid) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    }
+
+    if (user.totpEnabled) {
+      const preAuthToken = await signPreAuthToken(user.id);
+      return NextResponse.json({ requires2FA: true, preAuthToken });
     }
 
     const token = await signJwtToken({

@@ -84,7 +84,7 @@ app.prepare().then(() => {
         }
 
         const node = mcServer.node;
-        const targetContainer = containerId || mcServer.containerId || serverId;
+        const targetContainer = containerId || mcServer.containerId || `process-${serverId}`;
 
         let targetHost = node.host;
         let targetPort = node.port || 3001;

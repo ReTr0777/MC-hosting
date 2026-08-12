@@ -3,9 +3,15 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { useUIPrefs } from '@/context/UIPrefsContext';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
+import AdvancedModeToggle, { AdvancedBadge } from '@/components/AdvancedModeToggle';
 import { uploadFileInChunks } from '@/lib/chunked-upload';
 import GlobalSearch from '@/components/GlobalSearch';
 import DiscordLinkButton from '@/components/DiscordLinkButton';
+import NodeBackupStorageModal from '@/components/NodeBackupStorageModal';
+import QuotaUsageBadge from '@/components/QuotaUsageBadge';
 
 interface NodeItem {
   id: string;
@@ -121,13 +127,13 @@ const MC_VERSIONS = [
   'CUSTOM',
 ];
 
-const SERVER_TYPES = [
-  { id: 'FABRIC', name: 'Fabric', desc: 'Lightweight & highly moddable loader', icon: 'FA', color: '#a78bfa' },
-  { id: 'FORGE', name: 'Forge', desc: 'Classic heavy modpack framework', icon: 'FO', color: '#fb923c' },
-  { id: 'PAPER', name: 'Paper', desc: 'High performance Spigot/Bukkit server', icon: 'PA', color: '#60a5fa' },
-  { id: 'PURPUR', name: 'Purpur', desc: 'Ultra configurable high performance Paper fork', icon: 'PU', color: '#c084fc' },
-  { id: 'VANILLA', name: 'Vanilla', desc: 'Official unmodified Mojang server', icon: 'VA', color: '#34d399' },
-  { id: 'CUSTOM_ZIP', name: 'Serverpack Upload (ZIP/RAR)', desc: 'Deploy from an uploaded serverpack archive (.zip or .rar)', icon: 'ZIP', color: '#f59e0b' },
+const SERVER_TYPES: Array<{ id: string; name: string; desc: string; icon: string; color: string; tag?: string }> = [
+  { id: 'VANILLA', name: 'Vanilla', desc: 'Plain Minecraft, exactly as Mojang ships it. No mods.', icon: 'VA', color: '#34d399', tag: 'Simplest' },
+  { id: 'PAPER', name: 'Paper', desc: 'Vanilla gameplay, much faster. Supports Bukkit/Spigot plugins.', icon: 'PA', color: '#60a5fa', tag: 'Recommended' },
+  { id: 'FABRIC', name: 'Fabric', desc: 'Lightweight mod loader — the usual choice for modern modpacks.', icon: 'FA', color: '#a78bfa', tag: 'Best for mods' },
+  { id: 'FORGE', name: 'Forge', desc: 'The older, heavier mod loader. Needed by many classic modpacks.', icon: 'FO', color: '#fb923c' },
+  { id: 'PURPUR', name: 'Purpur', desc: 'A Paper fork with hundreds of extra gameplay toggles.', icon: 'PU', color: '#c084fc' },
+  { id: 'CUSTOM_ZIP', name: 'Upload a pack', desc: 'Bring your own .zip / .rar serverpack, or a Modrinth .mrpack — mods and loader are installed for you.', icon: 'ZIP', color: '#f59e0b' },
 ];
 
 function ServerCardIcon({ serverId, serverType, serverTypeMeta }: { serverId: string; serverType: string; serverTypeMeta: any }) {
@@ -170,12 +176,16 @@ function ServerCardIcon({ serverId, serverType, serverTypeMeta }: { serverId: st
 
 export default function DashboardPage() {
   const { user, logout, loading } = useAuth();
+  const { advanced } = useUIPrefs();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [nodes, setNodes] = useState<NodeItem[]>([]);
   const [servers, setServers] = useState<ServerItem[]>([]);
 
   // Node Form State
   const [showNodeModal, setShowNodeModal] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [backupStorageNode, setBackupStorageNode] = useState<NodeItem | null>(null);
   const [nodeName, setNodeName] = useState('');
   const [nodeHost, setNodeHost] = useState('');
   const [nodePort, setNodePort] = useState(3500);
@@ -367,25 +377,46 @@ export default function DashboardPage() {
     setShowNodeModal(true);
   };
 
-  const handleDeleteNode = async (nodeId: string) => {
-    if (!confirm('Are you sure you want to delete this node? This cannot be undone.')) return;
+  const handleDeleteNode = async (node: NodeItem) => {
+    const ok = await confirm({
+      title: `Remove the node "${node.name}"?`,
+      message: node._count.servers > 0
+        ? `This node still hosts ${node._count.servers} server(s). Removing it unregisters the machine from the panel — move those servers to another node first if you still need them.`
+        : 'This unregisters the machine from the panel. The daemon itself keeps running and can be re-added later.',
+      confirmLabel: 'Remove node',
+      danger: true,
+    });
+    if (!ok) return;
+
     try {
-      const res = await fetch(`/api/nodes/${nodeId}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(`/api/nodes/${node.id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete node');
-      
+
+      toast.success('Node removed', `${node.name} is no longer registered.`);
       fetchData();
     } catch (err: any) {
-      alert(err.message);
+      toast.error('Could not remove the node', err.message);
     }
   };
 
-  const handleDeleteServer = async (serverId: string) => {
-    if (!confirm('Delete this server instance? This will remove it from the dashboard and delete its daemon container data.')) return;
+  const handleDeleteServer = async (server: ServerItem) => {
+    const ok = await confirm({
+      title: 'Delete this server permanently?',
+      message: (
+        <>
+          This removes <strong style={{ color: 'var(--text-primary)' }}>{server.name}</strong> from the panel and deletes its
+          world, mods and configuration from the node. <strong style={{ color: 'var(--danger)' }}>This cannot be undone.</strong>
+        </>
+      ),
+      confirmLabel: 'Delete server',
+      danger: true,
+      requireText: server.name,
+    });
+    if (!ok) return;
+
     try {
-      const res = await fetch(`/api/servers/${serverId}/action`, {
+      const res = await fetch(`/api/servers/${server.id}/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'delete', deleteData: true }),
@@ -394,9 +425,10 @@ export default function DashboardPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete server');
 
+      toast.success('Server deleted', `${server.name} and its files are gone.`);
       await fetchData();
     } catch (err: any) {
-      alert(err.message);
+      toast.error('Could not delete the server', err.message);
     }
   };
 
@@ -409,7 +441,7 @@ export default function DashboardPage() {
     }
 
     if (serverType === 'CUSTOM_ZIP' && !serverpackFile) {
-      setActionError('Please upload a serverpack archive (.zip or .rar).');
+      setActionError('Please upload a serverpack archive (.zip, .rar or .mrpack).');
       return;
     }
 
@@ -430,7 +462,7 @@ export default function DashboardPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: serverName || (serverpackFile ? serverpackFile.name.replace(/\.(zip|rar)$/i, '') : 'Minecraft Server'),
+          name: serverName || (serverpackFile ? serverpackFile.name.replace(/\.(zip|rar|mrpack)$/i, '') : 'Minecraft Server'),
           nodeId: selectedNodeId,
           serverType: serverType === 'CUSTOM_ZIP' ? 'FABRIC' : serverType,
           executionMode,
@@ -516,21 +548,26 @@ export default function DashboardPage() {
   };
 
   const handleServerAction = async (serverId: string, action: string) => {
+    const pending = action === 'start' ? 'Starting server…' : action === 'stop' ? 'Stopping server…' : `Running ${action}…`;
+    const toastId = toast.toast('info', pending, undefined, { sticky: true });
+
     try {
       const res = await fetch(`/api/servers/${serverId}/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, deleteData: action === 'delete' }),
       });
-      
+
       if (!res.ok && res.status !== 404) {
-        const data = await res.json();
-        alert(data.error || `Failed to ${action} server`);
+        const data = await res.json().catch(() => ({}));
+        toast.toast('error', `Could not ${action} the server`, data.error, { id: toastId });
+      } else {
+        toast.toast('success', action === 'start' ? 'Server is starting' : action === 'stop' ? 'Server stopped' : `${action} complete`, undefined, { id: toastId });
       }
       // Re-fetch data ONLY AFTER the action has fully completed
       await fetchData();
-    } catch (e) {
-      alert(`Network error executing ${action}`);
+    } catch {
+      toast.toast('error', `Could not ${action} the server`, 'The panel could not reach the server node.', { id: toastId });
       await fetchData();
     }
   };
@@ -576,7 +613,7 @@ export default function DashboardPage() {
 
       {/* ── Top Navbar ── */}
       <header className="bg-slate-900 border-b border-slate-800 p-3 sm:px-6 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
           {/* Left: Logo & Role */}
           <div className="flex items-center gap-2.5 flex-wrap">
             <Link href="/" className="flex items-center gap-2 text-decoration-none">
@@ -618,6 +655,9 @@ export default function DashboardPage() {
                 <div className="text-[10px] text-slate-400">{user.email}</div>
               </div>
             </div>
+            <Link href="/dashboard/account" className="text-xs text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-2.5 py-1 rounded-md transition">
+              Account
+            </Link>
             <DiscordLinkButton />
             <button
               onClick={() => logout()}
@@ -631,14 +671,18 @@ export default function DashboardPage() {
 
       {/* Breadcrumb row */}
       <div className="border-b border-slate-800 p-4 sm:px-6 bg-slate-950">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-slate-400 font-medium">
             <span>CraftControl</span>
             <span className="text-slate-600">&gt;</span>
             <span className="text-white font-semibold">Node &amp; Server Overview</span>
           </div>
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            {user?.globalRole === 'GLOBAL_ADMIN' && (
+          <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
+            <AdvancedModeToggle />
+            <QuotaUsageBadge />
+            {/* Node registration is infrastructure work, so it hides in simple mode — unless there
+                are no nodes at all, in which case hiding it would leave the panel unusable. */}
+            {user?.globalRole === 'GLOBAL_ADMIN' && (advanced || nodes.length === 0) && (
               <button
                 onClick={() => {
                   setEditingNodeId(null);
@@ -674,7 +718,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Main Layout ── */}
-      <main className="flex-1 flex flex-col lg:flex-row w-full max-w-7xl mx-auto">
+      <main className="flex-1 flex flex-col lg:flex-row w-full">
 
         {/* LEFT: Active Nodes panel */}
         <aside className="w-full lg:w-72 lg:min-w-[288px] border-b lg:border-b-0 lg:border-r border-slate-800 p-4 lg:p-6 space-y-3">
@@ -719,10 +763,10 @@ export default function DashboardPage() {
                     <div style={{ fontSize: '0.67rem', color: 'var(--text-muted)', marginBottom: '8px', lineHeight: 1.4 }}>
                       {node.liveCpuModel && (
                         <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={node.liveCpuModel}>
-                          🖥 {node.liveCpuModel}{node.liveCpuCores ? ` · ${node.liveCpuCores}C` : ''}
+                          {node.liveCpuModel}{node.liveCpuCores ? ` · ${node.liveCpuCores}C` : ''}
                         </div>
                       )}
-                      {node.liveOsDistro && <div>🐧 {node.liveOsDistro}</div>}
+                      {node.liveOsDistro && <div>{node.liveOsDistro}</div>}
                     </div>
                   )}
 
@@ -779,7 +823,16 @@ export default function DashboardPage() {
                           <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
                         </button>
                         <button
-                          onClick={() => handleDeleteNode(node.id)}
+                          onClick={() => setBackupStorageNode(node)}
+                          title="Off-Site Backup Storage"
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
+                          onMouseOver={e => (e.currentTarget.style.color = '#34d399')}
+                          onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                        >
+                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 8a4 4 0 014-4h6a4 4 0 014 4v8a4 4 0 01-4 4H9a4 4 0 01-4-4V8zm4-1v1m6-1v1M8 12h8m-8 4h5" /></svg>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteNode(node)}
                           title="Delete Node"
                           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--danger)' }}
                         >
@@ -796,13 +849,40 @@ export default function DashboardPage() {
 
         {/* RIGHT: Server grid */}
         <section className="flex-1 p-4 lg:p-6">
-          <div style={{ marginBottom: '16px' }}>
+          <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>Your Servers</h2>
+            {servers.length > 0 && (
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                {servers.filter((s) => s.status === 'RUNNING').length} of {servers.length} running
+              </span>
+            )}
           </div>
 
           {servers.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)', fontSize: '0.875rem', border: '1px dashed var(--border-2)', borderRadius: '10px' }}>
-              No servers found. Click &quot;+ Create New Server&quot; above to launch an instance.
+            <div style={{ textAlign: 'center', padding: '56px 24px', border: '1px dashed var(--border-2)', borderRadius: '10px' }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '10px' }}>Servers</div>
+              <div style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>No servers yet</div>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', margin: '0 auto 18px', maxWidth: '380px', lineHeight: 1.6 }}>
+                {nodes.length === 0
+                  ? 'Register a daemon node first — that is the machine your worlds will actually run on.'
+                  : 'Create your first server and it will be ready to join in a couple of minutes.'}
+              </p>
+              {nodes.length > 0 && (
+                <button
+                  onClick={() => {
+                    const usedPorts = new Set((servers || []).map((s) => s.serverPort));
+                    let nextPort = 24000;
+                    while (usedPorts.has(nextPort) && nextPort <= 25000) nextPort++;
+                    setServerPort(nextPort);
+                    setShowServerModal(true);
+                    setModalStep(1);
+                  }}
+                  className="cc-btn-primary"
+                  style={{ padding: '8px 20px' }}
+                >
+                  + Create your first server
+                </button>
+              )}
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
@@ -816,10 +896,10 @@ export default function DashboardPage() {
                         <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {server.name}
                         </span>
-                        <span style={{ fontSize: '1rem', cursor: 'pointer', color: 'var(--text-muted)', lineHeight: 1 }}>...</span>
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                         {server.serverType} {server.mcVersion}
+                        {advanced && server.node?.name && <> · {server.node.name}</>}
                       </div>
                     </div>
                   </div>
@@ -846,60 +926,56 @@ export default function DashboardPage() {
                     </span>
                   </div>
 
-                  {/* Action buttons */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                  {/* One primary action (Manage) beside the power control. "Console" used to sit
+                      here too, pointing at the exact same page as "Manage" — two buttons, one
+                      destination. Delete is destructive and rare, so it moves behind advanced mode. */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '6px' }}>
                     <Link
                       href={`/dashboard/servers/${server.id}`}
                       style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
-                        background: 'var(--surface-2)', color: 'var(--text-primary)',
-                        border: '1px solid var(--border-2)', borderRadius: '6px',
-                        padding: '7px 0', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none',
-                        transition: 'border-color 0.15s',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                        background: 'var(--accent)', color: '#0d1117',
+                        borderRadius: '6px', padding: '8px 0',
+                        fontSize: '0.75rem', fontWeight: 700, textDecoration: 'none',
+                        transition: 'opacity 0.15s',
                       }}
+                      onMouseOver={e => (e.currentTarget.style.opacity = '0.85')}
+                      onMouseOut={e => (e.currentTarget.style.opacity = '1')}
                     >
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem' }}>&gt;_</span> Console
+                      Manage &amp; console →
                     </Link>
                     {server.status === 'RUNNING' ? (
                       <button
                         onClick={() => handleServerAction(server.id, 'stop')}
+                        title="Save the world and shut this server down cleanly"
                         className="cc-btn-danger"
-                        style={{ borderRadius: '6px', padding: '7px 0', fontWeight: 600 }}
+                        style={{ borderRadius: '6px', padding: '7px 16px', fontWeight: 600 }}
                       >
                         Stop
                       </button>
                     ) : (
                       <button
                         onClick={() => handleServerAction(server.id, 'start')}
-                        style={{ background: 'var(--accent-dim)', color: 'var(--accent)', border: '1px solid var(--accent-border)', borderRadius: '6px', padding: '7px 0', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+                        title="Boot this server so players can join"
+                        style={{ background: 'var(--accent-dim)', color: 'var(--accent)', border: '1px solid var(--accent-border)', borderRadius: '6px', padding: '7px 16px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
                       >
                         Start
                       </button>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleDeleteServer(server.id)}
-                    style={{
-                      background: 'rgba(248,81,73,0.12)', color: 'var(--danger)',
-                      border: '1px solid rgba(248,81,73,0.25)', borderRadius: '6px',
-                      padding: '7px 0', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
-                    }}
-                  >
-                    Delete Server
-                  </button>
-                  <Link
-                    href={`/dashboard/servers/${server.id}`}
-                    style={{
-                      display: 'block', textAlign: 'center', background: 'var(--accent)',
-                      color: '#0d1117', borderRadius: '6px', padding: '8px 0',
-                      fontSize: '0.75rem', fontWeight: 700, textDecoration: 'none',
-                      transition: 'opacity 0.15s',
-                    }}
-                    onMouseOver={e => (e.currentTarget.style.opacity = '0.85')}
-                    onMouseOut={e => (e.currentTarget.style.opacity = '1')}
-                  >
-                    Manage --&gt;
-                  </Link>
+                  {advanced && (
+                    <button
+                      onClick={() => handleDeleteServer(server)}
+                      title="Permanently delete this server and all of its files"
+                      style={{
+                        background: 'rgba(248,81,73,0.12)', color: 'var(--danger)',
+                        border: '1px solid rgba(248,81,73,0.25)', borderRadius: '6px',
+                        padding: '6px 0', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      Delete server
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -950,6 +1026,14 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {backupStorageNode && (
+        <NodeBackupStorageModal
+          nodeId={backupStorageNode.id}
+          nodeName={backupStorageNode.name}
+          onClose={() => setBackupStorageNode(null)}
+        />
+      )}
+
       {/* â”€â”€ Modal: Create Server Wizard â”€â”€ */}
       {showServerModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(13,17,23,0.85)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', zIndex: 50 }}>
@@ -957,8 +1041,8 @@ export default function DashboardPage() {
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '16px', borderBottom: '1px solid var(--border)' }}>
               <div>
-                <h3 style={{ fontSize: '1.125rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Create Minecraft Server</h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>Deploy containerized instance with smart resource allocation</p>
+                <h3 style={{ fontSize: '1.125rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Create a Minecraft server</h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>Three quick steps — everything else is chosen for you.</p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 {[1, 2, 3].map(n => (
@@ -981,7 +1065,13 @@ export default function DashboardPage() {
             {/* Step 1 */}
             {modalStep === 1 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 1: Select Server Engine or Modpack</label>
+                <div>
+                  <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 1 of 3 — What kind of server?</label>
+                  <p className="cc-section-sub">
+                    Not sure? <strong style={{ color: 'var(--text-primary)' }}>Paper</strong> is the safe default for a normal survival
+                    server, and <strong style={{ color: 'var(--text-primary)' }}>Fabric</strong> if you want to add mods later.
+                  </p>
+                </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
                   {SERVER_TYPES.map(t => (
                     <div
@@ -1010,7 +1100,14 @@ export default function DashboardPage() {
                         fontFamily: 'var(--font-mono)', fontSize: '0.75rem', fontWeight: 800, color: t.color,
                         marginBottom: '4px'
                       }}>{t.icon}</div>
-                      <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>{t.name}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>{t.name}</span>
+                        {t.tag && (
+                          <span style={{ fontSize: '0.55rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent)', background: 'var(--accent-dim)', border: '1px solid var(--accent-border)', borderRadius: '4px', padding: '1px 5px' }}>
+                            {t.tag}
+                          </span>
+                        )}
+                      </div>
                       <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>{t.desc}</div>
                     </div>
                   ))}
@@ -1018,18 +1115,18 @@ export default function DashboardPage() {
                 {/* Upload section */}
                 <div style={{ background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '16px' }}>
                   <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--accent)', marginBottom: '6px' }}>
-                    Upload Serverpack Archive (.zip or .rar) {serverType === 'CUSTOM_ZIP' ? '(Required)' : '(Optional)'}
+                    Upload Serverpack Archive (.zip, .rar or .mrpack) {serverType === 'CUSTOM_ZIP' ? '(Required)' : '(Optional)'}
                   </label>
                   <input
                     type="file"
-                    accept=".zip,.rar"
+                    accept=".zip,.rar,.mrpack"
                     onChange={e => {
                       const f = e.target.files?.[0];
                       if (f) {
                         setServerpackFile(f);
                         setServerType('CUSTOM_ZIP');
                         setSelectedMcVersion('AUTO_DETECT');
-                        if (!serverName) setServerName(f.name.replace(/\.(zip|rar)$/i, '') + ' Server');
+                        if (!serverName) setServerName(f.name.replace(/\.(zip|rar|mrpack)$/i, '') + ' Server');
                       }
                     }}
                     className="cc-input"
@@ -1048,27 +1145,28 @@ export default function DashboardPage() {
             {/* Step 2 */}
             {modalStep === 2 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 2: Instance Name &amp; Resource Limits</label>
+                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 2 of 3 — Name and resources</label>
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Server Instance Name</label>
+                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Server name</label>
                   <input type="text" required value={serverName} onChange={e => setServerName(e.target.value)} placeholder="My Minecraft World" className="cc-input" />
+                  <p className="cc-section-sub">Just a label inside the panel — you can rename it any time.</p>
                 </div>
-                <div>
+                <div style={{ display: advanced ? 'block' : 'none' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Execution Mode</label>
+                    <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Execution Mode <AdvancedBadge /></label>
                     <button
                       type="button"
                       onClick={() => setShowProsCons(!showProsCons)}
                       style={{ fontSize: '0.72rem', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}
                     >
-                      {showProsCons ? '✕ Hide Comparison' : '📊 Compare Pros & Cons'}
+                      {showProsCons ? 'Hide comparison' : 'Compare pros & cons'}
                     </button>
                   </div>
 
                   {showProsCons && (
                     <div style={{ background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '14px', marginBottom: '10px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '0.72rem' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>[🐳] Docker Container</div>
+                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>[D] Docker Container</div>
                         <div style={{ color: 'var(--accent)', fontWeight: 700, marginTop: '2px' }}>Pros:</div>
                         <ul style={{ margin: 0, paddingLeft: '14px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
                           <li>Isolated container per server instance</li>
@@ -1083,7 +1181,7 @@ export default function DashboardPage() {
                       </div>
 
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', borderLeft: '1px solid var(--border-2)', paddingLeft: '12px' }}>
-                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>[⚡] Standalone Process</div>
+                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>[S] Standalone Process</div>
                         <div style={{ color: 'var(--accent)', fontWeight: 700, marginTop: '2px' }}>Pros:</div>
                         <ul style={{ margin: 0, paddingLeft: '14px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
                           <li>Blazing fast instant server boot</li>
@@ -1100,7 +1198,7 @@ export default function DashboardPage() {
                   )}
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    {[{id: 'CONTAINER', icon: '🐳', name: 'Docker Container', desc: 'Isolated container per server'}, {id: 'PROCESS', icon: '⚡', name: 'Standalone Process', desc: 'Direct process, no extra Docker containers'}].map(m => (
+                    {[{id: 'CONTAINER', icon: 'D', name: 'Docker Container', desc: 'Isolated container per server'}, {id: 'PROCESS', icon: 'S', name: 'Standalone Process', desc: 'Direct process, no extra Docker containers'}].map(m => (
                       <div key={m.id} onClick={() => setExecutionMode(m.id as any)}
                         style={{ padding: '12px', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${executionMode === m.id ? 'var(--accent)' : 'var(--border-2)'}`, background: executionMode === m.id ? 'var(--accent-dim)' : 'var(--bg)', display: 'flex', gap: '10px', alignItems: 'center' }}>
                         <span style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--accent)' }}>[{m.icon}]</span>
@@ -1112,26 +1210,29 @@ export default function DashboardPage() {
                     ))}
                   </div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Target Worker Node</label>
-                    <select value={selectedNodeId} onChange={e => setSelectedNodeId(e.target.value)} className="cc-input">
-                      <option value="AUTO">Auto-Select (Smart Priority)</option>
-                      {nodes.map(n => (
-                        <option key={n.id} value={n.id} disabled={!n.isOnline}>
-                          {n.name} (Priority: {n.offloadPriority}){!n.isOnline ? ' — OFFLINE' : ''}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedNodeId !== 'AUTO' && nodes.find(n => n.id === selectedNodeId)?.isOnline === false && (
-                      <p style={{ fontSize: '0.7rem', color: 'var(--danger)', marginTop: '5px' }}>
-                        ⚠️ This node is currently unreachable — the server cannot be provisioned here until it comes back online.
-                      </p>
-                    )}
-                  </div>
+                <div style={{ display: 'grid', gridTemplateColumns: advanced ? '1fr 1fr' : '1fr', gap: '10px' }}>
+                  {/* In simple mode the node stays on Auto-Select, which is the right answer almost always. */}
+                  {advanced && (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Target Worker Node <AdvancedBadge /></label>
+                      <select value={selectedNodeId} onChange={e => setSelectedNodeId(e.target.value)} className="cc-input">
+                        <option value="AUTO">Auto-Select (Smart Priority)</option>
+                        {nodes.map(n => (
+                          <option key={n.id} value={n.id} disabled={!n.isOnline}>
+                            {n.name} (Priority: {n.offloadPriority}){!n.isOnline ? ' — OFFLINE' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {selectedNodeId !== 'AUTO' && nodes.find(n => n.id === selectedNodeId)?.isOnline === false && (
+                        <p style={{ fontSize: '0.7rem', color: 'var(--danger)', marginTop: '5px' }}>
+                          This node is currently unreachable — the server cannot be provisioned here until it comes back online.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>
-                      Minecraft Version {(serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>🔒 (Locked to Pack)</span>}
+                      Minecraft Version {(serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>(Locked to pack)</span>}
                     </label>
                     <select
                       value={(serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 'AUTO_DETECT' : selectedMcVersion}
@@ -1142,7 +1243,7 @@ export default function DashboardPage() {
                     >
                       {MC_VERSIONS.map(v => (
                         <option key={v} value={v}>
-                          {v === 'AUTO_DETECT' ? '🔒 Auto-Detect from Serverpack' : (v === 'CUSTOM' ? 'Custom / Snapshot...' : v)}
+                          {v === 'AUTO_DETECT' ? 'Auto-detect from serverpack' : (v === 'CUSTOM' ? 'Custom / Snapshot...' : v)}
                         </option>
                       ))}
                     </select>
@@ -1154,30 +1255,40 @@ export default function DashboardPage() {
                     <input type="text" required value={customMcVersion} onChange={e => setCustomMcVersion(e.target.value)} placeholder="e.g. 24w10a, 1.7.10" className="cc-input" />
                   </div>
                 )}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Server Port</label>
-                    <input type="number" required value={serverPort} onChange={e => setServerPort(parseInt(e.target.value, 10))} className="cc-input" />
-                  </div>
+                <div style={{ display: 'grid', gridTemplateColumns: advanced ? '1fr 1fr 1fr' : '1fr', gap: '10px' }}>
+                  {/* The wizard already picked the next free port; only an expert needs to override it. */}
+                  {advanced && (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Server Port <AdvancedBadge /></label>
+                      <input type="number" required value={serverPort} onChange={e => setServerPort(parseInt(e.target.value, 10))} className="cc-input" />
+                    </div>
+                  )}
                   <div>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Memory (RAM)</label>
                     <select value={memoryMb} onChange={e => setMemoryMb(parseInt(e.target.value, 10))} className="cc-input">
-                      <option value={1024}>1 GB</option>
-                      <option value={2048}>2 GB</option>
-                      <option value={4096}>4 GB</option>
-                      <option value={8192}>8 GB</option>
-                      <option value={16384}>16 GB</option>
+                      <option value={1024}>1 GB — a few friends, vanilla</option>
+                      <option value={2048}>2 GB — vanilla or light plugins</option>
+                      <option value={4096}>4 GB — plugins or a small modpack</option>
+                      <option value={8192}>8 GB — most modpacks</option>
+                      <option value={16384}>16 GB — large or heavily modded packs</option>
                     </select>
+                    {!advanced && (
+                      <p className="cc-section-sub">
+                        Port {serverPort} and 1 CPU core were picked automatically. Turn on advanced mode to change them.
+                      </p>
+                    )}
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>CPU Cores</label>
-                    <select value={cpuLimit} onChange={e => setCpuLimit(parseFloat(e.target.value))} className="cc-input">
-                      <option value={1.0}>1 Core</option>
-                      <option value={2.0}>2 Cores</option>
-                      <option value={4.0}>4 Cores</option>
-                      <option value={8.0}>8 Cores</option>
-                    </select>
-                  </div>
+                  {advanced && (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>CPU Cores <AdvancedBadge /></label>
+                      <select value={cpuLimit} onChange={e => setCpuLimit(parseFloat(e.target.value))} className="cc-input">
+                        <option value={1.0}>1 Core</option>
+                        <option value={2.0}>2 Cores</option>
+                        <option value={4.0}>4 Cores</option>
+                        <option value={8.0}>8 Cores</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1185,12 +1296,12 @@ export default function DashboardPage() {
             {/* Step 3 */}
             {modalStep === 3 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 3: Mojang EULA Agreement &amp; Confirmation</label>
+                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 3 of 3 — Review and accept the EULA</label>
                 <div style={{ background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {[
                     { label: 'Execution Mode', value: executionMode === 'PROCESS' ? 'Standalone Process' : 'Docker Container' },
                     { label: 'Server Engine', value: serverType },
-                    { label: 'Minecraft Version', value: (serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? '🔒 Auto-Detected from Serverpack' : (selectedMcVersion === 'CUSTOM' ? customMcVersion : selectedMcVersion) },
+                    { label: 'Minecraft Version', value: (serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 'Auto-detected from serverpack' : (selectedMcVersion === 'CUSTOM' ? customMcVersion : selectedMcVersion) },
                     ...(modpackSlug ? [{ label: 'Modpack', value: `@${modpackSlug}` }] : []),
                     { label: 'Allocated RAM', value: `${memoryMb} MB` },
                     { label: 'Game Port', value: String(serverPort) },

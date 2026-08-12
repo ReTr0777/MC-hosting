@@ -16,7 +16,7 @@ export class DaemonClient {
     this.apiKey = node.apiKey;
   }
 
-  public async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  public async request<T>(endpoint: string, options: RequestInit = {}, timeoutMs = 5000): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -26,15 +26,17 @@ export class DaemonClient {
 
     let res: Response;
     try {
-      // 5-second connection timeout prevents proxy 504 gateway timeouts
+      // Short default timeout catches an unreachable/dead daemon fast. Calls that make the
+      // daemon do heavy synchronous work (e.g. extracting a large modpack zip) pass a longer
+      // timeoutMs explicitly — see completeChunkedUpload below.
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       res = await fetch(url, { ...options, headers, signal: controller.signal });
       clearTimeout(timeoutId);
     } catch (fetchErr: any) {
       if (fetchErr.name === 'AbortError') {
-        throw new Error(`Connection timed out after 5s connecting to daemon worker node at ${this.baseUrl}. Check if daemon is running.`);
+        throw new Error(`Connection timed out after ${Math.round(timeoutMs / 1000)}s connecting to daemon worker node at ${this.baseUrl}. Check if daemon is running.`);
       }
       throw new Error(`Cannot connect to daemon worker node at ${this.baseUrl}: ${fetchErr.message}`);
     }
@@ -147,10 +149,15 @@ export class DaemonClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: new Uint8Array(pack),
-    });
+    }, 10 * 60 * 1000);
   }
 
   async uploadChunk(serverId: string, uploadId: string, chunkIndex: number, chunk: Buffer): Promise<{ success: boolean }> {
+    // The 5s default timeout is meant to catch a dead daemon fast, but a 20MB chunk over a
+    // slow upload connection or through the frp tunnel can easily take longer than that to
+    // transfer. Aborting mid-transfer and letting the client immediately retry the same chunk
+    // index risked a second write racing the still-draining first one on the daemon's disk,
+    // corrupting the chunk. Give chunk uploads room to actually finish.
     return this.request<{ success: boolean }>(`/servers/${serverId}/upload-chunk`, {
       method: 'POST',
       headers: {
@@ -159,14 +166,19 @@ export class DaemonClient {
         'X-Chunk-Index': String(chunkIndex),
       },
       body: new Uint8Array(chunk),
-    });
+    }, 2 * 60 * 1000);
   }
 
-  async completeChunkedUpload(serverId: string, uploadId: string, fileName: string, totalChunks: number, isServerpack = true, targetPath = '', isFullImport = false): Promise<{ message: string }> {
+  async completeChunkedUpload(serverId: string, uploadId: string, fileName: string, totalChunks: number, isServerpack = true, targetPath = '', isFullImport = false, totalBytes?: number): Promise<{ message: string }> {
+    // Reassembles the chunks and, for serverpacks, extracts+detects the launch setup
+    // synchronously before responding — large modpacks can take minutes, well past the
+    // default 5s connectivity timeout. A Modrinth .mrpack goes further still: the daemon has to
+    // fetch every mod listed in the manifest and run the loader's own server installer before it
+    // can answer, so this budget covers a slow CDN plus a Forge/NeoForge install.
     return this.request<{ message: string }>(`/servers/${serverId}/upload-complete`, {
       method: 'POST',
-      body: JSON.stringify({ uploadId, fileName, totalChunks, isServerpack, targetPath, isFullImport }),
-    });
+      body: JSON.stringify({ uploadId, fileName, totalChunks, totalBytes, isServerpack, targetPath, isFullImport }),
+    }, 45 * 60 * 1000);
   }
 
   // Mod Management API Methods
@@ -219,6 +231,10 @@ export class DaemonClient {
     });
   }
 
+  async listAddons(serverId: string): Promise<{ mods: string[]; plugins: string[] }> {
+    return this.request<{ mods: string[]; plugins: string[] }>(`/servers/${serverId}/addons/list`);
+  }
+
   // Whitelist API Methods
   async getWhitelist(serverId: string): Promise<WhitelistSnapshot> {
     return this.request<WhitelistSnapshot>(`/servers/${serverId}/whitelist`);
@@ -242,6 +258,29 @@ export class DaemonClient {
       body: JSON.stringify({ action, username, reason }),
     });
   }
+
+  // Off-site (S3-compatible) backup storage config for this node
+  async getBackupStorageConfig(): Promise<BackupStorageConfig> {
+    return this.request<BackupStorageConfig>('/system/backup-storage');
+  }
+
+  async setBackupStorageConfig(config: Partial<BackupStorageConfig> & { s3SecretAccessKey?: string }): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>('/system/backup-storage', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  }
+}
+
+export interface BackupStorageConfig {
+  s3Endpoint: string;
+  s3Bucket: string;
+  s3Region: string;
+  s3AccessKeyId: string;
+  s3SecretAccessKeySet: boolean;
+  s3Prefix: string;
+  s3RetainLocal: boolean;
+  configured: boolean;
 }
 
 export type WhitelistAction = 'add' | 'remove' | 'on' | 'off' | 'reload';

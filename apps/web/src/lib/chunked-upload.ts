@@ -81,6 +81,7 @@ export async function uploadFileInChunks(options: ChunkedUploadOptions): Promise
       uploadId,
       fileName: file.name,
       totalChunks,
+      totalBytes: file.size,
       isServerpack,
       targetPath,
       isFullImport,

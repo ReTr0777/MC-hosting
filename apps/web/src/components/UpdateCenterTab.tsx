@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface UpdateCenterTabProps {
   server: {
@@ -47,10 +48,10 @@ const MC_VERSIONS = [
 ];
 
 export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCenterTabProps) {
+  const confirm = useConfirm();
   const [selectedEngine, setSelectedEngine] = useState<string>(server.serverType || 'FABRIC');
   const [selectedMcVersion, setSelectedMcVersion] = useState<string>(server.mcVersion || '26.2');
   const [customMcVersion, setCustomMcVersion] = useState<string>('');
-  const [createSafetyBackup, setCreateSafetyBackup] = useState<boolean>(true);
   const [updating, setUpdating] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -63,8 +64,20 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
       return;
     }
 
-    const confirmMsg = `Are you sure you want to change server '${server.name}' to ${selectedEngine} (${effectiveVersion})?\n\nThis will stop the server, update the JAR/loader files, and restart instance.`;
-    if (!confirm(confirmMsg)) return;
+    const ok = await confirm({
+      title: 'Change the server version?',
+      message: (
+        <>
+          <strong style={{ color: 'var(--text-primary)' }}>{server.name}</strong> will switch from{' '}
+          {server.serverType} {currentMcVersion} to <strong style={{ color: 'var(--text-primary)' }}>{selectedEngine} {effectiveVersion}</strong>.
+          The server stops, its loader files are replaced, and it restarts.
+          <br /><br />
+          A safety backup is always taken first, and the previous engine files are restored automatically if the new download fails.
+        </>
+      ),
+      confirmLabel: 'Apply update',
+    });
+    if (!ok) return;
 
     setUpdating(true);
     setStatusMessage(null);
@@ -76,26 +89,30 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
         body: JSON.stringify({
           serverType: selectedEngine,
           mcVersion: effectiveVersion,
-          createBackup: createSafetyBackup,
         }),
       });
 
       const data = await res.json();
       if (res.ok) {
-        setStatusMessage({ type: 'success', text: `✅ Server engine updated successfully to ${selectedEngine} (${effectiveVersion})!` });
+        setStatusMessage({ type: 'success', text: `Server engine updated successfully to ${selectedEngine} (${effectiveVersion})!` });
         if (onUpdateSuccess) onUpdateSuccess();
       } else {
-        setStatusMessage({ type: 'error', text: `❌ Update failed: ${data.error || data.details || 'Unknown error'}` });
+        setStatusMessage({ type: 'error', text: `Update failed: ${data.error || data.details || 'Unknown error'}` });
       }
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: `❌ Network error: ${err.message}` });
+      setStatusMessage({ type: 'error', text: `Network error: ${err.message}` });
     } finally {
       setUpdating(false);
     }
   };
 
   const handleRepairWorld = async () => {
-    if (!confirm('Are you sure you want to repair your world headers?\n\nThis will restore your world from level.dat_old or reset invalid level.dat generator keys. Your blocks, regions, and player items will NOT be deleted.')) return;
+    const ok = await confirm({
+      title: 'Repair the world headers?',
+      message: 'This restores level.dat from its backup copy, or resets invalid generator keys inside it. Your blocks, regions and player inventories are not touched.',
+      confirmLabel: 'Repair world',
+    });
+    if (!ok) return;
 
     setUpdating(true);
     setStatusMessage(null);
@@ -106,13 +123,13 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
       });
       const data = await res.json();
       if (res.ok) {
-        setStatusMessage({ type: 'success', text: `✅ ${data.message}` });
+        setStatusMessage({ type: 'success', text: `${data.message}` });
         if (onUpdateSuccess) onUpdateSuccess();
       } else {
-        setStatusMessage({ type: 'error', text: `❌ Repair failed: ${data.error || data.details || 'Unknown error'}` });
+        setStatusMessage({ type: 'error', text: `Repair failed: ${data.error || data.details || 'Unknown error'}` });
       }
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: `❌ Network error: ${err.message}` });
+      setStatusMessage({ type: 'error', text: `Network error: ${err.message}` });
     } finally {
       setUpdating(false);
     }
@@ -202,14 +219,14 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
           <span>2. Select Target Minecraft Version</span>
           {server.serverType === 'CUSTOM_ZIP' && (
             <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 rounded-full font-mono">
-              🔒 Version Locked to Serverpack
+              Version Locked to Serverpack
             </span>
           )}
         </h3>
 
         {server.serverType === 'CUSTOM_ZIP' ? (
           <div className="bg-slate-950 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300/90 leading-relaxed">
-            🔒 <strong>Serverpack Version Locked:</strong> This instance was deployed from an uploaded serverpack archive. The Minecraft engine version (<code className="font-mono text-white font-bold">{currentMcVersion}</code>) is locked to the files provided in your serverpack archive.
+            <strong>Serverpack Version Locked:</strong> This instance was deployed from an uploaded serverpack archive. The Minecraft engine version (<code className="font-mono text-white font-bold">{currentMcVersion}</code>) is locked to the files provided in your serverpack archive.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -222,7 +239,7 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
               >
                 {MC_VERSIONS.map((ver) => (
                   <option key={ver} value={ver}>
-                    {ver === 'CUSTOM' ? '⚙️ Custom / Snapshot...' : `Minecraft ${ver}`}
+                    {ver === 'CUSTOM' ? 'Custom / Snapshot...' : `Minecraft ${ver}`}
                   </option>
                 ))}
               </select>
@@ -250,20 +267,16 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
           3. Safety Snapshot &amp; Execution
         </h3>
 
-        <label className="flex items-start space-x-3 p-4 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer hover:border-slate-700 transition">
-          <input
-            type="checkbox"
-            checked={createSafetyBackup}
-            onChange={(e) => setCreateSafetyBackup(e.target.checked)}
-            className="w-4 h-4 mt-0.5 accent-emerald-500 rounded cursor-pointer"
-          />
+        <div className="flex items-start space-x-3 p-4 bg-slate-950 border border-slate-800 rounded-xl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-emerald-400, #34d399)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0"><path d="M9 12l2 2 4-4" /><path d="M12 3l8 4v5c0 5-3.5 9-8 10-4.5-1-8-5-8-10V7z" /></svg>
           <div className="text-xs">
-            <span className="font-bold text-white block">Automatically create a safety backup before applying update</span>
+            <span className="font-bold text-white block">A safety backup is always taken before applying an update</span>
             <span className="text-slate-400 text-[11px] mt-0.5 block">
-              CraftControl will snapshot your world, config, and player inventories before downloading the new engine files so you can revert anytime.
+              CraftControl snapshots your world, config, and player inventories before downloading the new engine files, and automatically
+              restores the previous engine if the new download fails — this can&apos;t be skipped.
             </span>
           </div>
-        </label>
+        </div>
 
         <div className="pt-2 flex items-center justify-between">
           <div className="text-xs text-slate-400">
@@ -289,7 +302,7 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div>
             <h3 className="text-sm font-bold text-purple-400 uppercase tracking-wider">
-              🔧 WorldGen / Level.dat Repair Utility
+              WorldGen / Level.dat Repair Utility
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Fixes <code className="text-purple-300 font-mono">WorldGenSettings: No key dimensions in MapLike</code> startup crashes caused by corrupted level.dat or version downgrades.
@@ -300,7 +313,7 @@ export default function UpdateCenterTab({ server, onUpdateSuccess }: UpdateCente
             disabled={updating}
             className="bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 font-bold text-xs px-5 py-2.5 rounded-xl transition flex-shrink-0"
           >
-            🔧 Auto-Repair World Header
+            Auto-Repair World Header
           </button>
         </div>
       </div>

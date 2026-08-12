@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { uploadFileInChunks } from '@/lib/chunked-upload';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface FileItem {
   name: string;
@@ -17,6 +19,8 @@ interface FileExplorerProps {
 }
 
 export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [currentPath, setCurrentPath] = useState('');
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +45,7 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStatusMessage, setUploadStatusMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const fetchFiles = async (targetPath: string = currentPath) => {
     setLoading(true);
@@ -146,7 +151,7 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
       setNewFolderName('');
       fetchFiles(currentPath);
     } catch (err: any) {
-      alert(err.message);
+      toast.error('Could not create the folder', err.message);
     }
   };
 
@@ -172,12 +177,24 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
       setNewName('');
       fetchFiles(currentPath);
     } catch (err: any) {
-      alert(err.message);
+      toast.error('Could not rename it', err.message);
     }
   };
 
   const handleDelete = async (file: FileItem) => {
-    if (!confirm(`Are you sure you want to delete '${file.name}'?`)) return;
+    const ok = await confirm({
+      title: file.isDir ? 'Delete this folder?' : 'Delete this file?',
+      message: (
+        <>
+          <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{file.name}</code> will be removed from
+          the server{file.isDir ? ', along with everything inside it' : ''}. Deleting the wrong file here can stop the server
+          from starting.
+        </>
+      ),
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
 
     try {
       const res = await fetch(`/api/servers/${serverId}/files?path=${encodeURIComponent(file.path)}`, {
@@ -189,7 +206,7 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
 
       fetchFiles(currentPath);
     } catch (err: any) {
-      alert(err.message);
+      toast.error('Could not delete it', err.message);
     }
   };
 
@@ -224,6 +241,53 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const filesArr = Array.from(fileList);
+    const totalBytes = filesArr.reduce((sum, f) => sum + f.size, 0);
+    let uploadedBytesSoFar = 0;
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    setError('');
+
+    try {
+      for (const file of filesArr) {
+        // webkitRelativePath looks like "topFolder/sub/file.ext" — everything but the
+        // last segment is where the file needs to land relative to the current directory.
+        const relPath = (file as any).webkitRelativePath || file.name;
+        const relDir = relPath.includes('/') ? relPath.substring(0, relPath.lastIndexOf('/')) : '';
+        const targetPath = currentPath ? (relDir ? `${currentPath}/${relDir}` : currentPath) : relDir;
+
+        await uploadFileInChunks({
+          serverId,
+          file,
+          isServerpack: false,
+          targetPath,
+          onProgress: (percent, fileUploadedBytes) => {
+            const overallBytes = uploadedBytesSoFar + fileUploadedBytes;
+            const overallPercent = totalBytes > 0 ? Math.min(100, Math.round((overallBytes / totalBytes) * 100)) : 0;
+            setUploadProgress(overallPercent);
+            setUploadStatusMessage(
+              percent < 100 ? `Uploading ${relPath} (${percent}%)...` : `Assembling ${relPath} on server...`
+            );
+          },
+        });
+
+        uploadedBytesSoFar += file.size;
+      }
+
+      fetchFiles(currentPath);
+    } catch (err: any) {
+      setError(`Folder upload failed: ${err.message}`);
+    } finally {
+      setIsUploading(false);
+      if (folderInputRef.current) folderInputRef.current.value = '';
     }
   };
 
@@ -280,7 +344,23 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
               disabled={isUploading}
               className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-2 rounded-lg transition disabled:opacity-50 flex items-center gap-1"
             >
-              📤 Upload File
+              Upload File
+            </button>
+            <input
+              type="file"
+              ref={folderInputRef}
+              onChange={handleFolderUpload}
+              className="hidden"
+              disabled={isUploading}
+              {...({ webkitdirectory: '', directory: '' } as any)}
+              multiple
+            />
+            <button
+              onClick={() => folderInputRef.current?.click()}
+              disabled={isUploading}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-2 rounded-lg transition disabled:opacity-50 flex items-center gap-1"
+            >
+              Upload Folder
             </button>
             <button
               onClick={() => setShowFolderModal(true)}
@@ -353,7 +433,13 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
                       onClick={() => handleOpenFile(file)}
                       className="flex items-center space-x-2 text-slate-200 hover:text-emerald-400 transition"
                     >
-                      <span className="text-lg">{file.isDir ? '📁' : '📄'}</span>
+                      <span className="text-lg">
+                        {file.isDir ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>
+                        )}
+                      </span>
                       <span className={file.isDir ? 'font-bold text-emerald-300' : ''}>{file.name}</span>
                     </button>
                   </td>
@@ -406,7 +492,7 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
             
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950">
               <div className="flex items-center space-x-2">
-                <span className="text-xl">📄</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>
                 <span className="font-mono text-sm font-bold text-white">{editingFilePath}</span>
               </div>
               <button

@@ -3,6 +3,10 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 
+// Assembling a large modpack — and, for a .mrpack, downloading every mod plus running the loader
+// installer — happens inline on the daemon before it responds. Don't let the platform cut us off.
+export const maxDuration = 3600;
+
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
     const user = await getUserFromRequest(req);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -24,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         return NextResponse.json({ error: 'Forbidden: OPERATOR or ADMIN role required' }, { status: 403 });
     }
 
-    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '', isFullImport = false } = await req.json();
+    const { uploadId, fileName, totalChunks, totalBytes, isServerpack = true, targetPath = '', isFullImport = false } = await req.json();
 
     if (!uploadId || !totalChunks) {
         return NextResponse.json({ error: 'Missing uploadId or totalChunks' }, { status: 400 });
@@ -37,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     });
 
     try {
-        const result = await daemon.completeChunkedUpload(params.id, uploadId, fileName || 'uploaded_file', totalChunks, isServerpack, targetPath, isFullImport);
+        const result = await daemon.completeChunkedUpload(params.id, uploadId, fileName || 'uploaded_file', totalChunks, isServerpack, targetPath, isFullImport, totalBytes);
         return NextResponse.json(result);
     } catch (err: any) {
         console.error('[API /upload-complete POST error]', err);

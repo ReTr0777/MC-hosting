@@ -17,8 +17,8 @@ export default function SubdomainTab({ serverId }: { serverId: string }) {
   const [domainInput, setDomainInput] = useState('retr0net.nl');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [cfStatus, setCfStatus] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  const [cfStatus, setCfStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [hasGlobalToken, setHasGlobalToken] = useState(false);
 
@@ -71,20 +71,20 @@ export default function SubdomainTab({ serverId }: { serverId: string }) {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage(data.message || '✅ Proxy route updated successfully!');
+        setMessage({ kind: 'ok', text: data.message || 'Proxy route updated successfully!' });
         if (data.cloudflareResult) {
           if (data.cloudflareResult.success) {
-            setCfStatus(`🟢 Cloudflare SRV Record Provisioned: ${data.cloudflareResult.srvRecordName}`);
+            setCfStatus({ ok: true, text: `Cloudflare SRV record provisioned: ${data.cloudflareResult.srvRecordName}` });
           } else {
-            setCfStatus(`⚠️ Cloudflare Note: ${data.cloudflareResult.message}`);
+            setCfStatus({ ok: false, text: `Cloudflare note: ${data.cloudflareResult.message}` });
           }
         }
         fetchSubdomain();
       } else {
-        setMessage(`❌ Error: ${data.error}`);
+        setMessage({ kind: 'err', text: `Error: ${data.error}` });
       }
     } catch (err: any) {
-      setMessage(`❌ Error: ${err.message}`);
+      setMessage({ kind: 'err', text: `Error: ${err.message}` });
     } finally {
       setSaving(false);
     }
@@ -105,35 +105,35 @@ export default function SubdomainTab({ serverId }: { serverId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>🌐 Subdomain & Cloudflare DNS Router</span>
+            <span>Subdomain & Cloudflare DNS Router</span>
           </h2>
           <p className="text-xs text-slate-400 mt-1">Assign custom friendly subdomains (`survival.retr0net.nl`) and automatically provision Cloudflare DNS SRV records in 1 click.</p>
         </div>
       </div>
 
       {message && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${message.startsWith('❌') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : message.startsWith('⚠️') ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {message}
+        <div className={`p-4 rounded-xl text-xs font-semibold ${message.kind === 'err' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : message.kind === 'warn' ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+          {message.text}
         </div>
       )}
 
       {cfStatus && (
-        <div className={`p-4 rounded-xl text-xs font-mono font-semibold ${cfStatus.startsWith('🟢') ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}`}>
-          {cfStatus}
+        <div className={`p-4 rounded-xl text-xs font-mono font-semibold ${cfStatus.ok ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}`}>
+          {cfStatus.text}
         </div>
       )}
 
       {/* Subdomain Router Form Card */}
       <form onSubmit={handleSave} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
         <h3 className="text-sm font-bold text-indigo-400 uppercase tracking-wider border-b border-slate-800 pb-3 flex items-center justify-between">
-          <span>🚀 Subdomain Proxy Configuration</span>
+          <span>Subdomain Proxy Configuration</span>
           {hasGlobalToken ? (
             <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
-              🟢 Cloudflare Auto-DNS Active (Global Token)
+              Cloudflare Auto-DNS Active (Global Token)
             </span>
           ) : (
             <span className="text-[11px] font-semibold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-md border border-amber-500/20">
-              ⚠️ Cloudflare Token Not Configured (Global Admin Settings)
+              Cloudflare Token Not Configured (Global Admin Settings)
             </span>
           )}
         </h3>
@@ -166,7 +166,7 @@ export default function SubdomainTab({ serverId }: { serverId: string }) {
             disabled={saving}
             className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-600/20 transition h-[38px] flex items-center justify-center space-x-2"
           >
-            {saving ? <span>Provisioning...</span> : <span>⚡ Auto-Provision Route</span>}
+            {saving ? <span>Provisioning...</span> : <span>Auto-Provision Route</span>}
           </button>
         </div>
       </form>
@@ -190,7 +190,7 @@ export default function SubdomainTab({ serverId }: { serverId: string }) {
               onClick={() => copyToClipboard(config.fullAddress)}
               className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2 rounded-lg transition border border-slate-700"
             >
-              {copied ? 'Copied!' : '📋 Copy Address'}
+              {copied ? 'Copied!' : 'Copy Address'}
             </button>
           </div>
 

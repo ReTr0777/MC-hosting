@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface Channel {
   id: string;
@@ -23,19 +24,20 @@ interface Delivery {
 }
 
 const EVENT_LABELS: Record<string, string> = {
-  SERVER_CRASHED: '💥 Server crashed',
-  SERVER_STARTED: '🟢 Server started',
-  SERVER_STOPPED: '⏹️ Server stopped',
-  NODE_OFFLINE: '🔴 Node offline',
-  NODE_ONLINE: '🟩 Node back online',
-  BACKUP_COMPLETED: '💾 Backup completed',
-  BACKUP_FAILED: '⚠️ Backup failed',
+  SERVER_CRASHED: 'Server crashed',
+  SERVER_STARTED: 'Server started',
+  SERVER_STOPPED: 'Server stopped',
+  NODE_OFFLINE: 'Node offline',
+  NODE_ONLINE: 'Node back online',
+  BACKUP_COMPLETED: 'Backup completed',
+  BACKUP_FAILED: 'Backup failed',
 };
 
 // TEST is delivery-only; it is never something you subscribe to
 const SUBSCRIBABLE = Object.keys(EVENT_LABELS);
 
 export default function AlertsPanel() {
+  const confirm = useConfirm();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,7 +135,18 @@ export default function AlertsPanel() {
   };
 
   const handleDelete = async (channel: Channel) => {
-    if (!confirm(`Delete alert channel "${channel.name}"? Its delivery history will be removed too.`)) return;
+    const ok = await confirm({
+      title: 'Delete this alert channel?',
+      message: (
+        <>
+          <strong style={{ color: 'var(--text-primary)' }}>{channel.name}</strong> will stop receiving notifications, and its
+          delivery history is removed with it.
+        </>
+      ),
+      confirmLabel: 'Delete channel',
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(`delete-${channel.id}`);
     try {
       await fetch(`/api/notifications/${channel.id}`, { method: 'DELETE' });
@@ -151,7 +164,7 @@ export default function AlertsPanel() {
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
       <div className="border-b border-slate-800 pb-4">
         <h2 className="text-base font-bold text-sky-400 flex items-center space-x-2">
-          <span>🔔 Alerts &amp; Webhooks</span>
+          <span>Alerts &amp; Webhooks</span>
         </h2>
         <p className="text-xs text-slate-400 mt-0.5">
           Get notified in Discord when a server crashes, a node drops, or a backup fails. The panel polls every node in

@@ -11,7 +11,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { password, globalRole } = await req.json();
+  const { password, globalRole, maxServers, maxMemoryMb, maxCpu } = await req.json();
 
   const dataToUpdate: any = {};
   if (password) {
@@ -20,6 +20,10 @@ export async function PATCH(
   if (globalRole) {
     dataToUpdate.globalRole = globalRole;
   }
+  // Quota fields: explicit null clears the quota (unlimited); undefined leaves it untouched.
+  if (maxServers !== undefined) dataToUpdate.maxServers = maxServers === null ? null : parseInt(maxServers, 10);
+  if (maxMemoryMb !== undefined) dataToUpdate.maxMemoryMb = maxMemoryMb === null ? null : parseInt(maxMemoryMb, 10);
+  if (maxCpu !== undefined) dataToUpdate.maxCpu = maxCpu === null ? null : parseFloat(maxCpu);
 
   try {
     const user = await prisma.user.update({
@@ -30,6 +34,9 @@ export async function PATCH(
         email: true,
         username: true,
         globalRole: true,
+        maxServers: true,
+        maxMemoryMb: true,
+        maxCpu: true,
       }
     });
     return NextResponse.json(user);

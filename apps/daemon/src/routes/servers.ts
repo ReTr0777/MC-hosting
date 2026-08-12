@@ -1,6 +1,7 @@
 import express, { Router, Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { execSync, spawn } from 'child_process';
 import AdmZip from 'adm-zip';
 import { loadConfig } from '../config';
@@ -25,11 +26,13 @@ import { backupManager } from '../services/backup';
 import { CreateServerContainerDto, ExecutionMode } from '@mc-manager/shared';
 import { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
+import { synthesizeForgeRunScript } from '../utils/forgeLaunchScript';
 import {
   searchModrinth,
   getModrinthProjectVersions,
   downloadModrinthFile,
 } from '../services/modrinth';
+import { findMrpackRoot, materializeMrpack, MrpackBuildResult } from '../services/mrpack';
 import { schedulerService } from '../services/scheduler';
 import { sendServerCommand } from '../services/console';
 import { tryPing } from '../services/mc-ping';
@@ -175,8 +178,33 @@ router.post('/create', async (req: Request, res: Response) => {
 });
 
 // Helper function for processing and extracting serverpack archives
+// execSync buffers a child's entire stdout/stderr in memory and defaults to only 1MB. Extraction
+// tools print a line per extracted file, so a large modpack (thousands of entries) overflows that
+// buffer, gets SIGTERM'd with ENOBUFS partway through, and looks to us like a failed extraction —
+// sending us on to a weaker fallback tool on top of a half-extracted directory. 512MB of headroom
+// plus the quiet flags below means output size can never decide whether an extraction succeeds.
+const EXTRACT_EXEC_OPTS = {
+  stdio: 'pipe' as const,
+  encoding: 'utf8' as const,
+  maxBuffer: 512 * 1024 * 1024,
+};
+
+/** Renders why an extraction command failed, including the details execSync hides on the error object. */
+function describeExecFailure(e: any): string {
+  const parts = [`exit=${e.status ?? 'n/a'}`];
+  if (e.signal) parts.push(`signal=${e.signal}`);
+  if (e.code) parts.push(`code=${e.code}`);
+  const stderr = String(e.stderr || '').trim();
+  const stdout = String(e.stdout || '').trim();
+  if (stderr) parts.push(`stderr: ${stderr.slice(-2000)}`);
+  else if (stdout) parts.push(`stdout: ${stdout.slice(-2000)}`);
+  else parts.push(e.message);
+  return parts.join(' | ');
+}
+
 async function processAndExtractServerpack(serverId: string, archivePath: string, res: Response) {
   const serverDir = path.join(config.dataDir, serverId);
+  let mrpackResult: MrpackBuildResult | null = null;
 
   console.log(`[Daemon API] Serverpack archive saved to disk, detecting format & extracting...`);
   
@@ -194,21 +222,34 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
 
   if (isRar) {
     let extracted = false;
+    // `-idq` (unrar) and `-bso0 -bsp0` (7z) suppress the per-file "Extracting ..." chatter while
+    // leaving real errors on stderr. Combined with EXTRACT_EXEC_OPTS' large maxBuffer, this keeps a
+    // multi-thousand-file modpack from overflowing execSync's output buffer mid-extraction.
     const commands = [
-      `unrar x -o+ "${archivePath}" "${serverDir}/"`,
-      `7z x "${archivePath}" -o"${serverDir}" -y`,
-      `7za x "${archivePath}" -o"${serverDir}" -y`,
+      `unrar x -o+ -idq "${archivePath}" "${serverDir}/"`,
+      `7z x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
+      `7za x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
       `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
     ];
 
     for (const cmd of commands) {
       try {
-        const output = execSync(cmd, { stdio: 'pipe', encoding: 'utf8' });
+        const output = execSync(cmd, EXTRACT_EXEC_OPTS);
         console.log(`[Daemon Archive Extractor] Extracted RAR using: ${cmd.split(' ')[0]}`);
         extracted = true;
         break;
       } catch (e: any) {
-        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${e.message}`);
+        // unrar exit code 1 means "non-fatal warning(s)" — e.g. failing to restore file
+        // ownership/timestamps when running as a non-root container user. The archive's actual
+        // file data still gets extracted correctly, unlike a real failure (exit code >= 2).
+        // Treating this warning as fatal was sending every extraction straight to 7z/7za's
+        // much weaker RAR5 decoder instead, which is what was actually corrupting uploads.
+        if (cmd.startsWith('unrar') && e.status === 1) {
+          console.log(`[Daemon Archive Extractor] Extracted RAR using: unrar (non-fatal warnings, exit code 1 — ignoring)`);
+          extracted = true;
+          break;
+        }
+        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${describeExecFailure(e)}`);
       }
     }
 
@@ -241,19 +282,26 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     let extracted = false;
     const commands = [
       `unzip -q -o "${archivePath}" -d "${serverDir}"`,
-      `7z x "${archivePath}" -o"${serverDir}" -y`,
+      `7z x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
       `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
       `tar -xf "${archivePath}" -C "${serverDir}"`,
     ];
 
     for (const cmd of commands) {
       try {
-        const output = execSync(cmd, { stdio: 'pipe', encoding: 'utf8' });
+        const output = execSync(cmd, EXTRACT_EXEC_OPTS);
         console.log(`[Daemon Archive Extractor] Extracted ZIP using: ${cmd.split(' ')[0]}`);
         extracted = true;
         break;
       } catch (e: any) {
-        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${e.message}`);
+        // unzip exit code 1 is "completed successfully but with warnings" — same non-fatal
+        // semantics as unrar's, and equally not a reason to fall through to another tool.
+        if (cmd.startsWith('unzip') && e.status === 1) {
+          console.log(`[Daemon Archive Extractor] Extracted ZIP using: unzip (non-fatal warnings, exit code 1 — ignoring)`);
+          extracted = true;
+          break;
+        }
+        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${describeExecFailure(e)}`);
       }
     }
 
@@ -279,8 +327,6 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   console.log(`[Daemon Archive Extractor] Extraction verified: ${filesAfter - filesBefore} new files created (before: ${filesBefore}, after: ${filesAfter})`);
   console.log(`[Daemon Archive Extractor] Files in directory after extraction: ${fs.readdirSync(serverDir).join(', ')}`);
 
-  fs.rmSync(archivePath, { force: true });
-  
   // Fix permissions so the server process / container can access files
   try {
     execSync(`chown -R 1000:1000 "${serverDir}"`);
@@ -288,6 +334,18 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   } catch (e) {}
 
   console.log(`[Daemon API] Serverpack archive extracted into '${serverDir}'`);
+
+  // A Modrinth .mrpack is a manifest, not a server: it ships overrides plus a list of mods to
+  // fetch, and no loader at all. Materialize it into a real server directory before the normal
+  // launch-script detection below runs, so it reaches that point looking like any other pack.
+  const packRoot = findMrpackRoot(serverDir);
+  if (packRoot) {
+    console.log(`[Daemon Extractor] Detected Modrinth .mrpack manifest — building server from it...`);
+    // The source archive is no longer needed and must not be mistaken for pack content while the
+    // manifest's overrides are laid down over the server root.
+    fs.rmSync(archivePath, { force: true });
+    mrpackResult = await materializeMrpack(serverId, serverDir, packRoot);
+  }
 
   // Smart Nested Directory Flattening
   flattenServerDir(serverDir);
@@ -299,7 +357,10 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   const runShPath = path.join(serverDir, 'run.sh');
   const runBatPath = path.join(serverDir, 'run.bat');
   
-  if (fs.existsSync(runShPath)) {
+  if (fs.existsSync(runShPath) && fs.statSync(runShPath).size === 0) {
+    console.log(`[Daemon Extractor] run.sh exists at root but is 0 bytes (likely a stray stub or a failed archive entry) — ignoring it`);
+  }
+  if (fs.existsSync(runShPath) && fs.statSync(runShPath).size > 0) {
     console.log(`[Daemon Extractor] Found run.sh launch script, using as primary executable`);
     launchScript = 'run.sh';
     try {
@@ -320,10 +381,14 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
         } catch (e) {}
       }
     }
-  } else if (fs.existsSync(runBatPath)) {
+  } else if (fs.existsSync(runBatPath) && fs.statSync(runBatPath).size > 0) {
     console.log(`[Daemon Extractor] Found run.bat launch script, using as primary executable`);
     launchScript = 'run.bat';
   }
+
+  // Folders that must never be treated as a candidate wrapper directory when hunting for
+  // a jar to launch — they hold dependency/mod jars, not the server executable itself.
+  const JAR_SEARCH_DENYLIST = new Set(['mods', 'libraries', 'logs', 'cache']);
 
   // If no launch script, search for server.jar
   let serverJarPath = path.join(serverDir, 'server.jar');
@@ -331,6 +396,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     console.log(`[Daemon Extractor] No launch script found, searching for server.jar...`);
     items = fs.readdirSync(serverDir);
     for (const item of items) {
+      if (JAR_SEARCH_DENYLIST.has(item.toLowerCase())) continue;
       const itemPath = path.join(serverDir, item);
       if (fs.statSync(itemPath).isDirectory()) {
         const potentialJarPath = path.join(itemPath, 'server.jar');
@@ -363,6 +429,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     console.log(`[Daemon Extractor] No jar at root, searching subdirectories for any .jar file...`);
     items = fs.readdirSync(serverDir);
     for (const item of items) {
+      if (JAR_SEARCH_DENYLIST.has(item.toLowerCase())) continue;
       const itemPath = path.join(serverDir, item);
       if (fs.statSync(itemPath).isDirectory()) {
         const jarFiles = fs.readdirSync(itemPath).filter((f: string) => f.toLowerCase().endsWith('.jar'));
@@ -380,13 +447,31 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     }
   }
 
+  // Last resort: if the archive shipped an intact Forge/NeoForge `libraries/` tree but its
+  // own run.sh entry was missing/corrupt (e.g. a bad RAR entry), reconstruct run.sh from
+  // the installer's own args files rather than failing the upload outright.
+  if (!launchScript && !fs.existsSync(serverJarPath)) {
+    console.log(`[Daemon Extractor] No launch script or jar found yet, attempting Forge/NeoForge run.sh reconstruction from libraries/...`);
+    let memoryMb: number | undefined;
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(serverDir, 'craftcontrol-meta.json'), 'utf8'));
+      memoryMb = meta.memoryMb;
+    } catch (e) {}
+
+    if (synthesizeForgeRunScript(serverDir, memoryMb)) {
+      launchScript = 'run.sh';
+    }
+  }
+
   // Verify either launch script or jar file exists
   if (!launchScript && !fs.existsSync(serverJarPath)) {
     const availableFiles = fs.readdirSync(serverDir).slice(0, 20).join(', ');
+    console.error(`[Daemon Extractor] Extraction incomplete — source archive preserved at '${archivePath}' for inspection`);
     throw new Error(
       `Server archive does not contain a launch script (run.sh/run.bat) or .jar executable file. ` +
       `Archive contents: ${availableFiles}${fs.readdirSync(serverDir).length > 20 ? ', ...' : ''}. ` +
-      `Make sure the archive is a valid server pack with either run.sh/run.bat or a jar executable.`
+      `Make sure the archive is a valid server pack with either run.sh/run.bat or a jar executable, ` +
+      `or a Modrinth .mrpack containing modrinth.index.json.`
     );
   }
 
@@ -396,11 +481,17 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     console.log(`[Daemon Extractor] ✓ Verified jar executable exists at ${serverJarPath}`);
   }
 
+  // Only delete the source archive once we've confirmed the extraction produced something
+  // launchable. Keeping it around on failure lets a failed upload be inspected/re-tested
+  // (e.g. `unrar t`) directly instead of having already vanished by the time the error surfaces.
+  fs.rmSync(archivePath, { force: true });
+
   // Smart Serverpack Minecraft Version Auto-Detection & Version Lock
-  let detectedMcVersion: string | null = null;
+  // An .mrpack manifest states its Minecraft version outright, so trust it over any heuristic.
+  let detectedMcVersion: string | null = mrpackResult?.mcVersion || null;
   try {
     const manifestPath = path.join(serverDir, 'manifest.json');
-    if (fs.existsSync(manifestPath)) {
+    if (!detectedMcVersion && fs.existsSync(manifestPath)) {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
       if (manifest.minecraft && manifest.minecraft.version) {
         detectedMcVersion = manifest.minecraft.version;
@@ -459,6 +550,13 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   }
   meta.versionLocked = true;
 
+  if (mrpackResult) {
+    meta.serverType = mrpackResult.loader.toUpperCase();
+    meta.loaderVersion = mrpackResult.loaderVersion;
+    meta.modpackName = mrpackResult.name;
+    meta.source = 'mrpack';
+  }
+
   if (detectedMcVersion) {
     console.log(`[Daemon Extractor] Auto-detected version '${detectedMcVersion}' from serverpack. Locking server version...`);
     meta.mcVersion = detectedMcVersion;
@@ -483,7 +581,26 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     // ignore container sync if process mode
   }
 
-  res.json({ message: 'Serverpack archive extracted successfully', serverId, detectedVersion: detectedMcVersion });
+  res.json({
+    message: mrpackResult
+      ? `Modrinth modpack '${mrpackResult.name || 'pack'}' built successfully (${mrpackResult.modsDownloaded} mods, ${mrpackResult.loader}${mrpackResult.loaderVersion ? ` ${mrpackResult.loaderVersion}` : ''}${mrpackResult.clientModsDisabled.length ? `, ${mrpackResult.clientModsDisabled.length} client-only mods disabled` : ''})`
+      : 'Serverpack archive extracted successfully',
+    serverId,
+    detectedVersion: detectedMcVersion,
+    ...(mrpackResult
+      ? {
+          mrpack: {
+            name: mrpackResult.name,
+            loader: mrpackResult.loader,
+            loaderVersion: mrpackResult.loaderVersion,
+            modsDownloaded: mrpackResult.modsDownloaded,
+            modsFailed: mrpackResult.modsFailed,
+            clientModsDisabled: mrpackResult.clientModsDisabled,
+            launchTarget: mrpackResult.launchTarget,
+          },
+        }
+      : {}),
+  });
 }
 
 // POST /api/v1/servers/:serverId/upload-pack
@@ -538,7 +655,14 @@ router.post('/:serverId/upload-chunk', async (req: Request, res: Response) => {
     }
 
     const chunkFilePath = path.join(uploadTmpDir, `chunk_${chunkIndex}`);
-    const writeStream = fs.createWriteStream(chunkFilePath);
+    // Write to a unique per-attempt temp file and atomically rename into place only once
+    // fully written. A stalled request that the client retries could otherwise race a second
+    // write stream against the same chunk_i path, interleaving bytes from both attempts into
+    // one corrupted file that no archive tool downstream can recover from.
+    const tmpFilePath = path.join(uploadTmpDir, `chunk_${chunkIndex}.${crypto.randomBytes(6).toString('hex')}.part`);
+    const writeStream = fs.createWriteStream(tmpFilePath);
+    let bytesWritten = 0;
+    req.on('data', (chunk: Buffer) => { bytesWritten += chunk.length; });
     req.pipe(writeStream);
 
     await new Promise<void>((resolve, reject) => {
@@ -546,6 +670,16 @@ router.post('/:serverId/upload-chunk', async (req: Request, res: Response) => {
       writeStream.on('error', reject);
       req.on('error', reject);
     });
+
+    const expectedLength = parseInt(req.headers['content-length'] as string, 10);
+    if (!isNaN(expectedLength) && bytesWritten !== expectedLength) {
+      fs.rmSync(tmpFilePath, { force: true });
+      return res.status(400).json({
+        error: `Chunk ${chunkIndex} incomplete: received ${bytesWritten} of ${expectedLength} bytes`,
+      });
+    }
+
+    fs.renameSync(tmpFilePath, chunkFilePath);
 
     res.json({ success: true, chunkIndex });
   } catch (err: any) {
@@ -558,7 +692,7 @@ router.post('/:serverId/upload-chunk', async (req: Request, res: Response) => {
 router.post('/:serverId/upload-complete', async (req: Request, res: Response) => {
   try {
     const { serverId } = req.params;
-    const { uploadId, fileName, totalChunks, isServerpack = true, targetPath = '', isFullImport = false } = req.body;
+    const { uploadId, fileName, totalChunks, totalBytes, isServerpack = true, targetPath = '', isFullImport = false } = req.body;
 
     if (!uploadId || !totalChunks || totalChunks <= 0) {
       return res.status(400).json({ error: 'Missing required parameters: uploadId, totalChunks' });
@@ -571,13 +705,32 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
       return res.status(404).json({ error: 'Upload directory not found for this uploadId' });
     }
 
-    // Verify all chunks exist
+    // Verify all chunks exist and tally up how many bytes we actually received, so a
+    // truncated upload (proxy/network dropping data) is caught here with a clear diagnostic
+    // instead of silently producing a corrupt archive that fails mysteriously during extraction.
+    let receivedBytes = 0;
     for (let i = 0; i < totalChunks; i++) {
       const chunkPath = path.join(uploadTmpDir, `chunk_${i}`);
       if (!fs.existsSync(chunkPath)) {
         return res.status(400).json({ error: `Missing chunk index ${i} of ${totalChunks}` });
       }
+      receivedBytes += fs.statSync(chunkPath).size;
     }
+
+    if (typeof totalBytes === 'number' && totalBytes > 0 && receivedBytes !== totalBytes) {
+      console.error(
+        `[Daemon API] Upload size mismatch for uploadId '${uploadId}': expected ${totalBytes} bytes, ` +
+        `received ${receivedBytes} bytes (missing ${totalBytes - receivedBytes} bytes). ` +
+        `Chunk files preserved at '${uploadTmpDir}' for inspection.`
+      );
+      return res.status(400).json({
+        error: `Uploaded archive is truncated: expected ${totalBytes} bytes but only received ${receivedBytes} ` +
+          `bytes (missing ${totalBytes - receivedBytes} bytes). This indicates data loss in transit ` +
+          `(proxy/tunnel/network), not a problem with the archive file itself. Please retry the upload.`,
+      });
+    }
+
+    console.log(`[Daemon API] Upload '${uploadId}' size verified: ${receivedBytes} bytes across ${totalChunks} chunks`);
 
     let destinationPath: string;
     if (isFullImport) {
@@ -610,7 +763,7 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
     });
 
     // Cleanup temporary upload directory
-    fs.rmSync(uploadTmpDir, { recursive: true, force: true });
+    fs.rmSync(uploadTmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
     if (isFullImport) {
       return await new Promise<void>((resolve) => {
@@ -857,7 +1010,7 @@ router.delete('/:containerId', async (req: Request, res: Response) => {
       if (deleteData && targetServerId) {
         const serverDir = path.join(config.dataDir, targetServerId);
         if (fs.existsSync(serverDir)) {
-          fs.rmSync(serverDir, { recursive: true, force: true });
+          fs.rmSync(serverDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
         }
       }
       return res.json({ message: 'Standalone server process removed' });
@@ -1175,7 +1328,10 @@ router.post('/:serverId/files/delete', (req: Request, res: Response) => {
   }
 
   try {
-    fs.rmSync(targetPath, { recursive: true, force: true });
+    // maxRetries/retryDelay ride out ENOTEMPTY/EBUSY races that occur when the server
+    // data directory is a Windows-hosted Docker bind mount and entries settle slightly
+    // after their children are removed.
+    fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     res.json({ success: true, path: relPath });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete file or directory', details: err.message });
@@ -1612,11 +1768,15 @@ router.get('/:serverId/stats', (req: Request, res: Response) => {
 });
 
 // GET /api/v1/servers/:serverId/backups
-router.get('/:serverId/backups', (req: Request, res: Response) => {
+router.get('/:serverId/backups', async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
-  const backups = backupManager.listBackups(targetId);
-  res.json({ backups });
+  try {
+    const backups = await backupManager.listBackups(targetId);
+    res.json({ backups });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to list backups', details: err.message });
+  }
 });
 
 // POST /api/v1/servers/:serverId/backups
@@ -1735,12 +1895,12 @@ router.post('/:serverId/backups/restore', async (req: Request, res: Response) =>
 });
 
 // DELETE /api/v1/servers/:serverId/backups/:name
-router.delete('/:serverId/backups/:name', (req: Request, res: Response) => {
+router.delete('/:serverId/backups/:name', async (req: Request, res: Response) => {
   const { serverId, name } = req.params;
   const targetId = serverId.replace('process-', '');
 
   try {
-    backupManager.deleteBackup(targetId, name);
+    await backupManager.deleteBackup(targetId, name);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete backup', details: err.message });
@@ -1773,24 +1933,48 @@ router.post('/:serverId/subdomain', (req: Request, res: Response) => {
 router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
-  const { serverType, mcVersion, createBackup } = req.body;
+  const { serverType, mcVersion } = req.body;
 
   if (!serverType || !mcVersion) {
     return res.status(400).json({ error: 'Missing serverType or mcVersion' });
   }
 
+  const serverDir = path.join(config.dataDir, targetId);
+  const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+  // Old engine files are staged here (renamed aside, not deleted) until the new download is
+  // verified — a failed update restores them so the server never ends up with no jar at all.
+  const stagingDir = path.join(serverDir, `.update_staging_${Date.now()}`);
+  let stagingActive = false;
+  const stagedFiles: string[] = [];
+  let originalMetaRaw: string | null = null;
+
+  const rollbackStagedFiles = () => {
+    for (const f of stagedFiles) {
+      const stagedPath = path.join(stagingDir, f);
+      if (fs.existsSync(stagedPath)) {
+        try { fs.renameSync(stagedPath, path.join(serverDir, f)); } catch (e) {}
+      }
+    }
+    if (originalMetaRaw !== null) {
+      try { fs.writeFileSync(metaPath, originalMetaRaw); } catch (e) {}
+    }
+    if (stagingActive) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) {}
+      stagingActive = false;
+    }
+  };
+
   try {
     const isDocker = !serverId.startsWith('process-');
     const containerId = isDocker ? (serverId.startsWith('mc-server-') ? serverId : `mc-server-${targetId}`) : serverId;
 
-    // 1. Pre-update safety snapshot
-    if (createBackup) {
-      console.log(`[UpdateEngine] Creating pre-update safety backup for '${targetId}'...`);
-      if (isDocker) {
-        try { await syncContainerToHost(targetId); } catch (e) {}
-      }
-      await backupManager.createBackup(targetId, `pre_update_${serverType.toLowerCase()}_${mcVersion}`);
+    // 1. Mandatory pre-update safety snapshot — a version/engine change is destructive and
+    // not reliably reversible, so this is not optional regardless of what the client sends.
+    console.log(`[UpdateEngine] Creating mandatory pre-update backup for '${targetId}'...`);
+    if (isDocker) {
+      await syncContainerToHost(targetId);
     }
+    await backupManager.createBackup(targetId, `pre_update_${serverType.toLowerCase()}_${mcVersion}`);
 
     // 2. Stop running server instance
     let wasRunning = false;
@@ -1809,26 +1993,32 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
       }
     }
 
-    // 3. Clear old server executable JARs so the new loader JAR will be downloaded fresh
-    const serverDir = path.join(config.dataDir, targetId);
+    // 3. Stage old server executable JARs aside (rename, not delete) so the new loader JAR
+    // is downloaded fresh, but the old ones can be restored if the download fails.
     if (!fs.existsSync(serverDir)) {
       fs.mkdirSync(serverDir, { recursive: true });
     }
+    fs.mkdirSync(stagingDir, { recursive: true });
+    stagingActive = true;
 
-    const filesToRemove = ['server.jar', 'fabric-server-launch.jar', 'user_args.txt', 'unix_args.txt'];
-    for (const f of filesToRemove) {
+    const filesToStage = ['server.jar', 'fabric-server-launch.jar', 'user_args.txt', 'unix_args.txt'];
+    for (const f of filesToStage) {
       const fPath = path.join(serverDir, f);
       if (fs.existsSync(fPath)) {
-        try { fs.rmSync(fPath, { force: true }); } catch (e) {}
+        fs.renameSync(fPath, path.join(stagingDir, f));
+        stagedFiles.push(f);
       }
     }
 
-    // 4. Update craftcontrol-meta.json
-    const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
+    // 4. Update craftcontrol-meta.json (keeping the original around for rollback). This has
+    // to happen before ensureServerJar() runs so its own version-mismatch check doesn't treat
+    // this as a stale world and purge it — the world is intentionally preserved across engine
+    // updates and is only protected by the mandatory backup above.
     let meta: any = { serverId: targetId, serverType, mcVersion, installedVersion: mcVersion };
     if (fs.existsSync(metaPath)) {
       try {
-        meta = { ...JSON.parse(fs.readFileSync(metaPath, 'utf8')), ...meta };
+        originalMetaRaw = fs.readFileSync(metaPath, 'utf8');
+        meta = { ...JSON.parse(originalMetaRaw), ...meta };
       } catch (e) {}
     }
     meta.serverType = serverType;
@@ -1849,7 +2039,25 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
     };
 
     console.log(`[UpdateEngine] Downloading fresh ${serverType} JAR for ${mcVersion}...`);
-    await processManager.ensureServerJar(serverDir, dto);
+    const jarOrArgs = await processManager.ensureServerJar(serverDir, dto);
+
+    // ensureServerJar() swallows download failures internally and falls back to returning
+    // 'server.jar' even when no file was actually written — verify the executable really
+    // landed on disk before treating this as a success, otherwise roll back.
+    if (jarOrArgs === 'server.jar') {
+      const jarPath = path.join(serverDir, 'server.jar');
+      if (!fs.existsSync(jarPath) || fs.statSync(jarPath).size === 0) {
+        rollbackStagedFiles();
+        throw new Error(
+          `Failed to download the ${serverType} ${mcVersion} server executable — no valid jar was produced. ` +
+          `The previous engine files and version have been restored, and a pre-update backup was taken as an extra safety net.`
+        );
+      }
+    }
+
+    // Download confirmed — the staged old files are no longer needed.
+    fs.rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    stagingActive = false;
 
     // 6. In Docker mode, recreate container with the appropriate Java image if Java version changed, or sync volume
     if (isDocker) {
@@ -1889,6 +2097,12 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error(`[UpdateEngine Error]`, err.message);
+    // Only unwind staged files/meta if the download was never confirmed — once staging is
+    // cleared the update succeeded, and a later failure (e.g. container restart) must not
+    // revert the version back to the old one.
+    if (stagingActive) {
+      rollbackStagedFiles();
+    }
     res.status(500).json({ error: 'Failed to update server engine', details: err.message });
   }
 });
@@ -1942,7 +2156,7 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
       if (fs.existsSync(datapacksDir)) {
         try {
           const dpBackup = path.join(worldDir, 'datapacks_disabled');
-          if (fs.existsSync(dpBackup)) fs.rmSync(dpBackup, { recursive: true, force: true });
+          if (fs.existsSync(dpBackup)) fs.rmSync(dpBackup, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
           fs.renameSync(datapacksDir, dpBackup);
           fs.mkdirSync(datapacksDir, { recursive: true });
         } catch (e) {}
@@ -1951,7 +2165,7 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
       // 3. Remove legacy './world/players' directory causing conversion exception
       const oldPlayersDir = path.join(worldDir, 'players');
       if (fs.existsSync(oldPlayersDir)) {
-        try { fs.rmSync(oldPlayersDir, { recursive: true, force: true }); } catch (e) {}
+        try { fs.rmSync(oldPlayersDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) {}
       }
 
       repairedMethod = 'Purged invalid level.dat headers, removed legacy ./world/players, & disabled incompatible datapacks';
@@ -2780,6 +2994,25 @@ router.get('/:serverId/mods/list', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Mod List Error]', err.message);
     res.status(500).json({ error: 'Failed to list mods', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/addons/list - List installed mod + plugin jars for Integrations tab detection
+router.get('/:serverId/addons/list', async (req: Request, res: Response) => {
+  try {
+    const { serverId } = req.params;
+    const serverDir = path.join(config.dataDir, serverId);
+
+    const listJars = (dirName: string): string[] => {
+      const dir = path.join(serverDir, dirName);
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir).filter((f) => f.endsWith('.jar'));
+    };
+
+    res.json({ mods: listJars('mods'), plugins: listJars('plugins') });
+  } catch (err: any) {
+    console.error('[Addons List Error]', err.message);
+    res.status(500).json({ error: 'Failed to list installed addons', details: err.message });
   }
 });
 

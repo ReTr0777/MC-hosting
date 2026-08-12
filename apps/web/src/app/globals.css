@@ -289,6 +289,201 @@ body {
 }
 
 /* ─────────────────────────────────────────────────
+   Advanced Mode Switch
+───────────────────────────────────────────────── */
+.cc-adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.cc-adv-toggle:hover {
+  border-color: rgba(139, 92, 246, 0.6) !important;
+}
+
+.cc-switch {
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: var(--border-2);
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.18s ease;
+}
+.cc-switch[data-on='true'] {
+  background: #8b5cf6;
+}
+.cc-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.cc-switch[data-on='true'] .cc-switch-knob {
+  transform: translateX(13px);
+}
+
+.cc-adv-badge {
+  display: inline-block;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #a78bfa;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: 4px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+
+.cc-adv-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border-2);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.cc-adv-hint button {
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.cc-adv-hint button:hover {
+  background: rgba(139, 92, 246, 0.22);
+}
+
+/* ─────────────────────────────────────────────────
+   Toasts
+───────────────────────────────────────────────── */
+.cc-toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.cc-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  animation: toastIn 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.cc-toast-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.62rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.cc-toast-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.cc-toast-close:hover {
+  color: var(--text-primary);
+}
+
+/* ─────────────────────────────────────────────────
+   Modal backdrop (shared by confirm dialogs)
+───────────────────────────────────────────────── */
+.cc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 17, 23, 0.85);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 90;
+}
+
+/* ─────────────────────────────────────────────────
+   Tabs with icons + grouping
+───────────────────────────────────────────────── */
+.cc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cc-tab-group-label {
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--border-2);
+  padding: 0 2px;
+  align-self: center;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* ─────────────────────────────────────────────────
+   Section header used across tab panels
+───────────────────────────────────────────────── */
+.cc-section-title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cc-section-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 4px 0 0;
+}
+
+/* ─────────────────────────────────────────────────
    Pulse dot animation for Connected status
 ───────────────────────────────────────────────── */
 @keyframes pulse-dot {

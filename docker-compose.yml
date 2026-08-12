@@ -30,7 +30,7 @@ services:
       # the stored Cloudflare API token undecryptable.
       SECRET_ENCRYPTION_KEY: "super-secret-local-testing-encryption-key"
       # Must match discord-bot's DISCORD_BOT_SECRET. Leave unset to disable the Discord integration.
-      DISCORD_BOT_SECRET: "super-secret-local-testing-discord-bot-secret"
+      DISCORD_BOT_SECRET: "${DISCORD_BOT_SECRET:-}"
       PORT: 3000
     depends_on:
       - db
@@ -86,22 +86,22 @@ services:
     depends_on:
       - nanolimbo
 
-  # Optional: Discord slash-command bot (/status, /start, /stop, /restart).
-  # Exits immediately if DISCORD_BOT_TOKEN/DISCORD_CLIENT_ID aren't set — restart: "no" so
-  # that's a one-time exit rather than a crash loop when this isn't configured.
+  # Discord slash-command bot (/status, /start, /stop, /restart). Reads its secrets from
+  # the repo-root .env file (gitignored) — see .env.example. Exits immediately if
+  # DISCORD_BOT_TOKEN/DISCORD_CLIENT_ID aren't set.
   discord-bot:
     build:
       context: .
       dockerfile: apps/discord-bot/Dockerfile
     image: ghcr.io/retr0777/mc-hosting:discord-bot
     container_name: mc_discord_bot
-    restart: "no"
+    restart: always
     environment:
-      DISCORD_BOT_TOKEN: ""
-      DISCORD_CLIENT_ID: ""
-      DISCORD_GUILD_ID: ""
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      DISCORD_CLIENT_ID: "${DISCORD_CLIENT_ID:-}"
+      DISCORD_GUILD_ID: "${DISCORD_GUILD_ID:-}"
       WEB_API_URL: "http://web:3000"
-      DISCORD_BOT_SECRET: "super-secret-local-testing-discord-bot-secret"
+      DISCORD_BOT_SECRET: "${DISCORD_BOT_SECRET:-}"
     depends_on:
       - web
 

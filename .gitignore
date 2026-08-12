@@ -38,6 +38,13 @@ yarn-error.log*
 data/
 mc_data_*/
 scratch/
+
+# local minecraft server runtime data (world, mods, logs, configs)
+server/
+
+# build artifacts
+*.tsbuildinfo
+.gradle/
 *.log
 *.txt
 *.jar

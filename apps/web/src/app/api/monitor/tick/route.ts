@@ -66,6 +66,13 @@ export async function POST(request: NextRequest) {
         nodeOnline = false;
       }
 
+      // A node that just came back after being unreachable may have restarted (host reboot,
+      // Docker Engine restart, or the daemon container itself being updated). PROCESS-mode
+      // servers run as children of the daemon and die with it, so anything the DB still
+      // thinks is RUNNING/STARTING needs to be resumed here — unconditionally, since this
+      // isn't a crash the server caused, it's the node bouncing.
+      const nodeJustCameBack = nodeOnline && !node.isOnline;
+
       // ── Node up/down transitions ──
       if (nodeOnline !== node.isOnline) {
         summary.events.push(`${node.name}: ${nodeOnline ? 'ONLINE' : 'OFFLINE'}`);
@@ -218,6 +225,26 @@ export async function POST(request: NextRequest) {
 
         const dbSaysUp = server.status === 'RUNNING';
         const recentlyTouched = Date.now() - new Date(server.updatedAt).getTime() < STARTUP_GRACE_MS;
+
+        // Node just bounced back: resume anything that was supposed to be up, regardless of
+        // the per-server autoRestartEnabled toggle (that setting is about tolerating real
+        // in-place crashes, not about coming back after the whole node was unreachable).
+        if (nodeJustCameBack && (server.status === 'RUNNING' || server.status === 'STARTING') && !live.running) {
+          try {
+            await attemptAutoRestart(node, server);
+            summary.events.push(`${server.name}: RESUMED (node came back online)`);
+            await prisma.server.update({ where: { id: server.id }, data: { status: 'STARTING' } }).catch(() => {});
+            await dispatchNotification({
+              type: 'SERVER_STARTED',
+              title: `🟢 "${server.name}" resumed`,
+              body: 'The node it runs on had gone unreachable and just came back, so the panel restarted it automatically.',
+              fields: [{ name: 'Node', value: node.name }],
+            });
+          } catch (err: any) {
+            summary.events.push(`${server.name}: resume failed (${err.message})`);
+          }
+          continue;
+        }
 
         // Crash: we believed it was up, it isn't, and nobody just asked it to change
         if (dbSaysUp && !live.running && !recentlyTouched) {

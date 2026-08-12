@@ -11,9 +11,11 @@ import setupRoutes from './routes/setup';
 import { handleConsoleWebSocket } from './services/console';
 import { tunnelManager } from './services/frpc';
 import { schedulerService } from './services/scheduler';
+import { ensureContainerRestartPolicies } from './services/docker';
 
 tunnelManager.init();
 schedulerService.start();
+ensureContainerRestartPolicies().catch(() => {});
 
 const config = loadConfig();
 const app = express();

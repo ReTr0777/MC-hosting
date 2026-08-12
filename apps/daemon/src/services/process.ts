@@ -7,6 +7,7 @@ import { getConfig } from '../config';
 import { provisioningManager, STATUS } from './provisioning';
 import { tunnelManager } from './frpc';
 import { flattenServerDir } from '../utils/flatten';
+import { synthesizeForgeRunScript } from '../utils/forgeLaunchScript';
 
 export interface ManagedProcess {
   serverId: string;
@@ -71,16 +72,27 @@ class ProcessManager extends EventEmitter {
       } catch (e) {}
     }
 
-    // 1. Check for launch scripts (modpack preferred executables)
-    if (fs.existsSync(path.join(serverDir, 'run.sh'))) {
+    // 1. Check for launch scripts (modpack preferred executables). A 0-byte run.sh is a
+    // stray stub (e.g. left over from an earlier failed start) rather than a real script —
+    // flattenServerDir above should have already replaced it if a real one existed nested,
+    // but guard here too so we never hand bash an empty file and get a silent exit 0.
+    const runShPath = path.join(serverDir, 'run.sh');
+    if (fs.existsSync(runShPath) && fs.statSync(runShPath).size > 0) {
       console.log(`[ProcessManager] Using run.sh launch script`);
       return 'run.sh';
     }
-    if (fs.existsSync(path.join(serverDir, 'run.bat'))) {
+    const runBatPath = path.join(serverDir, 'run.bat');
+    if (fs.existsSync(runBatPath) && fs.statSync(runBatPath).size > 0) {
       console.log(`[ProcessManager] Using run.bat launch script`);
       return 'run.bat';
     }
-    
+
+    // 1b. If the archive's run.sh is missing/corrupt but an intact Forge/NeoForge
+    // libraries/ tree survived, reconstruct run.sh from the installer's own args files.
+    if (synthesizeForgeRunScript(serverDir, dto.memoryMb)) {
+      return 'run.sh';
+    }
+
     // 2. Check for custom fabric/forge launcher jars
     if (fs.existsSync(path.join(serverDir, 'fabric-server-launch.jar'))) {
       return 'fabric-server-launch.jar';
@@ -89,13 +101,28 @@ class ProcessManager extends EventEmitter {
       return '@user_args.txt';
     }
 
-    // 2. Version Mismatch Purger: Deletes old server.jar if requested mcVersion changed
+    // 2. Version Mismatch Rescue: if the requested mcVersion doesn't match what's recorded,
+    // the old JAR/libraries/world can't be reused — but rather than deleting them outright
+    // (this path can be hit by any server start, not just an intentional engine update, e.g.
+    // if the daemon's on-disk meta ever drifts from the requested version), move them into a
+    // timestamped rescue folder so a world is never silently destroyed.
     const recordedVer = meta.installedVersion || meta.mcVersion;
     if (recordedVer && recordedVer !== mcVersion) {
-      console.log(`[ProcessManager] Minecraft version mismatch (recorded '${recordedVer}' vs requested '${mcVersion}'). Purging old JAR, libraries, and world...`);
-      fs.rmSync(targetJarPath, { force: true });
-      fs.rmSync(path.join(serverDir, 'world'), { recursive: true, force: true });
-      fs.rmSync(path.join(serverDir, 'libraries'), { recursive: true, force: true });
+      const rescueDir = path.join(serverDir, '.version_mismatch_rescue', `${recordedVer}_${Date.now()}`);
+      console.log(`[ProcessManager] Minecraft version mismatch (recorded '${recordedVer}' vs requested '${mcVersion}'). Moving old JAR, libraries, and world to rescue folder '${rescueDir}' instead of deleting...`);
+      fs.mkdirSync(rescueDir, { recursive: true });
+      for (const name of ['server.jar', 'world', 'libraries']) {
+        const src = path.join(serverDir, name);
+        if (fs.existsSync(src)) {
+          try {
+            fs.renameSync(src, path.join(rescueDir, name));
+          } catch (e) {
+            // Cross-device or lock: fall back to a recursive copy+remove so nothing is lost.
+            fs.cpSync(src, path.join(rescueDir, name), { recursive: true });
+            fs.rmSync(src, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          }
+        }
+      }
       meta.installedVersion = mcVersion;
       meta.mcVersion = mcVersion;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));

@@ -146,7 +146,7 @@ export default function SleepTab({
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-white font-bold text-lg">
-            {sleeping ? '🌙 Sleeping' : running ? '☀️ Awake' : '⏸️ Offline'}
+            {sleeping ? 'Sleeping' : running ? 'Awake' : 'Offline'}
           </h2>
           <p className="text-slate-400 text-xs mt-1 max-w-xl leading-relaxed">
             When nobody is online, the server can stop itself to free memory and CPU. It stays visible in the
@@ -163,7 +163,7 @@ export default function SleepTab({
                   disabled={busy !== null}
                   className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl px-4 py-2.5"
                 >
-                  {busy === 'wake' ? 'Waking…' : '☀️ Wake now'}
+                  {busy === 'wake' ? 'Waking…' : 'Wake now'}
                 </button>
                 <button
                   onClick={() => act('cancel')}
@@ -180,7 +180,7 @@ export default function SleepTab({
                 title={running ? '' : 'The server must be running before it can be put to sleep'}
                 className="bg-indigo-500/15 hover:bg-indigo-500/25 disabled:opacity-40 text-indigo-300 font-bold text-xs rounded-xl px-4 py-2.5 border border-indigo-500/30"
               >
-                {busy === 'sleep' ? 'Sleeping…' : '🌙 Sleep now'}
+                {busy === 'sleep' ? 'Sleeping…' : 'Sleep now'}
               </button>
             )}
           </div>
@@ -201,7 +201,7 @@ export default function SleepTab({
 
       {snap?.daemonError && (
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300">
-          ⚠️ Could not read live sleep state from the node: {snap.daemonError}
+          Could not read live sleep state from the node: {snap.daemonError}
         </div>
       )}
 

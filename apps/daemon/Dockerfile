@@ -37,6 +37,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl unzip unrar-free p7zip-full bash ca-certificates psmisc procps lsof iproute2 net-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# Install the real RARLAB `unrar` binary. `unrar-free` (installed above) is a clean-room
+# reimplementation that cannot decode many modern RAR5 compression methods/filters, which
+# silently drops files ("Unsupported Method") out of large modpack archives during extraction.
+# The official binary has full RAR5 support and is freeware for extraction use.
+RUN curl -sSLf "https://www.rarlab.com/rar/rarlinux-x64-723.tar.gz" -o /tmp/rar.tar.gz && \
+    tar -xzf /tmp/rar.tar.gz -C /tmp && \
+    cp /tmp/rar/unrar /usr/local/bin/unrar && \
+    chmod +x /usr/local/bin/unrar && \
+    rm -rf /tmp/rar.tar.gz /tmp/rar
+
 # Download & Install Java 17, Java 21, and Java 25 runtimes for complete Minecraft compatibility
 RUN mkdir -p /opt/java/openjdk-17 && \
     curl -sSLL "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse" -o /tmp/jdk17.tar.gz && \

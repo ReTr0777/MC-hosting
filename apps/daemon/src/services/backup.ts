@@ -2,11 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import { getConfig } from '../config';
+import { isS3Configured, uploadBackup, listRemoteBackups, downloadBackup, deleteRemoteBackup } from './s3-backup';
 
 export interface BackupInfo {
   name: string;
   sizeBytes: number;
   createdAt: string;
+  location?: 'local' | 'remote' | 'both';
 }
 
 export class BackupManager {
@@ -19,23 +21,33 @@ export class BackupManager {
     return backupDir;
   }
 
-  public listBackups(serverId: string): BackupInfo[] {
+  public async listBackups(serverId: string): Promise<BackupInfo[]> {
     const backupDir = this.getBackupDir(serverId);
-    if (!fs.existsSync(backupDir)) return [];
+    const localFiles = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).filter((f) => f.endsWith('.zip')) : [];
 
-    const files = fs.readdirSync(backupDir);
-    return files
-      .filter((f) => f.endsWith('.zip'))
-      .map((f) => {
-        const filePath = path.join(backupDir, f);
-        const stats = fs.statSync(filePath);
-        return {
-          name: f,
-          sizeBytes: stats.size,
-          createdAt: stats.mtime.toISOString(),
-        };
-      })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const byName = new Map<string, BackupInfo>();
+    for (const f of localFiles) {
+      const stats = fs.statSync(path.join(backupDir, f));
+      byName.set(f, { name: f, sizeBytes: stats.size, createdAt: stats.mtime.toISOString(), location: 'local' });
+    }
+
+    let remote: { name: string; sizeBytes: number; createdAt: string }[] = [];
+    try {
+      remote = await listRemoteBackups(serverId);
+    } catch (err: any) {
+      console.warn(`[BackupManager] Failed to list remote backups for '${serverId}':`, err.message);
+    }
+
+    for (const r of remote) {
+      const existing = byName.get(r.name);
+      if (existing) {
+        existing.location = 'both';
+      } else {
+        byName.set(r.name, { ...r, location: 'remote' });
+      }
+    }
+
+    return Array.from(byName.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
   public async createBackup(serverId: string, customName?: string): Promise<BackupInfo> {
@@ -56,7 +68,7 @@ export class BackupManager {
     const items = fs.readdirSync(serverDir);
 
     for (const item of items) {
-      if (item === 'backups' || item === 'logs' || item === 'crash-reports' || item === '.cache') {
+      if (item === 'backups' || item === 'logs' || item === 'crash-reports' || item === '.cache' || item === '.version_mismatch_rescue') {
         continue;
       }
       const itemPath = path.join(serverDir, item);
@@ -71,6 +83,18 @@ export class BackupManager {
     zip.writeZip(targetZipPath);
     const stats = fs.statSync(targetZipPath);
     console.log(`[BackupManager] Backup created successfully: ${fileName} (${stats.size} bytes)`);
+
+    if (isS3Configured()) {
+      try {
+        await uploadBackup(serverId, fileName, targetZipPath);
+        console.log(`[BackupManager] Uploaded backup '${fileName}' to off-site storage.`);
+        if (getConfig().s3RetainLocal === false) {
+          fs.unlinkSync(targetZipPath);
+        }
+      } catch (err: any) {
+        console.error(`[BackupManager] Off-site upload failed for '${fileName}' (local copy retained):`, err.message);
+      }
+    }
 
     return {
       name: fileName,
@@ -87,7 +111,11 @@ export class BackupManager {
     const zipPath = path.join(backupDir, safeBackupName);
 
     if (!fs.existsSync(zipPath)) {
-      throw new Error(`Backup file '${safeBackupName}' does not exist`);
+      if (!isS3Configured()) {
+        throw new Error(`Backup file '${safeBackupName}' does not exist`);
+      }
+      console.log(`[BackupManager] '${safeBackupName}' not found locally, fetching from off-site storage...`);
+      await downloadBackup(serverId, safeBackupName, zipPath);
     }
 
     console.log(`[BackupManager] Restoring backup '${safeBackupName}' for server '${serverId}'...`);
@@ -98,7 +126,7 @@ export class BackupManager {
       const itemPath = path.join(serverDir, item);
       if (fs.existsSync(itemPath)) {
         try {
-          fs.rmSync(itemPath, { recursive: true, force: true });
+          fs.rmSync(itemPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
         } catch (e) {}
       }
     }
@@ -106,7 +134,15 @@ export class BackupManager {
     // Use native unzip for speed and reliability, fallback to AdmZip
     try {
       const { execSync } = require('child_process');
-      execSync(`unzip -q -o "${zipPath}" -d "${serverDir}"`);
+      // maxBuffer must be generous: execSync buffers all child output in memory (1MB by default)
+      // and kills the process once it overflows, which on a big backup would abort a restore that
+      // was working fine. Exit code 1 is unzip's "succeeded with warnings" — not a real failure.
+      try {
+        execSync(`unzip -q -o "${zipPath}" -d "${serverDir}"`, { stdio: 'pipe', maxBuffer: 512 * 1024 * 1024 });
+      } catch (e: any) {
+        if (e.status !== 1) throw e;
+        console.log(`[Backup Restore] unzip reported non-fatal warnings (exit code 1) — treating restore as successful`);
+      }
     } catch (e) {
       const zip = new AdmZip(zipPath);
       zip.extractAllTo(serverDir, true);
@@ -167,14 +203,20 @@ export class BackupManager {
     }
   }
 
-  public deleteBackup(serverId: string, backupName: string): void {
+  public async deleteBackup(serverId: string, backupName: string): Promise<void> {
     const backupDir = this.getBackupDir(serverId);
     const safeBackupName = path.basename(backupName);
     const zipPath = path.join(backupDir, safeBackupName);
 
     if (fs.existsSync(zipPath)) {
       fs.unlinkSync(zipPath);
-      console.log(`[BackupManager] Deleted backup '${safeBackupName}' for server '${serverId}'`);
+      console.log(`[BackupManager] Deleted local backup '${safeBackupName}' for server '${serverId}'`);
+    }
+
+    try {
+      await deleteRemoteBackup(serverId, safeBackupName);
+    } catch (err: any) {
+      console.warn(`[BackupManager] Failed to delete off-site copy of '${safeBackupName}':`, err.message);
     }
   }
 }

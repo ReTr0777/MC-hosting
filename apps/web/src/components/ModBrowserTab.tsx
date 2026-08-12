@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface ModBrowserTabProps {
   serverId: string;
@@ -46,6 +48,8 @@ interface InstalledMod {
 }
 
 export default function ModBrowserTab({ serverId, serverType, mcVersion, canManageFiles }: ModBrowserTabProps) {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<ModSearchResult[]>([]);
   const [selectedMod, setSelectedMod] = useState<ModSearchResult | null>(null);
@@ -178,7 +182,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
       
       if (!res.ok) throw new Error(data.error || 'Install failed');
       
-      alert(`✅ ${data.message}`);
+      toast.success('Mod installed', `${data.message} Restart the server for it to take effect.`);
       fetchInstalledMods();
       setSelectedMod(null);
       setSelectedVersion(null);
@@ -191,7 +195,18 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
   };
 
   const handleUninstall = async (fileName: string) => {
-    if (!confirm(`Are you sure you want to uninstall ${fileName}?`)) return;
+    const ok = await confirm({
+      title: 'Remove this mod?',
+      message: (
+        <>
+          <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{fileName}</code> will be deleted from
+          the server&apos;s mods folder. If other mods depend on it, the server may fail to start.
+        </>
+      ),
+      confirmLabel: 'Remove mod',
+      danger: true,
+    });
+    if (!ok) return;
 
     setUninstalling(fileName);
     setError('');
@@ -205,7 +220,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
       
       if (!res.ok) throw new Error(data.error || 'Uninstall failed');
       
-      alert(`✅ ${data.message}`);
+      toast.success('Mod removed', data.message);
       fetchInstalledMods();
     } catch (err: any) {
       setError(err.message);
@@ -235,7 +250,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
   if (!canManageFiles) {
     return (
       <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-        <div style={{ fontSize: '3rem', marginBottom: '16px' }}>🔒</div>
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '16px' }}>Locked</div>
         <h3 style={{ marginBottom: '8px', color: 'var(--text-primary)' }}>Insufficient Permissions</h3>
         <p>You need OPERATOR or ADMIN role to manage mods.</p>
       </div>
@@ -251,14 +266,14 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
           className={`cc-tab ${activeTab === 'search' ? 'cc-tab-active' : ''}`}
           style={{ padding: '8px 16px', fontSize: '0.8125rem' }}
         >
-          🔍 Browse Mods
+          Browse Mods
         </button>
         <button
           onClick={() => setActiveTab('installed')}
           className={`cc-tab ${activeTab === 'installed' ? 'cc-tab-active' : ''}`}
           style={{ padding: '8px 16px', fontSize: '0.8125rem' }}
         >
-          📦 Installed Mods ({installedMods.length})
+          Installed Mods ({installedMods.length})
         </button>
       </div>
 
@@ -294,14 +309,14 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
                 className={`cc-tab ${projectType === 'mod' ? 'cc-tab-active' : ''}`}
                 style={{ padding: '6px 12px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
               >
-                🧩 Mods
+                Mods
               </button>
               <button
                 onClick={() => { setProjectType('modpack'); handleSearch(searchQuery, 0); }}
                 className={`cc-tab ${projectType === 'modpack' ? 'cc-tab-active' : ''}`}
                 style={{ padding: '6px 12px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
               >
-                📦 Modpacks
+                Modpacks
               </button>
             </div>
           </div>
@@ -315,8 +330,8 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
 
           {!searchLoading && searchQuery.trim() && searchResults.length === 0 && !error && (
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '16px' }}>🔍</div>
-              <p>No mods found for "{searchQuery}"</p>
+              <p style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>No mods found</p>
+              <p>No results for "{searchQuery}"</p>
             </div>
           )}
 
@@ -516,7 +531,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
         <div style={{ flex: 1, overflow: 'auto' }}>
           {installedMods.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
-              <div style={{ fontSize: '4rem', marginBottom: '16px' }}>📦</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '16px' }}>No mods</div>
               <h3 style={{ marginBottom: '8px', color: 'var(--text-primary)' }}>No Mods Installed</h3>
               <p>Use the "Browse Mods" tab to search and install mods from Modrinth.</p>
             </div>
@@ -525,8 +540,8 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
               {installedMods.map((mod) => (
                 <div key={mod.fileName} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
-                    <div style={{ width: '40px', height: '40px', borderRadius: '6px', background: 'linear-gradient(135deg, var(--accent), #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', flexShrink: 0 }}>
-                      📦
+                    <div style={{ width: '40px', height: '40px', borderRadius: '6px', background: 'linear-gradient(135deg, var(--accent), #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16V8z" /><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12" /></svg>
                     </div>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -550,7 +565,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
                       whiteSpace: 'nowrap', flexShrink: 0,
                     }}
                   >
-                    {uninstalling === mod.fileName ? 'Removing...' : '🗑 Uninstall'}
+                    {uninstalling === mod.fileName ? 'Removing...' : 'Uninstall'}
                   </button>
                 </div>
               ))}

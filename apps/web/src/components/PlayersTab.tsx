@@ -61,7 +61,7 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>🎮 Online Players</span>
+            <span>Online Players</span>
             <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2.5 py-0.5 rounded-full border border-emerald-500/30">
               {players.length} Active
             </span>
@@ -73,7 +73,7 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
           onClick={fetchPlayers}
           className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition"
         >
-          🔄 Refresh Roster
+          Refresh Roster
         </button>
       </div>
 
@@ -87,7 +87,6 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
         <div className="text-center py-12 text-slate-500 text-sm animate-pulse">Scanning server for online players...</div>
       ) : players.length === 0 ? (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
-          <div className="text-4xl mb-3">👻</div>
           <h3 className="text-base font-bold text-white mb-1">No Players Currently Online</h3>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
             When players log in to this Minecraft server, their skin avatars and admin privilege tools will automatically show up here.
@@ -131,7 +130,7 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
                     title="De-OP Player"
                     className="p-2 bg-slate-800 hover:bg-slate-700 text-amber-400 rounded-lg border border-slate-700 text-xs font-bold transition"
                   >
-                    ⭐ De-OP
+                    De-OP
                   </button>
                 ) : (
                   <button
@@ -140,7 +139,7 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
                     title="Grant OP Operator Privileges"
                     className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-xs font-bold transition"
                   >
-                    ⭐ OP
+                    OP
                   </button>
                 )}
 
@@ -150,7 +149,7 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
                   title="Kick Player from Server"
                   className="p-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 rounded-lg border border-amber-500/20 text-xs font-bold transition"
                 >
-                  👢 Kick
+                  Kick
                 </button>
 
                 <button
@@ -159,7 +158,7 @@ export default function PlayersTab({ serverId }: { serverId: string }) {
                   title="Ban Player from Server"
                   className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg border border-red-500/20 text-xs font-bold transition"
                 >
-                  🔨 Ban
+                  Ban
                 </button>
               </div>
             </div>

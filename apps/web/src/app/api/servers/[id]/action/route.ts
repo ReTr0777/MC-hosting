@@ -52,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     apiKey: server.node.apiKey,
   });
 
-  const targetContainerId = server.containerId || server.id;
+  const targetContainerId = server.containerId || `process-${server.id}`;
 
   try {
     if (action === 'start' || action === 'restart') {

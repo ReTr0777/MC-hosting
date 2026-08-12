@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface ServerSchedule {
   id: string;
@@ -27,6 +28,7 @@ const FREQUENCY_PRESETS = [
 ];
 
 export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
+  const confirm = useConfirm();
   const [schedules, setSchedules] = useState<ServerSchedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -119,7 +121,18 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
   };
 
   const handleDeleteSchedule = async (id: string, schedName: string) => {
-    if (!confirm(`Are you sure you want to delete schedule '${schedName}'?`)) return;
+    const ok = await confirm({
+      title: 'Delete this schedule?',
+      message: (
+        <>
+          <strong style={{ color: 'var(--text-primary)' }}>{schedName}</strong> will stop running. Nothing already done by it is
+          undone.
+        </>
+      ),
+      confirmLabel: 'Delete schedule',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/servers/${serverId}/schedules/${id}`, {
         method: 'DELETE',
@@ -140,7 +153,7 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setActionMessage({ type: 'success', text: `⚡ Executed schedule '${schedName}'!` });
+        setActionMessage({ type: 'success', text: `Executed schedule '${schedName}'` });
         fetchSchedules();
       } else {
         setActionMessage({ type: 'error', text: data.error || 'Failed to run schedule' });
@@ -155,9 +168,9 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
   const getActionBadge = (type: string) => {
     switch (type) {
       case 'BACKUP':
-        return <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">📦 AUTO BACKUP</span>;
+        return <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">AUTO BACKUP</span>;
       case 'COMMAND':
-        return <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">💬 COMMAND</span>;
+        return <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">COMMAND</span>;
       case 'START':
         return <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded text-[11px] font-bold">▶ AUTO START</span>;
       case 'RESTART':
@@ -175,7 +188,7 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-            ⏰ Automated Schedules &amp; Tasks
+            Automated Schedules &amp; Tasks
           </h2>
           <p className="text-xs text-slate-400">
             Configure automated background backups, scheduled console commands, and automatic server restarts.
@@ -200,7 +213,7 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
         <div className="text-xs text-slate-400 text-center py-12">Loading schedules...</div>
       ) : schedules.length === 0 ? (
         <div className="bg-slate-950 border border-dashed border-slate-800 rounded-2xl p-10 text-center space-y-3">
-          <div className="text-3xl">⏰</div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>No schedules</div>
           <div className="text-sm font-bold text-white">No Schedules Configured</div>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
             Set up automatic server backups every 6 hours or scheduled console commands (e.g. broadcast warnings).
@@ -254,7 +267,7 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
                   className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-bold px-3 py-1.5 rounded-lg transition"
                   title="Run Schedule Now"
                 >
-                  {triggeringId === schedule.id ? 'Executing...' : '⚡ Run Now'}
+                  {triggeringId === schedule.id ? 'Executing...' : 'Run Now'}
                 </button>
 
                 <button
@@ -286,7 +299,7 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 space-y-5 animate-fadeIn">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
-                ⏰ Create Automated Schedule
+                Create Automated Schedule
               </h3>
               <button
                 onClick={() => setShowModal(false)}
@@ -316,8 +329,8 @@ export const SchedulesTab: React.FC<SchedulesTabProps> = ({ serverId }) => {
                   onChange={(e) => setActionType(e.target.value as any)}
                   className="cc-input"
                 >
-                  <option value="BACKUP">📦 Automated Server Backup</option>
-                  <option value="COMMAND">💬 Execute Console Command</option>
+                  <option value="BACKUP">Automated Server Backup</option>
+                  <option value="COMMAND">Execute Console Command</option>
                   <option value="START">▶ Automated Server Auto-Start</option>
                   <option value="RESTART">↺ Automated Server Restart</option>
                   <option value="STOP">■ Automated Server Shutdown</option>

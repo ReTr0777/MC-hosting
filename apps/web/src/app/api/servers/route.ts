@@ -145,6 +145,38 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[Web API /servers POST] ✓ All parameters validated`);
+
+    // Enforce per-user resource quotas (GLOBAL_ADMIN is exempt). Quotas only count servers
+    // this user OWNS — shared access to someone else's server doesn't count against them.
+    if (user.globalRole !== 'GLOBAL_ADMIN') {
+      const requester = await prisma.user.findUnique({
+        where: { id: user.userId },
+        select: { maxServers: true, maxMemoryMb: true, maxCpu: true },
+      });
+
+      if (requester && (requester.maxServers != null || requester.maxMemoryMb != null || requester.maxCpu != null)) {
+        const ownedServers = await prisma.server.findMany({
+          where: { permissions: { some: { userId: user.userId, role: 'OWNER' } } },
+          select: { memoryMb: true, cpuLimit: true },
+        });
+
+        const reqCpuLimit = parseFloat(cpuLimit) || 1.0;
+        const projectedCount = ownedServers.length + 1;
+        const projectedMemory = ownedServers.reduce((sum: number, s: any) => sum + s.memoryMb, 0) + reqMemoryMb;
+        const projectedCpu = ownedServers.reduce((sum: number, s: any) => sum + s.cpuLimit, 0) + reqCpuLimit;
+
+        if (requester.maxServers != null && projectedCount > requester.maxServers) {
+          return NextResponse.json({ error: `Server quota exceeded: you can own at most ${requester.maxServers} server(s).` }, { status: 403 });
+        }
+        if (requester.maxMemoryMb != null && projectedMemory > requester.maxMemoryMb) {
+          return NextResponse.json({ error: `Memory quota exceeded: your servers may use at most ${requester.maxMemoryMb} MB total (requested total: ${projectedMemory} MB).` }, { status: 403 });
+        }
+        if (requester.maxCpu != null && projectedCpu > requester.maxCpu) {
+          return NextResponse.json({ error: `CPU quota exceeded: your servers may use at most ${requester.maxCpu} core(s) total (requested total: ${projectedCpu}).` }, { status: 403 });
+        }
+      }
+    }
+
     let targetNodeId = nodeId;
 
     // Smart Node Scheduler: Auto-select node if nodeId is missing or set to 'AUTO'

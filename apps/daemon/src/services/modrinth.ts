@@ -1,8 +1,126 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import AdmZip from 'adm-zip';
 
 const MODRINTH_API = 'https://api.modrinth.com/v2';
+
+/** A single entry of a .mrpack's `modrinth.index.json` `files[]` array. */
+export interface MrpackManifestFile {
+  path: string;
+  hashes?: { sha1?: string; sha512?: string };
+  env?: { client?: string; server?: string };
+  downloads?: string[];
+  fileSize?: number;
+}
+
+export function verifyHash(buffer: Buffer, hashes?: { sha1?: string; sha512?: string }): boolean {
+  if (!hashes) return true;
+
+  if (hashes.sha1) {
+    const calcSha1 = crypto.createHash('sha1').update(buffer).digest('hex').toLowerCase();
+    if (calcSha1 !== hashes.sha1.toLowerCase()) return false;
+  }
+
+  if (hashes.sha512) {
+    const calcSha512 = crypto.createHash('sha512').update(buffer).digest('hex').toLowerCase();
+    if (calcSha512 !== hashes.sha512.toLowerCase()) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Joins an archive-supplied relative path onto a base directory, refusing anything that would
+ * escape it. Manifest and override paths come straight out of an uploaded archive, so a crafted
+ * pack could otherwise use `../` (or an absolute path) to write anywhere the daemon can reach.
+ */
+export function resolveInsideDir(baseDir: string, relPath: string): string | null {
+  if (!relPath || path.isAbsolute(relPath) || relPath.includes('\0')) return null;
+  const normalized = path.normalize(relPath).replace(/^(\.\.(\/|\\|$))+/, '');
+  const resolved = path.resolve(baseDir, normalized);
+  const baseWithSep = path.resolve(baseDir) + path.sep;
+  if (resolved !== path.resolve(baseDir) && !resolved.startsWith(baseWithSep)) return null;
+  return resolved;
+}
+
+/** True unless the manifest explicitly marks the file as unusable on a server. */
+export function isServerRelevant(file: MrpackManifestFile): boolean {
+  return parseModrinthEnv(file.env?.server) !== 'unsupported';
+}
+
+export interface ManifestDownloadResult {
+  downloaded: number;
+  skipped: string[];
+  failed: string[];
+}
+
+/**
+ * Downloads a manifest's `files[]` into targetDir, in bounded-concurrency batches, verifying each
+ * file against its declared SHA hashes and retrying on mismatch or transport error.
+ */
+export async function downloadManifestFiles(
+  files: MrpackManifestFile[],
+  targetDir: string,
+  options: { concurrency?: number; maxAttempts?: number; onProgress?: (done: number, total: number) => void } = {}
+): Promise<ManifestDownloadResult> {
+  const { concurrency = 8, maxAttempts = 3, onProgress } = options;
+  const result: ManifestDownloadResult = { downloaded: 0, skipped: [], failed: [] };
+
+  const queue = files.filter((f) => Array.isArray(f.downloads) && f.downloads.length > 0);
+  let completed = 0;
+
+  for (let i = 0; i < queue.length; i += concurrency) {
+    const batch = queue.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (file) => {
+        const destPath = resolveInsideDir(targetDir, file.path);
+        if (!destPath) {
+          console.warn(`[Modrinth Downloader] Refusing manifest entry with unsafe path: '${file.path}'`);
+          result.skipped.push(file.path);
+          completed++;
+          return;
+        }
+
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+        let ok = false;
+        for (let attempt = 1; attempt <= maxAttempts && !ok; attempt++) {
+          // Mirrors are listed in preference order; walk them before burning a retry.
+          for (const url of file.downloads!) {
+            try {
+              const res = await fetch(url);
+              if (!res.ok) continue;
+              const buf = Buffer.from(await res.arrayBuffer());
+              if (!verifyHash(buf, file.hashes)) {
+                console.warn(`[Modrinth Downloader] Hash mismatch for '${file.path}' from ${url} (attempt ${attempt}/${maxAttempts})`);
+                continue;
+              }
+              fs.writeFileSync(destPath, buf);
+              ok = true;
+              break;
+            } catch (e: any) {
+              console.warn(`[Modrinth Downloader] Error fetching '${file.path}' (attempt ${attempt}/${maxAttempts}): ${e.message}`);
+            }
+          }
+        }
+
+        if (ok) result.downloaded++;
+        else {
+          console.error(`[Modrinth Downloader] Gave up on '${file.path}' after ${maxAttempts} attempts`);
+          result.failed.push(file.path);
+        }
+
+        completed++;
+        if (onProgress && (completed % 15 === 0 || completed === queue.length)) {
+          onProgress(completed, queue.length);
+        }
+      })
+    );
+  }
+
+  return result;
+}
 
 export type ModrinthEnvType = 'required' | 'optional' | 'unsupported' | 'unknown';
 
@@ -166,6 +284,43 @@ export async function sanitizeMrpack(slug: string, outputPath: string, options: 
 
   zip.writeZip(outputPath);
   return { outputPath, removedManifestEntries: beforeFiles - index.files.length, removedOverrideEntries: overrideHits.length };
+}
+
+/**
+ * Reverse-looks-up jar files on Modrinth by their SHA1. This is how we identify mods that a
+ * modpack bundled directly into overrides/mods/ rather than listing in the manifest — those jars
+ * arrive with no env metadata of their own, so the project record is the only way to learn
+ * whether they're client-only. Returns a map of sha1 -> version object (unknown hashes omitted).
+ */
+export async function lookupVersionsByHashes(sha1Hashes: string[]): Promise<Map<string, any>> {
+  const found = new Map<string, any>();
+  const batchSize = 100;
+
+  for (let i = 0; i < sha1Hashes.length; i += batchSize) {
+    const batch = sha1Hashes.slice(i, i + batchSize);
+    try {
+      const res = await fetch(`${MODRINTH_API}/version_files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'CraftControl-Daemon/1.0.0 (https://github.com/mc-server-manager)',
+        },
+        body: JSON.stringify({ hashes: batch, algorithm: 'sha1' }),
+      });
+      if (!res.ok) {
+        console.warn(`[modrinth-api] Hash lookup batch failed: ${res.status}`);
+        continue;
+      }
+      const data = await res.json();
+      for (const [hash, version] of Object.entries(data || {})) {
+        found.set(hash.toLowerCase(), version);
+      }
+    } catch (err: any) {
+      console.warn(`[modrinth-api] Hash lookup batch errored: ${err.message}`);
+    }
+  }
+
+  return found;
 }
 
 export async function getModrinthProjects(projectIdsOrSlugs: string[]): Promise<Map<string, ModrinthProject>> {

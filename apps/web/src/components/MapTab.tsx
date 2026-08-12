@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface Share {
   id: string;
@@ -38,6 +39,7 @@ export default function MapTab({
   serverStatus: string;
   canManage: boolean;
 }) {
+  const confirm = useConfirm();
   const [state, setState] = useState<MapState | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -145,7 +147,13 @@ export default function MapTab({
   };
 
   const deleteShare = async (share: Share) => {
-    if (!confirm('Delete this share link? Anyone using it will immediately lose access.')) return;
+    const ok = await confirm({
+      title: 'Delete this share link?',
+      message: 'Anyone currently using the link loses access to the map immediately. You can always create a new link later.',
+      confirmLabel: 'Delete link',
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(`share-${share.id}`);
     try {
       await fetch(`/api/servers/${serverId}/bluemap/shares/${share.id}`, { method: 'DELETE' });
@@ -172,7 +180,7 @@ export default function MapTab({
   if (state.supported === false) {
     return (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
-        <div className="text-4xl mb-3">🗺️</div>
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>No map yet</div>
         <h3 className="text-base font-bold text-white mb-1">BlueMap isn&apos;t available for this server</h3>
         <p className="text-xs text-slate-400 max-w-md mx-auto">{state.reason}</p>
       </div>
@@ -184,7 +192,7 @@ export default function MapTab({
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>🗺️ Live World Map</span>
+            <span>Live World Map</span>
             {state.installed ? (
               <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2.5 py-0.5 rounded-full border border-emerald-500/30">
                 Installed
@@ -206,7 +214,7 @@ export default function MapTab({
             disabled={!!busy}
             className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition disabled:opacity-40"
           >
-            {busy === 'diagnose' ? 'Checking...' : '🩺 Diagnose'}
+            {busy === 'diagnose' ? 'Checking...' : 'Diagnose'}
           </button>
           {state.installed && state.bluemapPort && (
             <a
@@ -232,7 +240,7 @@ export default function MapTab({
                   : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'
               }`}
             >
-              {busy === 'install' ? 'Installing...' : busy === 'uninstall' ? 'Removing...' : state.installed ? 'Uninstall' : '⬇ Install BlueMap'}
+              {busy === 'install' ? 'Installing...' : busy === 'uninstall' ? 'Removing...' : state.installed ? 'Uninstall' : 'Install BlueMap'}
             </button>
           )}
         </div>
@@ -257,14 +265,14 @@ export default function MapTab({
           }`}
         >
           <div className="text-sm font-bold text-white">
-            {diagnosis.healthy ? '✅ Map pipeline looks healthy' : '🩺 First problem found'}
+            {diagnosis.healthy ? 'Map pipeline looks healthy' : 'First problem found'}
           </div>
           {!diagnosis.healthy && <p className="text-xs text-amber-300 leading-relaxed">{diagnosis.summary}</p>}
 
           <div className="space-y-1">
             {diagnosis.checks.map((c) => (
               <div key={c.name} className="flex items-start gap-2 text-xs">
-                <span className="flex-shrink-0 mt-0.5">{c.ok ? '✅' : '❌'}</span>
+                <span className="flex-shrink-0 mt-0.5" style={{ color: c.ok ? 'var(--accent)' : 'var(--danger)', fontWeight: 700 }}>{c.ok ? '✓' : '✕'}</span>
                 <div className="min-w-0">
                   <span className={c.ok ? 'text-slate-300' : 'text-white font-semibold'}>{c.name}</span>
                   <span className="text-slate-500"> — {c.detail}</span>
@@ -294,7 +302,7 @@ export default function MapTab({
 
       {state.daemonError && (
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300">
-          ⚠️ Could not reach the daemon for map status: {state.daemonError}
+          Could not reach the daemon for map status: {state.daemonError}
         </div>
       )}
 
@@ -331,7 +339,7 @@ export default function MapTab({
 
       {state.installed && (
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-xs text-slate-300">
-          ℹ️ BlueMap renders in the background and can take a long time on a large world — often hours for the first
+          BlueMap renders in the background and can take a long time on a large world — often hours for the first
           full pass. The map is viewable while it renders; it just fills in progressively.
         </div>
       )}
@@ -358,7 +366,7 @@ export default function MapTab({
                       <span className="font-bold text-white text-sm">{s.label || 'Untitled link'}</span>
                       {s.hasPassword && (
                         <span className="bg-sky-500/20 text-sky-300 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-sky-500/30">
-                          🔒 Password
+                          Password
                         </span>
                       )}
                       {expired ? (

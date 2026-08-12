@@ -107,7 +107,7 @@ export default function BanListTab({ serverId, canManage }: { serverId: string; 
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>🔨 Ban List</span>
+            <span>Ban List</span>
             <span className="bg-red-500/20 text-red-400 text-xs px-2.5 py-0.5 rounded-full border border-red-500/30">
               {snapshot.count} Banned
             </span>
@@ -121,7 +121,7 @@ export default function BanListTab({ serverId, canManage }: { serverId: string; 
           onClick={fetchBans}
           className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition"
         >
-          🔄 Refresh
+          Refresh
         </button>
       </div>
 
@@ -158,7 +158,7 @@ export default function BanListTab({ serverId, canManage }: { serverId: string; 
               disabled={!!busy || !newName.trim()}
               className="bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-red-600/20 transition"
             >
-              {busy?.startsWith('ban') ? 'Banning...' : '🔨 Ban Player'}
+              {busy?.startsWith('ban') ? 'Banning...' : 'Ban Player'}
             </button>
           </form>
         )}
@@ -174,7 +174,7 @@ export default function BanListTab({ serverId, canManage }: { serverId: string; 
 
         {snapshot.count === 0 ? (
           <div className="text-center py-10">
-            <div className="text-4xl mb-3">✅</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>No bans</div>
             <h3 className="text-base font-bold text-white mb-1">No One Is Banned</h3>
             <p className="text-xs text-slate-400 max-w-sm mx-auto">
               {canManage ? 'Ban a username above to block them from joining.' : 'No players are currently banned.'}

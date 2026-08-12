@@ -3,12 +3,17 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/context/ToastContext';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface UserItem {
   id: string;
   email: string;
   username: string;
   globalRole: string;
+  maxServers: number | null;
+  maxMemoryMb: number | null;
+  maxCpu: number | null;
   createdAt: string;
 }
 
@@ -23,6 +28,8 @@ interface InviteItem {
 
 export default function UsersDashboardPage() {
   const { user, logout, loading } = useAuth();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [users, setUsers] = useState<UserItem[]>([]);
   const [invites, setInvites] = useState<InviteItem[]>([]);
   
@@ -40,6 +47,9 @@ export default function UsersDashboardPage() {
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
   const [editPassword, setEditPassword] = useState('');
   const [editRole, setEditRole] = useState('USER');
+  const [editMaxServers, setEditMaxServers] = useState<string>('');
+  const [editMaxMemoryMb, setEditMaxMemoryMb] = useState<string>('');
+  const [editMaxCpu, setEditMaxCpu] = useState<string>('');
   
   // Create Invite State
   const [showCreateInvite, setShowCreateInvite] = useState(false);
@@ -96,7 +106,13 @@ export default function UsersDashboardPage() {
       const res = await fetch(`/api/users/${editingUser.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: editPassword || undefined, globalRole: editRole }),
+        body: JSON.stringify({
+          password: editPassword || undefined,
+          globalRole: editRole,
+          maxServers: editMaxServers === '' ? null : parseInt(editMaxServers, 10),
+          maxMemoryMb: editMaxMemoryMb === '' ? null : parseInt(editMaxMemoryMb, 10),
+          maxCpu: editMaxCpu === '' ? null : parseFloat(editMaxCpu),
+        }),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to update user');
       setEditingUser(null);
@@ -106,10 +122,27 @@ export default function UsersDashboardPage() {
   };
 
   const handleDeleteUser = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this user?')) return;
+    const target = users.find((u) => u.id === id);
+    const ok = await confirm({
+      title: 'Delete this account?',
+      message: (
+        <>
+          <strong style={{ color: 'var(--text-primary)' }}>{target?.username || 'This user'}</strong> loses access to the panel
+          immediately. Servers they own are not deleted.
+        </>
+      ),
+      confirmLabel: 'Delete account',
+      danger: true,
+    });
+    if (!ok) return;
+
     try {
       const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-      if (!res.ok) alert((await res.json()).error || 'Failed to delete user');
+      if (!res.ok) {
+        toast.error('Could not delete the account', (await res.json()).error);
+      } else {
+        toast.success('Account deleted', target?.username);
+      }
       fetchUsers();
     } catch (e) { console.error(e); }
   };
@@ -131,10 +164,18 @@ export default function UsersDashboardPage() {
   };
 
   const handleRevokeInvite = async (id: string) => {
-    if (!confirm('Are you sure you want to revoke this invite code?')) return;
+    const ok = await confirm({
+      title: 'Revoke this invite code?',
+      message: 'Anyone who still has the link will no longer be able to register with it. Accounts already created stay active.',
+      confirmLabel: 'Revoke invite',
+      danger: true,
+    });
+    if (!ok) return;
+
     try {
       const res = await fetch(`/api/invites/${id}`, { method: 'DELETE' });
-      if (!res.ok) alert('Failed to revoke invite');
+      if (!res.ok) toast.error('Could not revoke the invite');
+      else toast.success('Invite revoked');
       fetchInvites();
     } catch (e) { console.error(e); }
   };
@@ -206,6 +247,7 @@ export default function UsersDashboardPage() {
                     <th className="px-6 py-4">Username</th>
                     <th className="px-6 py-4">Email</th>
                     <th className="px-6 py-4">Role</th>
+                    <th className="px-6 py-4">Quota</th>
                     <th className="px-6 py-4">Created</th>
                     <th className="px-6 py-4 text-right">Actions</th>
                   </tr>
@@ -220,9 +262,25 @@ export default function UsersDashboardPage() {
                           {u.globalRole}
                         </span>
                       </td>
+                      <td className="px-6 py-4 text-xs text-slate-400 font-mono">
+                        {u.maxServers == null && u.maxMemoryMb == null && u.maxCpu == null
+                          ? 'Unlimited'
+                          : [
+                              u.maxServers != null ? `${u.maxServers} srv` : null,
+                              u.maxMemoryMb != null ? `${u.maxMemoryMb}MB` : null,
+                              u.maxCpu != null ? `${u.maxCpu} cpu` : null,
+                            ].filter(Boolean).join(' · ')}
+                      </td>
                       <td className="px-6 py-4">{new Date(u.createdAt).toLocaleDateString()}</td>
                       <td className="px-6 py-4 text-right space-x-3">
-                        <button onClick={() => { setEditingUser(u); setEditRole(u.globalRole); setEditPassword(''); }} className="text-indigo-400 hover:text-indigo-300 font-medium">Edit</button>
+                        <button onClick={() => {
+                          setEditingUser(u);
+                          setEditRole(u.globalRole);
+                          setEditPassword('');
+                          setEditMaxServers(u.maxServers != null ? String(u.maxServers) : '');
+                          setEditMaxMemoryMb(u.maxMemoryMb != null ? String(u.maxMemoryMb) : '');
+                          setEditMaxCpu(u.maxCpu != null ? String(u.maxCpu) : '');
+                        }} className="text-indigo-400 hover:text-indigo-300 font-medium">Edit</button>
                         {u.id !== user.id && (
                           <button onClick={() => handleDeleteUser(u.id)} className="text-red-400 hover:text-red-300 font-medium">Delete</button>
                         )}
@@ -258,7 +316,7 @@ export default function UsersDashboardPage() {
                     </div>
                     <div className="flex items-center space-x-2 mb-4">
                       <input type="text" readOnly value={inviteUrl} className="w-full bg-slate-950 text-slate-300 text-xs px-3 py-2 rounded border border-slate-800 focus:outline-none" />
-                      <button onClick={() => { navigator.clipboard.writeText(inviteUrl); alert('Copied!'); }} className="bg-slate-800 text-slate-300 hover:text-white px-3 py-2 rounded text-xs transition border border-slate-700">Copy</button>
+                      <button onClick={() => { navigator.clipboard.writeText(inviteUrl); toast.success('Invite link copied'); }} className="bg-slate-800 text-slate-300 hover:text-white px-3 py-2 rounded text-xs transition border border-slate-700">Copy</button>
                     </div>
                     <div className="flex justify-between text-xs text-slate-500">
                       <span>Uses: {inv.uses} / {inv.maxUses || '∞'}</span>
@@ -291,6 +349,26 @@ export default function UsersDashboardPage() {
                   <option value="GLOBAL_ADMIN">Global Admin</option>
                 </select>
               </div>
+
+              <div className="pt-2 border-t border-slate-800">
+                <div className="text-xs font-semibold uppercase text-slate-400 mb-1 mt-2">Resource Quotas (blank = unlimited)</div>
+                <p className="text-[11px] text-slate-500 mb-3">Only counts servers this user owns. Ignored for Global Admins.</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Max Servers</label>
+                    <input type="number" min="0" placeholder="∞" value={editMaxServers} onChange={e => setEditMaxServers(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Max RAM (MB)</label>
+                    <input type="number" min="0" placeholder="∞" value={editMaxMemoryMb} onChange={e => setEditMaxMemoryMb(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Max CPU (cores)</label>
+                    <input type="number" min="0" step="0.5" placeholder="∞" value={editMaxCpu} onChange={e => setEditMaxCpu(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm" />
+                  </div>
+                </div>
+              </div>
+
               <div className="flex justify-end space-x-3 pt-4">
                 <button type="button" onClick={() => setEditingUser(null)} className="px-4 py-2 text-sm text-slate-400 hover:text-white transition">Cancel</button>
                 <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-4 py-2 rounded-xl transition">Save Changes</button>

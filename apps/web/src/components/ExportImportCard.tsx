@@ -2,8 +2,10 @@
 
 import React, { useRef, useState } from 'react';
 import { uploadFileInChunks } from '@/lib/chunked-upload';
+import { useConfirm } from '@/context/ConfirmContext';
 
 export default function ExportImportCard({ serverId, canManage }: { serverId: string; canManage: boolean }) {
+  const confirm = useConfirm();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -19,12 +21,20 @@ export default function ExportImportCard({ serverId, canManage }: { serverId: st
     e.target.value = '';
     if (!file) return;
 
-    if (!confirm(
-      `This will extract "${file.name}" over this server's existing files, overwriting any that match. ` +
-      'Files not present in the archive are left untouched. Continue?'
-    )) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Import this archive over the server?',
+      message: (
+        <>
+          <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{file.name}</code> will be extracted on
+          top of this server&apos;s files. Any file with a matching name is overwritten; everything else is left alone.
+          <br /><br />
+          Take a backup first if the current world matters.
+        </>
+      ),
+      confirmLabel: 'Import archive',
+      danger: true,
+    });
+    if (!ok) return;
 
     setImporting(true);
     setProgress(0);

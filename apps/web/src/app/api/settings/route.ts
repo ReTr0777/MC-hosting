@@ -33,6 +33,8 @@ export async function GET(request: NextRequest) {
       take: 50,
     });
 
+    const smtpPassResult = tryDecryptSecret(settingsMap['SMTP_PASS'] || '');
+
     return NextResponse.json({
       settings: {
         cloudflareApiToken: tokenResult.value, // Returned to authenticated Global Admin for form view
@@ -44,6 +46,13 @@ export async function GET(request: NextRequest) {
             : null,
         cloudflareZoneId: settingsMap['CLOUDFLARE_ZONE_ID'] || '',
         defaultDomain: settingsMap['DEFAULT_DOMAIN'] || 'retr0net.com',
+        smtpHost: settingsMap['SMTP_HOST'] || '',
+        smtpPort: settingsMap['SMTP_PORT'] || '587',
+        smtpUser: settingsMap['SMTP_USER'] || '',
+        smtpPass: smtpPassResult.value,
+        maskedSmtpPass: maskSecret(smtpPassResult.value),
+        smtpFrom: settingsMap['SMTP_FROM'] || '',
+        smtpSecure: settingsMap['SMTP_SECURE'] === 'true',
       },
       logs: cloudflareLogs,
     });
@@ -60,7 +69,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { cloudflareApiToken, cloudflareZoneId, defaultDomain } = body;
+    const { cloudflareApiToken, cloudflareZoneId, defaultDomain, smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure } = body;
 
     const upsertSetting = async (key: string, value: string) => {
       await prisma.systemSetting.upsert({
@@ -77,6 +86,16 @@ export async function POST(request: NextRequest) {
     }
     if (cloudflareZoneId !== undefined) await upsertSetting('CLOUDFLARE_ZONE_ID', cloudflareZoneId.trim());
     if (defaultDomain !== undefined) await upsertSetting('DEFAULT_DOMAIN', defaultDomain.trim());
+
+    if (smtpHost !== undefined) await upsertSetting('SMTP_HOST', smtpHost.trim());
+    if (smtpPort !== undefined) await upsertSetting('SMTP_PORT', String(smtpPort).trim());
+    if (smtpUser !== undefined) await upsertSetting('SMTP_USER', smtpUser.trim());
+    if (smtpPass !== undefined) {
+      const cleanPass = smtpPass.trim();
+      await upsertSetting('SMTP_PASS', cleanPass ? encryptSecret(cleanPass) : '');
+    }
+    if (smtpFrom !== undefined) await upsertSetting('SMTP_FROM', smtpFrom.trim());
+    if (smtpSecure !== undefined) await upsertSetting('SMTP_SECURE', String(!!smtpSecure));
 
     return NextResponse.json({ success: true, message: 'Global system settings updated & encrypted at rest!' });
   } catch (err: any) {

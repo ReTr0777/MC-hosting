@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface SystemUser {
   id: string;
@@ -24,6 +25,7 @@ interface ServerPermissionsModalProps {
 }
 
 export function ServerPermissionsModal({ serverId, serverName, isOpen, onClose }: ServerPermissionsModalProps) {
+  const confirm = useConfirm();
   const [permissions, setPermissions] = useState<ServerPermissionItem[]>([]);
   const [allUsers, setAllUsers] = useState<SystemUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,7 +93,13 @@ export function ServerPermissionsModal({ serverId, serverName, isOpen, onClose }
   };
 
   const handleRevokePermission = async (permissionId: string) => {
-    if (!confirm('Are you sure you want to revoke server access for this user?')) return;
+    const ok = await confirm({
+      title: 'Revoke access for this user?',
+      message: 'They will no longer see or control this server in their dashboard. You can grant access again at any time.',
+      confirmLabel: 'Revoke access',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/servers/${serverId}/permissions/${permissionId}`, {
         method: 'DELETE',

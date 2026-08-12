@@ -104,7 +104,7 @@ export async function installCurseForgeModpack(config: CurseForgeInstallConfig):
   const outputDir = path.join(tmpBase, 'server-output');
 
   if (fs.existsSync(tmpBase)) {
-    fs.rmSync(tmpBase, { recursive: true, force: true });
+    fs.rmSync(tmpBase, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
   fs.mkdirSync(clientPackDir, { recursive: true });
   fs.mkdirSync(outputDir, { recursive: true });
@@ -169,7 +169,7 @@ export async function installCurseForgeModpack(config: CurseForgeInstallConfig):
   } finally {
     // Clean up temporary build folder in /tmp
     if (fs.existsSync(tmpBase)) {
-      fs.rmSync(tmpBase, { recursive: true, force: true });
+      fs.rmSync(tmpBase, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   }
 }

@@ -11,7 +11,7 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
   const [properties, setProperties] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [iconKey, setIconKey] = useState<number>(Date.now());
   const [uploadingIcon, setUploadingIcon] = useState(false);
 
@@ -34,13 +34,13 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
 
       if (res.ok) {
         setIconKey(Date.now());
-        setMessage('✅ Server icon updated! Minecraft will display server-icon.png in the multiplayer server list.');
+        setMessage({ kind: 'ok', text: 'Server icon updated! Minecraft will display server-icon.png in the multiplayer server list.' });
       } else {
         const err = await res.json();
-        setMessage(`❌ Icon upload failed: ${err.error}`);
+        setMessage({ kind: 'err', text: `Icon upload failed: ${err.error}` });
       }
     } catch (err: any) {
-      setMessage(`❌ Icon upload failed: ${err.message}`);
+      setMessage({ kind: 'err', text: `Icon upload failed: ${err.message}` });
     } finally {
       setUploadingIcon(false);
     }
@@ -74,12 +74,12 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage('✅ server.properties updated successfully! Restart the server to apply changes.');
+        setMessage({ kind: 'ok', text: 'server.properties updated successfully! Restart the server to apply changes.' });
       } else {
-        setMessage(`❌ Error: ${data.error}`);
+        setMessage({ kind: 'err', text: `Error: ${data.error}` });
       }
     } catch (e: any) {
-      setMessage(`❌ Error: ${e.message}`);
+      setMessage({ kind: 'err', text: `Error: ${e.message}` });
     } finally {
       setSaving(false);
     }
@@ -94,7 +94,7 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>🛠️ Visual server.properties Editor</span>
+            <span>Visual server.properties Editor</span>
           </h2>
           <p className="text-xs text-slate-400 mt-1">Easily configure game mechanics, difficulty, MOTD, server icon, and performance settings.</p>
         </div>
@@ -104,20 +104,20 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
           disabled={saving}
           className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition flex items-center space-x-2"
         >
-          {saving ? <span>Saving...</span> : <span>💾 Save Configuration</span>}
+          {saving ? <span>Saving...</span> : <span>Save Configuration</span>}
         </button>
       </div>
 
       {message && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${message.startsWith('❌') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {message}
+        <div className={`p-4 rounded-xl text-xs font-semibold ${message.kind === 'err' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+          {message.text}
         </div>
       )}
 
       {/* Server Icon & Branding Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
         <h3 className="text-sm font-bold text-emerald-400 uppercase tracking-wider border-b border-slate-800 pb-3 flex items-center justify-between">
-          <span>🖼️ Minecraft Server Icon (server-icon.png)</span>
+          <span>Minecraft Server Icon (server-icon.png)</span>
         </h3>
         <div className="flex items-center space-x-5">
           <div className="w-16 h-16 rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center flex-shrink-0 shadow-inner">
@@ -136,7 +136,7 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
               Upload a 64x64 image. Minecraft automatically loads <code className="text-emerald-400 font-mono">server-icon.png</code> to display next to your server name in the in-game multiplayer list and on the CraftControl overview.
             </p>
             <label className="inline-flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl cursor-pointer shadow transition">
-              {uploadingIcon ? 'Uploading...' : '📁 Upload New Icon'}
+              {uploadingIcon ? 'Uploading...' : 'Upload New Icon'}
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
@@ -152,7 +152,7 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
       {/* Form Section 1: General & World */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
         <h3 className="text-sm font-bold text-emerald-400 uppercase tracking-wider border-b border-slate-800 pb-3">
-          🌍 General & Gameplay Mechanics
+          General & Gameplay Mechanics
         </h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -210,7 +210,7 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
       {/* Form Section 2: Features & Toggles */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
         <h3 className="text-sm font-bold text-cyan-400 uppercase tracking-wider border-b border-slate-800 pb-3">
-          ⚡ Toggles & Rules
+          Toggles & Rules
         </h3>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -279,7 +279,7 @@ export default function PropertiesTab({ serverId }: PropertiesTabProps) {
       {/* Form Section 3: Performance */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
         <h3 className="text-sm font-bold text-amber-400 uppercase tracking-wider border-b border-slate-800 pb-3">
-          🚀 Performance & Distances
+          Performance & Distances
         </h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

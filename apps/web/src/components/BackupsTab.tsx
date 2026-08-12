@@ -1,19 +1,22 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useConfirm } from '@/context/ConfirmContext';
 
 interface Backup {
   name: string;
   sizeBytes: number;
   createdAt: string;
+  location?: 'local' | 'remote' | 'both';
 }
 
 export default function BackupsTab({ serverId }: { serverId: string }) {
+  const confirm = useConfirm();
   const [backups, setBackups] = useState<Backup[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [backupName, setBackupName] = useState('');
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,23 +48,32 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage('✅ Backup snapshot created successfully!');
+        setMessage({ kind: 'ok', text: 'Backup snapshot created successfully!' });
         setBackupName('');
         fetchBackups();
       } else {
-        setMessage(`❌ Error: ${data.error}`);
+        setMessage({ kind: 'err', text: `Error: ${data.error}` });
       }
     } catch (err: any) {
-      setMessage(`❌ Error: ${err.message}`);
+      setMessage({ kind: 'err', text: `Error: ${err.message}` });
     } finally {
       setCreating(false);
     }
   };
 
   const handleRestore = async (name: string) => {
-    if (!confirm(`Are you sure you want to restore '${name}'? This will stop the server and overwrite current world files.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Restore this backup?',
+      message: (
+        <>
+          The server will be stopped and its current world files replaced with the contents of{' '}
+          <strong style={{ color: 'var(--text-primary)' }}>{name}</strong>. Anything built since that snapshot will be lost.
+        </>
+      ),
+      confirmLabel: 'Restore backup',
+      danger: true,
+    });
+    if (!ok) return;
     setActionLoading(`restore-${name}`);
     setMessage(null);
     try {
@@ -72,19 +84,31 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage('✅ Backup restored successfully!');
+        setMessage({ kind: 'ok', text: 'Backup restored successfully!' });
       } else {
-        setMessage(`❌ Error: ${data.error}`);
+        setMessage({ kind: 'err', text: `Error: ${data.error}` });
       }
     } catch (err: any) {
-      setMessage(`❌ Error: ${err.message}`);
+      setMessage({ kind: 'err', text: `Error: ${err.message}` });
     } finally {
       setActionLoading(null);
     }
   };
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Are you sure you want to delete '${name}'?`)) return;
+    const ok = await confirm({
+      title: 'Delete this backup?',
+      message: (
+        <>
+          <strong style={{ color: 'var(--text-primary)' }}>{name}</strong> will be removed from the node. You will no longer be
+          able to restore the server to this point.
+        </>
+      ),
+      confirmLabel: 'Delete backup',
+      danger: true,
+    });
+    if (!ok) return;
+
     setActionLoading(`delete-${name}`);
     setMessage(null);
     try {
@@ -94,7 +118,7 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
         body: JSON.stringify({ action: 'delete', name }),
       });
       if (res.ok) {
-        setMessage('✅ Backup deleted.');
+        setMessage({ kind: 'ok', text: 'Backup deleted.' });
         fetchBackups();
       }
     } catch (e) {
@@ -116,15 +140,15 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>💾 Scheduled Backups & Snapshots</span>
+            <span>Scheduled Backups & Snapshots</span>
           </h2>
           <p className="text-xs text-slate-400 mt-1">Create compressed `.zip` world snapshots and perform 1-click server rollbacks.</p>
         </div>
       </div>
 
       {message && (
-        <div className={`p-4 rounded-xl text-xs font-semibold ${message.startsWith('❌') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-          {message}
+        <div className={`p-4 rounded-xl text-xs font-semibold ${message.kind === 'err' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+          {message.text}
         </div>
       )}
 
@@ -142,7 +166,7 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
           disabled={creating}
           className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition"
         >
-          {creating ? 'Archiving...' : '📸 Take Backup Snapshot'}
+          {creating ? 'Archiving...' : 'Take Backup Snapshot'}
         </button>
       </form>
 
@@ -151,7 +175,7 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
         <div className="text-center py-12 text-slate-500 text-sm animate-pulse">Scanning backup vault...</div>
       ) : backups.length === 0 ? (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
-          <div className="text-4xl mb-3">📦</div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>No backups</div>
           <h3 className="text-base font-bold text-white mb-1">No Backups Created Yet</h3>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
             Take a backup snapshot above to safeguard your Minecraft world, configuration, and player progress.
@@ -165,6 +189,7 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
                 <th className="px-6 py-4">Snapshot Archive</th>
                 <th className="px-6 py-4">File Size</th>
                 <th className="px-6 py-4">Created Date</th>
+                <th className="px-6 py-4">Storage</th>
                 <th className="px-6 py-4 text-right">Actions</th>
               </tr>
             </thead>
@@ -174,6 +199,17 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
                   <td className="px-6 py-4 font-mono text-emerald-300 font-semibold">{backup.name}</td>
                   <td className="px-6 py-4 text-slate-300 font-mono">{formatBytes(backup.sizeBytes)}</td>
                   <td className="px-6 py-4 text-slate-400">{new Date(backup.createdAt).toLocaleString()}</td>
+                  <td className="px-6 py-4">
+                    <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${
+                      backup.location === 'remote'
+                        ? 'bg-sky-500/10 text-sky-300 border-sky-500/30'
+                        : backup.location === 'both'
+                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}>
+                      {backup.location === 'remote' ? 'Off-site only' : backup.location === 'both' ? 'Local + off-site' : 'Local only'}
+                    </span>
+                  </td>
                   <td className="px-6 py-4 text-right space-x-2">
                     <button
                       onClick={() => handleRestore(backup.name)}
@@ -188,7 +224,7 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
                       disabled={!!actionLoading}
                       className="bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold px-3 py-1.5 rounded-lg border border-red-500/20 transition"
                     >
-                      🗑️ Delete
+                      Delete
                     </button>
                   </td>
                 </tr>

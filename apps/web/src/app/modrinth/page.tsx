@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/context/ToastContext';
 
 interface Modpack {
   project_id: string;
@@ -22,6 +23,7 @@ interface NodeItem {
 
 export default function ModrinthExplorerPage() {
   const { user } = useAuth();
+  const toast = useToast();
   const [query, setQuery] = useState('');
   const [modpacks, setModpacks] = useState<Modpack[]>([]);
   const [loading, setLoading] = useState(false);
@@ -123,7 +125,7 @@ export default function ModrinthExplorerPage() {
         throw new Error(data.error || 'Failed to deploy modpack server');
       }
 
-      alert(`Modpack server "${serverName}" created successfully!`);
+      toast.success('Modpack server created', `"${serverName}" is provisioning — open it from the dashboard to watch it boot.`);
       setSelectedModpack(null);
     } catch (err: any) {
       setDeployError(err.message);
@@ -302,7 +304,7 @@ export default function ModrinthExplorerPage() {
                     onChange={(e) => setSelectedNodeId(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
                   >
-                    <option value="AUTO">⚡ Auto-Select (Smart Offload)</option>
+                    <option value="AUTO">Auto-select (smart offload)</option>
                     {nodes.map((n) => (
                       <option key={n.id} value={n.id}>
                         {n.name}

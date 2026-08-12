@@ -12,6 +12,13 @@ export interface DaemonConfig {
   frpServerAddr?: string;
   frpServerPort?: number;
   frpToken?: string;
+  s3Endpoint?: string;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3AccessKeyId?: string;
+  s3SecretAccessKey?: string;
+  s3Prefix?: string;
+  s3RetainLocal?: boolean;
 }
 
 const dataBaseDir = process.env.DAEMON_DATA_DIR ? path.dirname(process.env.DAEMON_DATA_DIR) : path.join(process.cwd(), 'data');
@@ -24,6 +31,7 @@ const defaultConfig: DaemonConfig = {
   frpServerAddr: process.env.FRP_SERVER_ADDR || '',
   frpServerPort: parseInt(process.env.FRP_SERVER_PORT || '7000', 10),
   frpToken: process.env.FRP_TOKEN || '',
+  s3RetainLocal: true,
 };
 
 let loadedConfig: DaemonConfig = { ...defaultConfig };

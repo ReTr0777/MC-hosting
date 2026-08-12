@@ -3,25 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import AdmZip from 'adm-zip';
-import { resolveMrpackDetails, parseModrinthEnv } from './modrinth';
+import { resolveMrpackDetails, parseModrinthEnv, downloadManifestFiles, isServerRelevant } from './modrinth';
 import { provisioningManager } from './provisioning';
-import crypto from 'crypto';
-
-function verifyHash(buffer: Buffer, hashes?: { sha1?: string; sha512?: string }): boolean {
-  if (!hashes) return true;
-
-  if (hashes.sha1) {
-    const calcSha1 = crypto.createHash('sha1').update(buffer).digest('hex').toLowerCase();
-    if (calcSha1 !== hashes.sha1.toLowerCase()) return false;
-  }
-
-  if (hashes.sha512) {
-    const calcSha512 = crypto.createHash('sha512').update(buffer).digest('hex').toLowerCase();
-    if (calcSha512 !== hashes.sha512.toLowerCase()) return false;
-  }
-
-  return true;
-}
 
 export interface ServerPackCreatorConfig {
   serverId: string;
@@ -120,7 +103,7 @@ export async function buildServerWithServerPackCreator(config: ServerPackCreator
   const outputDir = path.join(tmpBase, 'server-output');
 
   if (fs.existsSync(tmpBase)) {
-    fs.rmSync(tmpBase, { recursive: true, force: true });
+    fs.rmSync(tmpBase, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
   fs.mkdirSync(modpackDir, { recursive: true });
   fs.mkdirSync(outputDir, { recursive: true });
@@ -155,57 +138,19 @@ export async function buildServerWithServerPackCreator(config: ServerPackCreator
         });
         fs.writeFileSync(indexFile, JSON.stringify(indexJson, null, 2));
 
-        const queue = indexJson.files.filter((f: any) => f.downloads && f.downloads.length > 0 && f.env?.server !== 'unsupported');
+        const queue = indexJson.files.filter((f: any) => f.downloads?.length > 0 && isServerRelevant(f));
         expectedModCount = queue.length;
         const msg2 = `[Daemon Build] Step 2: Downloading ${queue.length} mod files with SHA hash verification...`;
         console.log(msg2);
         provisioningManager.emitLog(config.serverId, 'daemon', msg2);
 
-        // Concurrent batch downloader (8 files at a time with SHA hash verification & retry backoff)
-        const batchSize = 8;
-        let completed = 0;
-        for (let i = 0; i < queue.length; i += batchSize) {
-          const chunk = queue.slice(i, i + batchSize);
-          await Promise.all(
-            chunk.map(async (file: any) => {
-              const targetPath = path.join(modpackDir, file.path);
-              fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-
-              let downloaded = false;
-              let attempts = 0;
-              const maxAttempts = 3;
-
-              while (!downloaded && attempts < maxAttempts) {
-                attempts++;
-                try {
-                  const modRes = await fetch(file.downloads[0]);
-                  if (modRes.ok) {
-                    const modBuffer = Buffer.from(await modRes.arrayBuffer());
-                    if (verifyHash(modBuffer, file.hashes)) {
-                      fs.writeFileSync(targetPath, modBuffer);
-                      downloaded = true;
-                    } else {
-                      console.warn(`[ServerPackCreator] Hash verification failed for '${file.path}' (attempt ${attempts}/${maxAttempts}). Retrying...`);
-                    }
-                  }
-                } catch (e: any) {
-                  console.warn(`[ServerPackCreator] Download error for '${file.path}' (attempt ${attempts}/${maxAttempts}): ${e.message}`);
-                }
-              }
-
-              completed++;
-              if (completed % 15 === 0 || completed === queue.length) {
-                const progMsg = `[Daemon Build] Progress: Downloaded & verified ${completed}/${queue.length} mods`;
-                console.log(progMsg);
-                provisioningManager.emitLog(config.serverId, 'daemon', progMsg);
-              }
-
-              if (!downloaded) {
-                console.error(`[ServerPackCreator Warning] Failed to download verified '${file.path}' after ${maxAttempts} attempts.`);
-              }
-            })
-          );
-        }
+        await downloadManifestFiles(queue, modpackDir, {
+          onProgress: (done, total) => {
+            const progMsg = `[Daemon Build] Progress: Downloaded & verified ${done}/${total} mods`;
+            console.log(progMsg);
+            provisioningManager.emitLog(config.serverId, 'daemon', progMsg);
+          },
+        });
       }
     }
 
@@ -265,7 +210,7 @@ export async function buildServerWithServerPackCreator(config: ServerPackCreator
   } finally {
     // Clean up temporary build files
     if (fs.existsSync(tmpBase)) {
-      fs.rmSync(tmpBase, { recursive: true, force: true });
+      fs.rmSync(tmpBase, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   }
 }

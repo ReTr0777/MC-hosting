@@ -452,6 +452,10 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
         Memory: dto.memoryMb * 1024 * 1024,
         NanoCpus: Math.floor(dto.cpuLimit * 1e9),
         Dns: ['8.8.8.8', '1.1.1.1'],
+        // Docker itself brings the container back after a host reboot or Docker Engine
+        // restart, independent of the panel's own crash-restart logic (which only
+        // fires while the daemon is up to observe the crash).
+        RestartPolicy: { Name: 'unless-stopped' },
       },
     });
 
@@ -644,6 +648,27 @@ export async function watchContainerStartup(
   });
 }
 
+/**
+ * Backfills the `unless-stopped` restart policy onto Minecraft server containers created
+ * before it became the default, so a host reboot / Docker Engine restart brings them back
+ * without requiring every server to be recreated. Called once at daemon startup.
+ */
+export async function ensureContainerRestartPolicies(): Promise<void> {
+  try {
+    const containers = await docker.listContainers({ all: true, filters: { name: ['mc-server-'] } });
+    for (const c of containers) {
+      if ((c.HostConfig as any)?.RestartPolicy?.Name === 'unless-stopped') continue;
+      try {
+        await docker.getContainer(c.Id).update({ RestartPolicy: { Name: 'unless-stopped' } } as any);
+      } catch (e: any) {
+        console.warn(`[Docker] Failed to backfill restart policy on ${c.Names?.[0] || c.Id}:`, e.message);
+      }
+    }
+  } catch (e: any) {
+    console.warn('[Docker] Restart policy backfill skipped:', e.message);
+  }
+}
+
 export async function getContainerByIdOrName(idOrName: string) {
   try {
     const c = docker.getContainer(idOrName);
@@ -834,7 +859,7 @@ export async function removeServerContainer(containerId: string, deleteData = fa
     const config = getConfig();
     const serverDir = path.join(config.dataDir, serverId);
     if (fs.existsSync(serverDir)) {
-      fs.rmSync(serverDir, { recursive: true, force: true });
+      fs.rmSync(serverDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
     try {
       const vol = docker.getVolume(`mc_data_${serverId}`);
