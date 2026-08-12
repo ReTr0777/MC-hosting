@@ -1,9 +1,13 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/context/ToastContext';
 import AlertsPanel from '@/components/AlertsPanel';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { formatDateTime } from '@/lib/format';
+import { Chip, EmptyState, InlineError, LoadingLine, Notice, PanelHeader } from '@/components/ui';
 
 interface CloudflareLog {
   id: string;
@@ -16,18 +20,53 @@ interface CloudflareLog {
   createdAt: string;
 }
 
+const DEFAULT_DOMAIN = 'retr0net.com';
+
+/** Reveal toggle shared by the token and password fields. */
+function SecretInput({
+  id, value, onChange, placeholder,
+}: { id: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        id={id}
+        type={shown ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="off"
+        className="cc-input"
+        style={{ fontFamily: 'var(--font-mono)', paddingRight: '58px' }}
+      />
+      <button
+        type="button"
+        onClick={() => setShown((s) => !s)}
+        aria-label={shown ? 'Hide value' : 'Show value'}
+        style={{
+          position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+          background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem',
+          fontWeight: 600, color: 'var(--text-muted)',
+        }}
+      >
+        {shown ? 'Hide' : 'Show'}
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { user } = useAuth();
+  const toast = useToast();
+
   const [tokenInput, setTokenInput] = useState('');
   const [zoneIdInput, setZoneIdInput] = useState('');
-  const [defaultDomainInput, setDefaultDomainInput] = useState('retr0net.com');
-  const [showToken, setShowToken] = useState(false);
+  const [defaultDomainInput, setDefaultDomainInput] = useState(DEFAULT_DOMAIN);
   const [logs, setLogs] = useState<CloudflareLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [smtpHost, setSmtpHost] = useState('');
   const [smtpPort, setSmtpPort] = useState('587');
@@ -35,65 +74,48 @@ export default function SettingsPage() {
   const [smtpPass, setSmtpPass] = useState('');
   const [smtpFrom, setSmtpFrom] = useState('');
   const [smtpSecure, setSmtpSecure] = useState(false);
-  const [showSmtpPass, setShowSmtpPass] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
-  const [emailTestResult, setEmailTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  useEffect(() => {
-    fetchSettings();
-  }, []);
+  const isAdmin = user?.globalRole === 'GLOBAL_ADMIN';
 
-  const fetchSettings = async () => {
+  const fetchSettings = useCallback(async () => {
     try {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const data = await res.json();
-        setTokenInput(data.settings.cloudflareApiToken || '');
-        setZoneIdInput(data.settings.cloudflareZoneId || '');
-        setDefaultDomainInput(data.settings.defaultDomain || 'retr0net.com');
-        setSmtpHost(data.settings.smtpHost || '');
-        setSmtpPort(data.settings.smtpPort || '587');
-        setSmtpUser(data.settings.smtpUser || '');
-        setSmtpPass(data.settings.smtpPass || '');
-        setSmtpFrom(data.settings.smtpFrom || '');
-        setSmtpSecure(!!data.settings.smtpSecure);
-        setLogs(data.logs || []);
-      }
-    } catch (e) {
+      const data = await apiRequest('/api/settings');
+      const s = data?.settings || {};
+      setTokenInput(s.cloudflareApiToken || '');
+      setZoneIdInput(s.cloudflareZoneId || '');
+      setDefaultDomainInput(s.defaultDomain || DEFAULT_DOMAIN);
+      setSmtpHost(s.smtpHost || '');
+      setSmtpPort(s.smtpPort || '587');
+      setSmtpUser(s.smtpUser || '');
+      setSmtpPass(s.smtpPass || '');
+      setSmtpFrom(s.smtpFrom || '');
+      setSmtpSecure(Boolean(s.smtpSecure));
+      setLogs(data?.logs || []);
+      setLoadError('');
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Could not load settings'));
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    setMessage(null);
     try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cloudflareApiToken: tokenInput,
-          cloudflareZoneId: zoneIdInput,
-          defaultDomain: defaultDomainInput,
-          smtpHost,
-          smtpPort,
-          smtpUser,
-          smtpPass,
-          smtpFrom,
-          smtpSecure,
-        }),
+      await apiPost('/api/settings', {
+        cloudflareApiToken: tokenInput,
+        cloudflareZoneId: zoneIdInput,
+        defaultDomain: defaultDomainInput,
+        smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure,
       });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: 'Global admin settings updated successfully!' });
-        fetchSettings();
-      } else {
-        setMessage({ kind: 'err', text: `Error: ${data.error}` });
-      }
-    } catch (err: any) {
-      setMessage({ kind: 'err', text: `Error: ${err.message}` });
+      toast.success('Settings saved');
+      await fetchSettings();
+    } catch (err) {
+      toast.error('Could not save settings', errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -101,21 +123,13 @@ export default function SettingsPage() {
 
   const handleTestConnection = async () => {
     setTesting(true);
-    setTestResult(null);
     try {
-      const res = await fetch('/api/settings/test-cloudflare', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: tokenInput, zoneId: zoneIdInput }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setTestResult({ ok: true, text: data.message });
-      } else {
-        setTestResult({ ok: false, text: `Connection failed: ${data.message || data.error}` });
-      }
-    } catch (err: any) {
-      setTestResult({ ok: false, text: `Network error: ${err.message}` });
+      // This endpoint reports failures as HTTP 200 with success:false, so the body decides.
+      const data = await apiPost('/api/settings/test-cloudflare', { token: tokenInput, zoneId: zoneIdInput });
+      if (data?.success) toast.success('Cloudflare API reachable', data.message);
+      else toast.error('Cloudflare test failed', data?.message || data?.error);
+    } catch (err) {
+      toast.error('Cloudflare test failed', errorMessage(err));
     } finally {
       setTesting(false);
     }
@@ -123,318 +137,189 @@ export default function SettingsPage() {
 
   const handleTestEmail = async () => {
     setTestingEmail(true);
-    setEmailTestResult(null);
     try {
-      const res = await fetch('/api/settings/test-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: smtpHost, port: smtpPort, smtpUser, pass: smtpPass, from: smtpFrom, secure: smtpSecure }),
+      const data = await apiPost('/api/settings/test-email', {
+        host: smtpHost, port: smtpPort, smtpUser, pass: smtpPass, from: smtpFrom, secure: smtpSecure,
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setEmailTestResult({ ok: true, text: data.message });
-      } else {
-        setEmailTestResult({ ok: false, text: `${data.message || data.error}` });
-      }
-    } catch (err: any) {
-      setEmailTestResult({ ok: false, text: `Network error: ${err.message}` });
+      if (data?.success) toast.success('Test email sent', data.message);
+      else toast.error('SMTP test failed', data?.message || data?.error);
+    } catch (err) {
+      toast.error('SMTP test failed', errorMessage(err));
     } finally {
       setTestingEmail(false);
     }
   };
 
-  if (loading) {
+  if (loading) return <LoadingLine>Loading global settings…</LoadingLine>;
+
+  if (!isAdmin) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
-        <div className="animate-pulse text-sm text-slate-500 font-mono">Loading Global Settings...</div>
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '24px', textAlign: 'center' }}>
+        <h2 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Not authorised</h2>
+        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', margin: 0 }}>
+          Only global admins can view system settings and provisioning logs.
+        </p>
+        <Link href="/dashboard" className="cc-btn-primary" style={{ textDecoration: 'none' }}>Back to dashboard</Link>
       </div>
     );
   }
 
-  if (user?.globalRole !== 'GLOBAL_ADMIN') {
-    return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 p-8 flex flex-col items-center justify-center">
-        <div className="bg-red-950/40 border border-red-500/30 rounded-2xl p-8 max-w-md text-center">
-          <h2 className="text-xl font-bold text-red-400">Access Denied</h2>
-          <p className="text-xs text-slate-400 mt-2">Only Global Administrators can access System Settings and Cloudflare Logs.</p>
-          <Link href="/dashboard" className="inline-block mt-6 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold px-6 py-2.5 rounded-xl border border-slate-700 transition">
-            Return to Dashboard
-          </Link>
-        </div>
-      </div>
-    );
-  }
+  const th: React.CSSProperties = {
+    padding: '10px 14px', textAlign: 'left', fontSize: '0.62rem', fontWeight: 800,
+    letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-muted)', whiteSpace: 'nowrap',
+  };
+  const td: React.CSSProperties = { padding: '10px 14px', fontSize: '0.72rem', fontFamily: 'var(--font-mono)' };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
-      {/* Header Bar */}
-      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 bg-gradient-to-tr from-amber-500 to-orange-500 rounded-xl flex items-center justify-center font-bold text-white shadow-lg shadow-orange-500/20">
-              <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-            </div>
-            <div>
-              <h1 className="text-base font-bold text-white tracking-wide">CraftControl Global Admin Settings</h1>
-              <span className="text-[11px] text-slate-400">Manage Cloudflare API Keys & Provisioning Audit Logs</span>
-            </div>
+    <div style={{ minHeight: '100vh' }}>
+      <header
+        style={{
+          borderBottom: '1px solid var(--border)', background: 'var(--surface)',
+          position: 'sticky', top: 0, zIndex: 50,
+        }}
+      >
+        <div style={{ maxWidth: '80rem', margin: '0 auto', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+          <div>
+            <h1 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Global settings</h1>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Alerts, Cloudflare DNS and outbound email</span>
           </div>
-
-          <Link
-            href="/dashboard"
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2 rounded-xl border border-slate-700 transition flex items-center space-x-2"
-          >
-            <span>← Back to Dashboard</span>
-          </Link>
+          <Link href="/dashboard" className="cc-btn-ghost" style={{ textDecoration: 'none' }}>Back to dashboard</Link>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
-        {message && (
-          <div className={`p-4 rounded-xl text-xs font-semibold ${message.kind === 'err' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-            {message.text}
-          </div>
-        )}
+      <main style={{ maxWidth: '80rem', margin: '0 auto', padding: '24px', display: 'grid', gap: '20px' }}>
+        {loadError && <InlineError message={loadError} onRetry={fetchSettings} />}
 
-        {/* Alerts & Webhooks */}
         <AlertsPanel />
 
-        {/* Cloudflare API Integration Form Card */}
-        <form onSubmit={handleSave} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <div>
-              <h2 className="text-base font-bold text-orange-400 flex items-center space-x-2">
-                <span>Cloudflare API Global Configuration</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Configure your global Cloudflare API token. All server subdomains will automatically provision SRV records under this domain.</p>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleTestConnection}
-              disabled={testing || !tokenInput}
-              className="bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 border border-orange-500/40 text-xs font-bold px-4 py-2 rounded-xl transition flex items-center space-x-2 disabled:opacity-50"
-            >
-              {testing ? <span>Testing API Token...</span> : <span>Test Cloudflare API</span>}
-            </button>
-          </div>
-
-          {testResult && (
-            <div className={`p-4 rounded-xl text-xs font-mono font-semibold ${testResult.ok ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-red-500/10 text-red-300 border border-red-500/20'}`}>
-              {testResult.text}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="block text-xs font-bold text-slate-300">Cloudflare API Token</label>
-              <div className="relative">
-                <input
-                  type={showToken ? 'text' : 'password'}
-                  value={tokenInput}
-                  onChange={(e) => setTokenInput(e.target.value)}
-                  placeholder="Bearer API Token (requires Zone.DNS edit permissions)..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none pr-20"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowToken(!showToken)}
-                  className="absolute right-3 top-2.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200"
-                >
-                  {showToken ? 'Hide' : 'Show'}
+        {/* One form covers both Cloudflare and SMTP, so a single Save applies everything. */}
+        <form onSubmit={handleSave} style={{ display: 'grid', gap: '20px' }}>
+          <section className="cc-panel">
+            <PanelHeader
+              title="Cloudflare DNS"
+              description="A global API token lets every server subdomain provision its own SRV record automatically."
+              actions={
+                <button type="button" onClick={handleTestConnection} disabled={testing || !tokenInput} className="cc-btn-ghost">
+                  {testing ? 'Testing…' : 'Test connection'}
                 </button>
+              }
+            />
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+              <div style={{ gridColumn: 'span 2', minWidth: 0 }}>
+                <label className="cc-label" htmlFor="cf-token">API token</label>
+                <SecretInput id="cf-token" value={tokenInput} onChange={setTokenInput} placeholder="Token with Zone:DNS:Edit" />
+                <p className="cc-help">Create this under Cloudflare profile → API tokens, with <strong>Zone:DNS:Edit</strong> permission.</p>
               </div>
-              <span className="text-[10px] text-slate-500 block">Create API Token at Cloudflare Profile &gt; API Tokens with `Zone:DNS:Edit` permissions.</span>
+
+              <div>
+                <label className="cc-label" htmlFor="cf-zone">Zone ID</label>
+                <input id="cf-zone" value={zoneIdInput} onChange={(e) => setZoneIdInput(e.target.value)} placeholder="From the domain overview page" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+
+              <div>
+                <label className="cc-label" htmlFor="cf-domain">Default domain</label>
+                <input id="cf-domain" value={defaultDomainInput} onChange={(e) => setDefaultDomainInput(e.target.value)} placeholder={DEFAULT_DOMAIN} className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+            </div>
+          </section>
+
+          <section className="cc-panel">
+            <PanelHeader
+              title="Outbound email (SMTP)"
+              description="Used for password reset links and email verification. Leave the host blank to disable outbound email entirely."
+              actions={
+                <button type="button" onClick={handleTestEmail} disabled={testingEmail || !smtpHost} className="cc-btn-ghost">
+                  {testingEmail ? 'Sending…' : 'Send test email'}
+                </button>
+              }
+            />
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+              <div style={{ gridColumn: 'span 2', minWidth: 0 }}>
+                <label className="cc-label" htmlFor="smtp-host">Host</label>
+                <input id="smtp-host" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.example.com" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="smtp-port">Port</label>
+                <input id="smtp-port" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} placeholder="587" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="smtp-user">Username</label>
+                <input id="smtp-user" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="user@example.com" autoComplete="off" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="smtp-pass">Password</label>
+                <SecretInput id="smtp-pass" value={smtpPass} onChange={setSmtpPass} placeholder="App password or SMTP secret" />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="smtp-from">From address</label>
+                <input id="smtp-from" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder="CraftControl <no-reply@example.com>" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">Cloudflare Zone ID</label>
-              <input
-                type="text"
-                value={zoneIdInput}
-                onChange={(e) => setZoneIdInput(e.target.value)}
-                placeholder="Cloudflare Zone ID (from domain overview)..."
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
-              />
-            </div>
-          </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '16px', fontSize: '0.8125rem', color: 'var(--text-primary)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} style={{ width: 16, height: 16, accentColor: 'var(--accent)' }} />
+              <span>Use implicit TLS (port 465). Leave unchecked for STARTTLS on port 587.</span>
+            </label>
+          </section>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-end pt-2">
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">Default Global Domain</label>
-              <input
-                type="text"
-                value={defaultDomainInput}
-                onChange={(e) => setDefaultDomainInput(e.target.value)}
-                placeholder="e.g. retr0net.com"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={saving}
-              className="bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-orange-600/20 transition h-[38px]"
-            >
-              {saving ? 'Saving Settings...' : 'Save System Settings'}
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button type="submit" disabled={saving} className="cc-btn-primary">
+              {saving ? 'Saving…' : 'Save settings'}
             </button>
           </div>
         </form>
 
-        {/* SMTP Email Configuration Card */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <div>
-              <h2 className="text-base font-bold text-sky-400 flex items-center space-x-2">
-                <span>Outbound Email (SMTP)</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Used for password reset links and email verification. Leave blank to disable outbound email.</p>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleTestEmail}
-              disabled={testingEmail || !smtpHost}
-              className="bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 text-xs font-bold px-4 py-2 rounded-xl transition flex items-center space-x-2 disabled:opacity-50"
-            >
-              {testingEmail ? <span>Sending Test Email...</span> : <span>Send Test Email</span>}
-            </button>
-          </div>
-
-          {emailTestResult && (
-            <div className={`p-4 rounded-xl text-xs font-mono font-semibold ${emailTestResult.ok ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-red-500/10 text-red-300 border border-red-500/20'}`}>
-              {emailTestResult.text}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="block text-xs font-bold text-slate-300">SMTP Host</label>
-              <input
-                type="text"
-                value={smtpHost}
-                onChange={(e) => setSmtpHost(e.target.value)}
-                placeholder="smtp.example.com"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">SMTP Port</label>
-              <input
-                type="text"
-                value={smtpPort}
-                onChange={(e) => setSmtpPort(e.target.value)}
-                placeholder="587"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">SMTP Username</label>
-              <input
-                type="text"
-                value={smtpUser}
-                onChange={(e) => setSmtpUser(e.target.value)}
-                placeholder="user@example.com"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">SMTP Password</label>
-              <div className="relative">
-                <input
-                  type={showSmtpPass ? 'text' : 'password'}
-                  value={smtpPass}
-                  onChange={(e) => setSmtpPass(e.target.value)}
-                  placeholder="App password or SMTP secret..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 focus:outline-none pr-16"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSmtpPass(!showSmtpPass)}
-                  className="absolute right-3 top-2.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200"
-                >
-                  {showSmtpPass ? 'Hide' : 'Show'}
-                </button>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">From Address</label>
-              <input
-                type="text"
-                value={smtpFrom}
-                onChange={(e) => setSmtpFrom(e.target.value)}
-                placeholder="CraftControl <no-reply@example.com>"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-          </div>
-
-          <label className="flex items-center space-x-2 text-xs font-semibold text-slate-300">
-            <input
-              type="checkbox"
-              checked={smtpSecure}
-              onChange={(e) => setSmtpSecure(e.target.checked)}
-              className="rounded border-slate-700 bg-slate-950"
-            />
-            <span>Use implicit TLS (port 465). Leave unchecked for STARTTLS (port 587).</span>
-          </label>
-        </div>
-
-        {/* Cloudflare Audit Logs Card */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <div>
-              <h2 className="text-base font-bold text-white flex items-center space-x-2">
-                <span>Cloudflare Provisioning Audit Log</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Comprehensive history of every Cloudflare SRV DNS record creation, update, and API event.</p>
-            </div>
-            <button
-              onClick={fetchSettings}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold px-3.5 py-1.5 rounded-xl border border-slate-700 transition"
-            >
-              Refresh Logs
-            </button>
-          </div>
+        {/* Audit log */}
+        <section className="cc-panel">
+          <PanelHeader
+            title="Cloudflare audit log"
+            chips={logs.length > 0 ? <Chip>{logs.length}</Chip> : undefined}
+            description="Every SRV record creation, update and API event, newest first."
+            actions={<button onClick={fetchSettings} className="cc-btn-ghost">Refresh</button>}
+          />
 
           {logs.length === 0 ? (
-            <div className="text-center py-12 text-slate-500 text-xs font-mono">No Cloudflare provisioning events logged yet.</div>
+            <EmptyState title="No provisioning events yet" description="Records appear here once a server provisions a subdomain." />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '820px' }}>
                 <thead>
-                  <tr className="border-b border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
-                    <th className="py-3 px-4">Timestamp</th>
-                    <th className="py-3 px-4">Action</th>
-                    <th className="py-3 px-4">Target Subdomain</th>
-                    <th className="py-3 px-4">Status</th>
-                    <th className="py-3 px-4">User</th>
-                    <th className="py-3 px-4">Details</th>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th style={th}>Time</th>
+                    <th style={th}>Action</th>
+                    <th style={th}>Target</th>
+                    <th style={th}>Status</th>
+                    <th style={th}>User</th>
+                    <th style={th}>Details</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
+                <tbody>
                   {logs.map((log) => (
-                    <tr key={log.id} className="hover:bg-slate-950/40 transition">
-                      <td className="py-3 px-4 text-slate-400 whitespace-nowrap">{new Date(log.createdAt).toLocaleString()}</td>
-                      <td className="py-3 px-4 font-bold text-indigo-300">{log.action}</td>
-                      <td className="py-3 px-4 text-emerald-400 font-bold">{log.subdomain}.{log.domain}</td>
-                      <td className="py-3 px-4">
-                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${log.status === 'SUCCESS' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
-                          {log.status}
-                        </span>
+                    <tr key={log.id} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ ...td, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{formatDateTime(log.createdAt)}</td>
+                      <td style={{ ...td, color: 'var(--text-primary)', fontWeight: 600 }}>{log.action}</td>
+                      <td style={{ ...td, color: 'var(--accent)' }}>{log.subdomain}.{log.domain}</td>
+                      <td style={{ ...td }}>
+                        <Chip tone={log.status === 'SUCCESS' ? 'accent' : 'danger'}>{log.status}</Chip>
                       </td>
-                      <td className="py-3 px-4 text-slate-300">{log.userEmail || 'system'}</td>
-                      <td className="py-3 px-4 text-slate-400 max-w-md truncate">{log.details}</td>
+                      <td style={{ ...td, color: 'var(--text-muted)' }}>{log.userEmail || 'system'}</td>
+                      <td style={{ ...td, color: 'var(--text-muted)', maxWidth: '24rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.details}>
+                        {log.details}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
-        </div>
+        </section>
+
+        <Notice tone="warning">
+          The Cloudflare token and SMTP password are stored so they can be used by background jobs, and are returned to this
+          page to populate the fields above. Anyone with global admin access can reveal them.
+        </Notice>
       </main>
     </div>
   );

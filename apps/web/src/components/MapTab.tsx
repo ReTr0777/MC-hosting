@@ -1,7 +1,13 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useToast } from '@/context/ToastContext';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { useClipboard } from '@/hooks/useClipboard';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { formatDateTime, formatRelative } from '@/lib/format';
+import { Chip, EmptyState, InlineError, LoadingLine, Notice, PanelHeader, StatTile } from '@/components/ui';
 
 interface Share {
   id: string;
@@ -30,6 +36,31 @@ interface MapState {
   shares: Share[];
 }
 
+interface Diagnosis {
+  checks: Array<{ name: string; ok: boolean; detail: string }>;
+  summary: string;
+  healthy: boolean;
+  crashLog?: string[];
+  crashHint?: string | null;
+}
+
+const EMPTY: MapState = {
+  supported: null,
+  installed: false,
+  bluemapPort: null,
+  bluemapEnabled: false,
+  isProcessMode: false,
+  needsContainerRebuild: false,
+  shares: [],
+};
+
+const EXPIRY_OPTIONS = [
+  { value: '0', label: 'Never expires' },
+  { value: '24', label: 'Expires in 24 hours' },
+  { value: '168', label: 'Expires in 7 days' },
+  { value: '720', label: 'Expires in 30 days' },
+];
+
 export default function MapTab({
   serverId,
   serverStatus,
@@ -40,68 +71,67 @@ export default function MapTab({
   canManage: boolean;
 }) {
   const confirm = useConfirm();
-  const [state, setState] = useState<MapState | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const toast = useToast();
+  const { copy } = useClipboard();
 
+  const [busy, setBusy] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const [password, setPassword] = useState('');
   const [expiry, setExpiry] = useState('0');
-  const [diagnosis, setDiagnosis] = useState<{
-    checks: Array<{ name: string; ok: boolean; detail: string }>;
-    summary: string;
-    healthy: boolean;
-    crashLog?: string[];
-    crashHint?: string | null;
-  } | null>(null);
+  const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null);
+
+  const { data: state, loading, error, refresh } = usePolledResource<MapState>(
+    `/api/servers/${serverId}/bluemap`,
+    EMPTY,
+    { select: (raw) => ({ ...EMPTY, ...raw, shares: raw?.shares ?? [] }) }
+  );
+
+  const shareUrl = (token: string) =>
+    typeof window !== 'undefined' ? `${window.location.origin}/map/${token}` : `/map/${token}`;
+
+  const handleCopy = async (token: string) => {
+    if (await copy(shareUrl(token))) toast.success('Link copied to the clipboard');
+    else toast.error('Could not copy the link', 'Select the URL and copy it manually.');
+  };
 
   const runDiagnose = async () => {
     setBusy('diagnose');
     setDiagnosis(null);
     try {
-      const res = await fetch(`/api/servers/${serverId}/bluemap/diagnose`);
-      const data = await res.json();
-      if (res.ok) setDiagnosis(data);
-      else setMessage({ kind: 'err', text: data.error || 'Diagnosis failed' });
-    } catch (e: any) {
-      setMessage({ kind: 'err', text: e.message || 'Network error' });
+      setDiagnosis(await apiRequest(`/api/servers/${serverId}/bluemap/diagnose`));
+    } catch (err) {
+      toast.error('Diagnosis failed', errorMessage(err));
     } finally {
       setBusy(null);
     }
   };
 
-  const fetchState = async () => {
-    try {
-      const res = await fetch(`/api/servers/${serverId}/bluemap`);
-      const data = await res.json();
-      if (res.ok) setState(data);
-      else setMessage({ kind: 'err', text: data.error || 'Failed to load map status' });
-    } catch {
-      setMessage({ kind: 'err', text: 'Network error loading map status' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchState();
-  }, [serverId]);
-
   const runAction = async (action: string) => {
-    setBusy(action);
-    setMessage(null);
-    try {
-      const res = await fetch(`/api/servers/${serverId}/bluemap`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+    if (action === 'uninstall') {
+      const ok = await confirm({
+        title: 'Uninstall BlueMap?',
+        message: 'The BlueMap mod and its rendered map tiles are removed from this server. Your world itself is untouched, but re-installing means rendering the whole map again from scratch.',
+        confirmLabel: 'Uninstall',
+        danger: true,
       });
-      const data = await res.json();
-      setMessage(res.ok ? { kind: 'ok', text: data.message || 'Done.' } : { kind: 'err', text: data.error });
-      await fetchState();
-    } catch (e: any) {
-      setMessage({ kind: 'err', text: e.message || 'Network error' });
+      if (!ok) return;
+    }
+    if (action === 'rebuild-container') {
+      const ok = await confirm({
+        title: 'Rebuild this container?',
+        message: 'The container is recreated so the map port can be published. Your world lives in a named volume and is preserved, but the server will be down while this runs.',
+        confirmLabel: 'Rebuild container',
+      });
+      if (!ok) return;
+    }
+
+    setBusy(action);
+    try {
+      const data = await apiPost(`/api/servers/${serverId}/bluemap`, { action });
+      toast.success(data?.message || 'Done');
+      await refresh();
+    } catch (err) {
+      toast.error('Action failed', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -110,23 +140,20 @@ export default function MapTab({
   const createShare = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy('share');
-    setMessage(null);
     try {
-      const res = await fetch(`/api/servers/${serverId}/bluemap/shares`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, password, expiresInHours: Number(expiry) }),
+      await apiPost(`/api/servers/${serverId}/bluemap/shares`, {
+        label: label.trim(),
+        password,
+        expiresInHours: Number(expiry),
       });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: 'Share link created.' });
-        setLabel('');
-        setPassword('');
-        setExpiry('0');
-        await fetchState();
-      } else {
-        setMessage({ kind: 'err', text: data.error });
-      }
+      toast.success('Share link created');
+      setLabel('');
+      setPassword('');
+      setExpiry('0');
+      await refresh();
+    } catch (err) {
+      // Previously this had no catch at all, so a failure surfaced as an unhandled rejection.
+      toast.error('Could not create the share link', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -135,12 +162,15 @@ export default function MapTab({
   const updateShare = async (share: Share, body: Record<string, unknown>) => {
     setBusy(`share-${share.id}`);
     try {
-      await fetch(`/api/servers/${serverId}/bluemap/shares/${share.id}`, {
+      await apiRequest(`/api/servers/${serverId}/bluemap/shares/${share.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      await fetchState();
+      toast.success(share.enabled ? 'Link revoked' : 'Link restored');
+      await refresh();
+    } catch (err) {
+      toast.error('Could not update the link', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -154,145 +184,98 @@ export default function MapTab({
       danger: true,
     });
     if (!ok) return;
+
     setBusy(`share-${share.id}`);
     try {
-      await fetch(`/api/servers/${serverId}/bluemap/shares/${share.id}`, { method: 'DELETE' });
-      await fetchState();
+      await apiRequest(`/api/servers/${serverId}/bluemap/shares/${share.id}`, { method: 'DELETE' });
+      toast.success('Share link deleted');
+      await refresh();
+    } catch (err) {
+      toast.error('Could not delete the link', errorMessage(err));
     } finally {
       setBusy(null);
     }
   };
 
-  const shareUrl = (token: string) =>
-    typeof window !== 'undefined' ? `${window.location.origin}/map/${token}` : `/map/${token}`;
-
-  const copy = (token: string) => {
-    navigator.clipboard?.writeText(shareUrl(token));
-    setMessage({ kind: 'ok', text: 'Link copied to clipboard.' });
+  const openMap = () => {
+    const first = state.shares.find((s) => s.enabled);
+    if (first) window.open(shareUrl(first.token), '_blank', 'noopener,noreferrer');
+    else toast.info('No active share link', 'Create one below to open the map.');
   };
 
-  if (loading) {
-    return <div className="text-center py-12 text-slate-500 text-sm animate-pulse">Checking BlueMap status...</div>;
-  }
-
-  if (!state) return null;
+  if (loading) return <LoadingLine>Checking BlueMap status…</LoadingLine>;
 
   if (state.supported === false) {
-    return (
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
-        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>No map yet</div>
-        <h3 className="text-base font-bold text-white mb-1">BlueMap isn&apos;t available for this server</h3>
-        <p className="text-xs text-slate-400 max-w-md mx-auto">{state.reason}</p>
-      </div>
-    );
+    return <EmptyState title="BlueMap isn't available for this server" description={state.reason} />;
   }
 
+  const serverBusy = serverStatus === 'RUNNING' || serverStatus === 'STARTING';
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-            <span>Live World Map</span>
-            {state.installed ? (
-              <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-                Installed
-              </span>
-            ) : (
-              <span className="bg-slate-700/40 text-slate-400 text-xs px-2.5 py-0.5 rounded-full border border-slate-600/40">
-                Not installed
-              </span>
-            )}
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">
-            BlueMap renders your world as an explorable 3D map. Share it publicly without giving anyone panel access.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={runDiagnose}
-            disabled={!!busy}
-            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition disabled:opacity-40"
-          >
-            {busy === 'diagnose' ? 'Checking...' : 'Diagnose'}
-          </button>
-          {state.installed && state.bluemapPort && (
-            <a
-              href={`/map/preview-${serverId}`}
-              onClick={(e) => {
-                e.preventDefault();
-                const first = state.shares.find((s) => s.enabled);
-                if (first) window.open(shareUrl(first.token), '_blank');
-                else setMessage({ kind: 'err', text: 'Create a share link below to open the map.' });
-              }}
-              className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl border border-slate-700 transition"
-            >
-              ↗ Open map
-            </a>
-          )}
-          {canManage && (
-            <button
-              onClick={() => runAction(state.installed ? 'uninstall' : 'install')}
-              disabled={!!busy}
-              className={`text-xs px-4 py-2 rounded-xl border font-bold transition disabled:opacity-40 ${
-                state.installed
-                  ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'
-              }`}
-            >
-              {busy === 'install' ? 'Installing...' : busy === 'uninstall' ? 'Removing...' : state.installed ? 'Uninstall' : 'Install BlueMap'}
+    <div style={{ display: 'grid', gap: '16px' }}>
+      <PanelHeader
+        title="Live World Map"
+        chips={<Chip tone={state.installed ? 'accent' : 'default'}>{state.installed ? 'Installed' : 'Not installed'}</Chip>}
+        description="BlueMap renders your world as an explorable 3D map. Share it publicly without giving anyone panel access."
+        actions={
+          <>
+            <button onClick={runDiagnose} disabled={!!busy} className="cc-btn-ghost">
+              {busy === 'diagnose' ? 'Checking…' : 'Diagnose'}
             </button>
-          )}
-        </div>
-      </div>
+            {state.installed && state.bluemapPort && (
+              <button onClick={openMap} className="cc-btn-ghost">Open map</button>
+            )}
+            {canManage && (
+              <button
+                onClick={() => runAction(state.installed ? 'uninstall' : 'install')}
+                disabled={!!busy}
+                className={state.installed ? 'cc-btn-danger' : 'cc-btn-primary'}
+              >
+                {busy === 'install' ? 'Installing…' : busy === 'uninstall' ? 'Removing…' : state.installed ? 'Uninstall' : 'Install BlueMap'}
+              </button>
+            )}
+          </>
+        }
+      />
 
-      {message && (
-        <div
-          className={`p-4 rounded-xl text-xs font-semibold ${
-            message.kind === 'err'
-              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
+      {error && <InlineError message={error} onRetry={refresh} />}
 
       {diagnosis && (
         <div
-          className={`rounded-xl p-5 space-y-3 border ${
-            diagnosis.healthy ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-slate-900 border-slate-800'
-          }`}
+          className="cc-panel"
+          style={{ display: 'grid', gap: '12px', borderColor: diagnosis.healthy ? 'var(--accent-border)' : 'var(--border)' }}
         >
-          <div className="text-sm font-bold text-white">
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-primary)' }}>
             {diagnosis.healthy ? 'Map pipeline looks healthy' : 'First problem found'}
           </div>
-          {!diagnosis.healthy && <p className="text-xs text-amber-300 leading-relaxed">{diagnosis.summary}</p>}
+          {!diagnosis.healthy && <p style={{ fontSize: '0.78rem', color: 'var(--warning)', margin: 0, lineHeight: 1.6 }}>{diagnosis.summary}</p>}
 
-          <div className="space-y-1">
+          <div style={{ display: 'grid', gap: '4px' }}>
             {diagnosis.checks.map((c) => (
-              <div key={c.name} className="flex items-start gap-2 text-xs">
-                <span className="flex-shrink-0 mt-0.5" style={{ color: c.ok ? 'var(--accent)' : 'var(--danger)', fontWeight: 700 }}>{c.ok ? '✓' : '✕'}</span>
-                <div className="min-w-0">
-                  <span className={c.ok ? 'text-slate-300' : 'text-white font-semibold'}>{c.name}</span>
-                  <span className="text-slate-500"> — {c.detail}</span>
+              <div key={c.name} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.75rem' }}>
+                <span style={{ color: c.ok ? 'var(--accent)' : 'var(--danger)', fontWeight: 700, flexShrink: 0 }}>{c.ok ? '✓' : '✕'}</span>
+                <div style={{ minWidth: 0 }}>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: c.ok ? 400 : 600 }}>{c.name}</span>
+                  <span style={{ color: 'var(--text-muted)' }}> — {c.detail}</span>
                 </div>
               </div>
             ))}
           </div>
 
-          {diagnosis.crashHint && (
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs text-amber-200 leading-relaxed">
-              <strong>Likely cause:</strong> {diagnosis.crashHint}
-            </div>
-          )}
+          {diagnosis.crashHint && <Notice tone="warning"><strong>Likely cause:</strong> {diagnosis.crashHint}</Notice>}
 
           {diagnosis.crashLog && diagnosis.crashLog.length > 0 && (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-slate-400 hover:text-slate-200">
+            <details style={{ fontSize: '0.75rem' }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>
                 Show last {diagnosis.crashLog.length} console lines
               </summary>
-              <pre className="mt-2 bg-slate-950 border border-slate-800 rounded-lg p-3 overflow-x-auto text-[11px] text-slate-400 max-h-72 overflow-y-auto whitespace-pre-wrap">
+              <pre
+                style={{
+                  marginTop: '8px', background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '6px',
+                  padding: '12px', fontSize: '0.7rem', color: 'var(--text-muted)', maxHeight: '18rem',
+                  overflow: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)',
+                }}
+              >
                 {diagnosis.crashLog.join('\n')}
               </pre>
             </details>
@@ -300,118 +283,79 @@ export default function MapTab({
         </div>
       )}
 
-      {state.daemonError && (
-        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-300">
-          Could not reach the daemon for map status: {state.daemonError}
-        </div>
-      )}
+      {state.daemonError && <Notice tone="warning">Could not reach the daemon for map status: {state.daemonError}</Notice>}
 
-      {/* Container rebuild notice */}
       {state.needsContainerRebuild && canManage && (
-        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-5 space-y-3">
-          <div className="text-sm font-bold text-amber-300">One-time container rebuild needed</div>
-          <p className="text-xs text-amber-200/80 leading-relaxed">
-            Docker can&apos;t add a port to a container that already exists, so this server&apos;s container has to be
-            rebuilt once to publish the map port ({state.bluemapPort}). Your world is stored in a named volume and is
-            pulled to the host first — <strong>world data is not affected</strong>. The server must be stopped.
+        <div className="cc-panel" style={{ display: 'grid', gap: '12px', borderColor: 'rgba(240,136,62,0.3)' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--warning)' }}>One-time container rebuild needed</div>
+          <p className="cc-help" style={{ margin: 0 }}>
+            Docker can&apos;t add a port to a container that already exists, so this server&apos;s container has to be rebuilt
+            once to publish the map port ({state.bluemapPort}). Your world is stored in a named volume and is pulled to the
+            host first — <strong style={{ color: 'var(--text-primary)' }}>world data is not affected</strong>. The server must
+            be stopped.
           </p>
-          <button
-            onClick={() => runAction('rebuild-container')}
-            disabled={!!busy || serverStatus === 'RUNNING' || serverStatus === 'STARTING'}
-            className="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-4 py-2 rounded-xl border border-amber-500/40 font-bold transition disabled:opacity-40"
-          >
-            {busy === 'rebuild-container'
-              ? 'Rebuilding...'
-              : serverStatus === 'RUNNING' || serverStatus === 'STARTING'
-              ? 'Stop the server first'
-              : 'Rebuild container'}
-          </button>
+          <div>
+            <button onClick={() => runAction('rebuild-container')} disabled={!!busy || serverBusy} className="cc-btn-warning">
+              {busy === 'rebuild-container' ? 'Rebuilding…' : serverBusy ? 'Stop the server first' : 'Rebuild container'}
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Status tiles */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Tile label="Platform" value={state.platform ? state.platform.toUpperCase() : '—'} />
-        <Tile label="Map port" value={state.bluemapPort ? String(state.bluemapPort) : '—'} />
-        <Tile label="Mode" value={state.isProcessMode ? 'Process' : 'Docker'} />
-        <Tile label="Share links" value={String(state.shares.filter((s) => s.enabled).length)} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+        <StatTile label="Platform" value={state.platform ? state.platform.toUpperCase() : '—'} />
+        <StatTile label="Map port" value={state.bluemapPort ?? '—'} />
+        <StatTile label="Mode" value={state.isProcessMode ? 'Process' : 'Docker'} />
+        <StatTile label="Active links" value={state.shares.filter((s) => s.enabled).length} />
       </div>
 
       {state.installed && (
-        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-xs text-slate-300">
-          BlueMap renders in the background and can take a long time on a large world — often hours for the first
-          full pass. The map is viewable while it renders; it just fills in progressively.
-        </div>
+        <Notice>
+          BlueMap renders in the background and can take a long time on a large world — often hours for the first full pass.
+          The map is viewable while it renders; it just fills in progressively.
+        </Notice>
       )}
 
       {/* Share links */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-        <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">Public share links</div>
+      <div className="cc-panel" style={{ display: 'grid', gap: '14px' }}>
+        <div className="cc-section-title">Public share links</div>
 
         {state.shares.length === 0 ? (
-          <p className="text-xs text-slate-500 py-2">
+          <p className="cc-help" style={{ margin: 0 }}>
             No share links yet. Create one below to give people the map — and only the map.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div style={{ display: 'grid', gap: '8px' }}>
             {state.shares.map((s) => {
-              const expired = s.expiresAt && new Date(s.expiresAt).getTime() < Date.now();
+              const expired = Boolean(s.expiresAt && new Date(s.expiresAt).getTime() < Date.now());
               return (
-                <div
-                  key={s.id}
-                  className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-start justify-between gap-3 flex-wrap"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center space-x-2 flex-wrap gap-1">
-                      <span className="font-bold text-white text-sm">{s.label || 'Untitled link'}</span>
-                      {s.hasPassword && (
-                        <span className="bg-sky-500/20 text-sky-300 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-sky-500/30">
-                          Password
-                        </span>
-                      )}
-                      {expired ? (
-                        <span className="bg-red-500/20 text-red-300 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-red-500/30">
-                          Expired
-                        </span>
-                      ) : s.enabled ? (
-                        <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-emerald-500/30">
-                          Active
-                        </span>
-                      ) : (
-                        <span className="bg-slate-700/40 text-slate-400 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-slate-600/40">
-                          Revoked
-                        </span>
-                      )}
+                <div key={s.id} className="cc-row" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <span className="cc-row-title">{s.label || 'Untitled link'}</span>
+                      {s.hasPassword && <Chip>Password</Chip>}
+                      <Chip tone={expired ? 'danger' : s.enabled ? 'accent' : 'default'}>
+                        {expired ? 'Expired' : s.enabled ? 'Active' : 'Revoked'}
+                      </Chip>
                     </div>
-                    <div className="text-[11px] text-slate-500 font-mono mt-1 truncate">{shareUrl(s.token)}</div>
-                    <div className="text-[11px] text-slate-500 mt-1">
+                    <div className="cc-row-sub" style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {shareUrl(s.token)}
+                    </div>
+                    <div className="cc-row-sub">
                       {s.viewCount} view{s.viewCount === 1 ? '' : 's'}
-                      {s.expiresAt && !expired && ` · expires ${new Date(s.expiresAt).toLocaleString()}`}
-                      {s.lastViewedAt && ` · last opened ${new Date(s.lastViewedAt).toLocaleString()}`}
+                      {s.expiresAt && !expired && ` · expires ${formatDateTime(s.expiresAt)}`}
+                      {s.lastViewedAt && ` · last opened ${formatRelative(s.lastViewedAt)}`}
                     </div>
                   </div>
 
                   {canManage && (
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <button
-                        onClick={() => copy(s.token)}
-                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
-                      >
-                        Copy
-                      </button>
-                      <button
-                        onClick={() => updateShare(s, { enabled: !s.enabled })}
-                        disabled={!!busy}
-                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition disabled:opacity-40"
-                      >
+                    <div className="cc-row-actions">
+                      <button onClick={() => handleCopy(s.token)} className="cc-btn-ghost" style={{ padding: '4px 10px' }}>Copy</button>
+                      <button onClick={() => updateShare(s, { enabled: !s.enabled })} disabled={!!busy} className="cc-btn-ghost" style={{ padding: '4px 10px' }}>
                         {s.enabled ? 'Revoke' : 'Restore'}
                       </button>
-                      <button
-                        onClick={() => deleteShare(s)}
-                        disabled={!!busy}
-                        className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-1.5 rounded-lg border border-red-500/20 font-bold transition disabled:opacity-40"
-                      >
-                        ✕
+                      <button onClick={() => deleteShare(s)} disabled={!!busy} aria-label="Delete link" className="cc-btn-danger" style={{ padding: '4px 10px' }}>
+                        Delete
                       </button>
                     </div>
                   )}
@@ -422,50 +366,31 @@ export default function MapTab({
         )}
 
         {canManage && (
-          <form onSubmit={createShare} className="border-t border-slate-800 pt-4 space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="Label (e.g. Discord friends)"
-                className="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/60"
-              />
-              <input
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password (optional)"
-                className="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/60"
-              />
-              <select
-                value={expiry}
-                onChange={(e) => setExpiry(e.target.value)}
-                className="bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none"
-              >
-                <option value="0">Never expires</option>
-                <option value="24">Expires in 24 hours</option>
-                <option value="168">Expires in 7 days</option>
-                <option value="720">Expires in 30 days</option>
-              </select>
+          <form onSubmit={createShare} style={{ display: 'grid', gap: '12px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+              <div>
+                <label className="cc-label" htmlFor="share-label">Label</label>
+                <input id="share-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Discord friends" className="cc-input" />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="share-pw">Password (optional)</label>
+                <input id="share-pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Leave blank for none" className="cc-input" autoComplete="new-password" />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="share-expiry">Expiry</label>
+                <select id="share-expiry" value={expiry} onChange={(e) => setExpiry(e.target.value)} className="cc-input">
+                  {EXPIRY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
             </div>
-            <button
-              type="submit"
-              disabled={!!busy}
-              className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition"
-            >
-              {busy === 'share' ? 'Creating...' : '＋ Create share link'}
-            </button>
+            <div>
+              <button type="submit" disabled={!!busy} className="cc-btn-primary">
+                {busy === 'share' ? 'Creating…' : 'Create share link'}
+              </button>
+            </div>
           </form>
         )}
       </div>
-    </div>
-  );
-}
-
-function Tile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3">
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">{label}</div>
-      <div className="text-lg font-extrabold mt-0.5 text-slate-200">{value}</div>
     </div>
   );
 }

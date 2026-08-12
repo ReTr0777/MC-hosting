@@ -574,20 +574,18 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400">
-        Loading panel context...
+      <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+        Loading panel context…
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 px-4 text-center">
-        <h2 className="text-2xl font-bold text-white mb-2">Authentication Required</h2>
-        <p className="text-slate-400 mb-6">Please sign in to access the CraftControl dashboard.</p>
-        <Link href="/login" className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-2.5 rounded-xl">
-          Go to Sign In
-        </Link>
+      <div style={{ display: 'flex', minHeight: '100vh', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '24px', textAlign: 'center' }}>
+        <h2 style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Sign in required</h2>
+        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', margin: 0 }}>Please sign in to access the CraftControl dashboard.</p>
+        <Link href="/login" className="cc-btn-primary" style={{ textDecoration: 'none' }}>Go to sign in</Link>
       </div>
     );
   }
@@ -612,19 +610,17 @@ export default function DashboardPage() {
     <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
 
       {/* ── Top Navbar ── */}
-      <header className="bg-slate-900 border-b border-slate-800 p-3 sm:px-6 sticky top-0 z-40">
+      <header className="p-3 sm:px-6 sticky top-0 z-40" style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           {/* Left: Logo & Role */}
           <div className="flex items-center gap-2.5 flex-wrap">
             <Link href="/" className="flex items-center gap-2 text-decoration-none">
-              <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center text-xs font-black text-slate-950">
+              <div className="flex items-center justify-center" style={{ width: 28, height: 28, borderRadius: '7px', background: 'var(--accent)', color: 'var(--bg)', fontSize: '0.72rem', fontWeight: 900 }}>
                 C
               </div>
-              <span className="font-bold text-sm text-white">CraftControl</span>
+              <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>CraftControl</span>
             </Link>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400 tracking-wider">
-              {user.globalRole}
-            </span>
+            <span className="cc-chip">{user.globalRole === 'GLOBAL_ADMIN' ? 'Admin' : 'User'}</span>
 
             {user.globalRole === 'GLOBAL_ADMIN' && (
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -647,35 +643,33 @@ export default function DashboardPage() {
           {/* Right: User Profile & Sign Out */}
           <div className="flex items-center gap-3 ml-auto">
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[10px] font-extrabold">
+              <div className="flex items-center justify-center" style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--accent)', color: 'var(--bg)', fontSize: '0.65rem', fontWeight: 800 }}>
                 {initials}
               </div>
               <div className="hidden sm:block text-left">
-                <div className="text-xs font-bold text-white leading-tight">{user.username}</div>
-                <div className="text-[10px] text-slate-400">{user.email}</div>
+                <div className="text-xs font-bold leading-tight" style={{ color: 'var(--text-primary)' }}>{user.username}</div>
+                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>{user.email}</div>
               </div>
             </div>
-            <Link href="/dashboard/account" className="text-xs text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-2.5 py-1 rounded-md transition">
-              Account
-            </Link>
+            <Link href="/dashboard/account" className="cc-btn-ghost" style={{ textDecoration: 'none' }}>Account</Link>
             <DiscordLinkButton />
             <button
               onClick={() => logout()}
-              className="text-xs text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-500/30 px-2.5 py-1 rounded-md transition"
+              className="cc-btn-ghost"
             >
-              Sign Out
+              Sign out
             </button>
           </div>
         </div>
       </header>
 
       {/* Breadcrumb row */}
-      <div className="border-b border-slate-800 p-4 sm:px-6 bg-slate-950">
+      <div className="p-4 sm:px-6" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs text-slate-400 font-medium">
+          <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
             <span>CraftControl</span>
-            <span className="text-slate-600">&gt;</span>
-            <span className="text-white font-semibold">Node &amp; Server Overview</span>
+            <span style={{ color: 'var(--border-2)' }}>&rsaquo;</span>
+            <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Nodes &amp; servers</span>
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
             <AdvancedModeToggle />
@@ -721,10 +715,8 @@ export default function DashboardPage() {
       <main className="flex-1 flex flex-col lg:flex-row w-full">
 
         {/* LEFT: Active Nodes panel */}
-        <aside className="w-full lg:w-72 lg:min-w-[288px] border-b lg:border-b-0 lg:border-r border-slate-800 p-4 lg:p-6 space-y-3">
-          <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-            Active Nodes
-          </div>
+        <aside className="w-full lg:w-72 lg:min-w-[288px] p-4 lg:p-6 space-y-3" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="cc-section-title" style={{ marginBottom: '8px' }}>Active nodes</div>
 
           {nodes.length === 0 ? (
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>

@@ -1,6 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
+import { apiPost, errorMessage } from '@/lib/api';
+import { useToast } from '@/context/ToastContext';
+import { useClipboard } from '@/hooks/useClipboard';
+import { Chip, InlineError, Notice } from '@/components/ui';
 
 interface Props {
   enabled: boolean;
@@ -8,11 +12,15 @@ interface Props {
 }
 
 export default function TwoFactorSection({ enabled, onChanged }: Props) {
-  const [step, setStep] = useState<'idle' | 'setup' | 'confirm' | 'backupCodes'>('idle');
+  const toast = useToast();
+  const { copy } = useClipboard();
+
+  const [step, setStep] = useState<'idle' | 'setup' | 'backupCodes'>('idle');
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState('');
   const [secret, setSecret] = useState('');
   const [code, setCode] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [codesAcknowledged, setCodesAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -24,14 +32,12 @@ export default function TwoFactorSection({ enabled, onChanged }: Props) {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/account/2fa/setup', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to start setup');
+      const data = await apiPost('/api/account/2fa/setup', {});
       setQrCodeDataUrl(data.qrCodeDataUrl);
       setSecret(data.secret);
       setStep('setup');
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to start setup'));
     } finally {
       setBusy(false);
     }
@@ -42,19 +48,15 @@ export default function TwoFactorSection({ enabled, onChanged }: Props) {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/account/2fa/enable', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Invalid code');
-      setBackupCodes(data.backupCodes);
+      const data = await apiPost('/api/account/2fa/enable', { code: code.trim() });
+      setBackupCodes(data.backupCodes || []);
+      setCodesAcknowledged(false);
       setStep('backupCodes');
       setCode('');
+      toast.success('Two-factor authentication enabled');
       onChanged();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(errorMessage(err, 'That code was not accepted'));
     } finally {
       setBusy(false);
     }
@@ -65,134 +67,196 @@ export default function TwoFactorSection({ enabled, onChanged }: Props) {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/account/2fa/disable', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: disablePassword, code: disableCode }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to disable');
+      await apiPost('/api/account/2fa/disable', { password: disablePassword, code: disableCode.trim() });
       setShowDisable(false);
       setDisablePassword('');
       setDisableCode('');
+      toast.success('Two-factor authentication disabled');
       onChanged();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to disable'));
     } finally {
       setBusy(false);
     }
   };
 
+  const copyCodes = async () => {
+    if (await copy(backupCodes.join('\n'))) {
+      setCodesAcknowledged(true);
+      toast.success('Backup codes copied');
+    } else {
+      toast.error('Could not copy the codes', 'Select them and copy manually before continuing.');
+    }
+  };
+
+  const copySecret = async () => {
+    if (await copy(secret)) toast.success('Secret copied');
+    else toast.error('Could not copy the secret');
+  };
+
   if (enabled) {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-        <div className="border-b border-slate-800 pb-4 flex items-center justify-between">
+      <section className="cc-panel" style={{ display: 'grid', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
           <div>
-            <h2 className="text-base font-bold text-white">Two-Factor Authentication</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Your account is protected with an authenticator app.</p>
+            <h2 className="cc-panel-title">Two-factor authentication</h2>
+            <p className="cc-panel-desc">Your account is protected with an authenticator app.</p>
           </div>
-          <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Enabled</span>
+          <Chip tone="accent">Enabled</Chip>
         </div>
 
         {!showDisable ? (
-          <button
-            onClick={() => setShowDisable(true)}
-            className="text-xs text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/40 px-4 py-2 rounded-xl transition"
-          >
-            Disable 2FA
-          </button>
+          <div>
+            <button onClick={() => setShowDisable(true)} className="cc-btn-danger">Disable 2FA</button>
+          </div>
         ) : (
-          <form onSubmit={handleDisable} className="space-y-3">
-            {error && <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">{error}</div>}
+          <form onSubmit={handleDisable} style={{ display: 'grid', gap: '12px' }}>
+            {error && <InlineError message={error} />}
+            <Notice tone="warning">
+              Turning this off means your password alone is enough to sign in.
+            </Notice>
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1.5">Current Password</label>
-              <input type="password" required value={disablePassword} onChange={(e) => setDisablePassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:border-red-500 focus:outline-none" />
+              <label className="cc-label" htmlFor="tfa-pw">Current password</label>
+              <input
+                id="tfa-pw"
+                type="password"
+                required
+                autoComplete="current-password"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                className="cc-input"
+              />
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1.5">Authenticator or Backup Code</label>
-              <input type="text" required value={disableCode} onChange={(e) => setDisableCode(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-red-500 focus:outline-none" />
+              <label className="cc-label" htmlFor="tfa-code">Authenticator or backup code</label>
+              <input
+                id="tfa-code"
+                required
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value)}
+                className="cc-input"
+                style={{ fontFamily: 'var(--font-mono)' }}
+              />
             </div>
-            <div className="flex gap-2 justify-end">
-              <button type="button" onClick={() => setShowDisable(false)} className="text-xs text-slate-400 hover:text-slate-200 px-4 py-2">Cancel</button>
-              <button type="submit" disabled={busy} className="bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-2 rounded-xl transition">
-                {busy ? 'Disabling...' : 'Disable 2FA'}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button type="button" onClick={() => { setShowDisable(false); setError(null); }} className="cc-btn-ghost">Cancel</button>
+              <button type="submit" disabled={busy} className="cc-btn-danger" style={{ fontWeight: 700 }}>
+                {busy ? 'Disabling…' : 'Disable 2FA'}
               </button>
             </div>
           </form>
         )}
-      </div>
+      </section>
     );
   }
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-      <div className="border-b border-slate-800 pb-4">
-        <h2 className="text-base font-bold text-white">Two-Factor Authentication</h2>
-        <p className="text-xs text-slate-400 mt-0.5">Add an authenticator app (Google Authenticator, Authy, 1Password, etc.) as a second login step.</p>
+    <section className="cc-panel" style={{ display: 'grid', gap: '16px' }}>
+      <div>
+        <h2 className="cc-panel-title">Two-factor authentication</h2>
+        <p className="cc-panel-desc">
+          Add an authenticator app (Google Authenticator, Authy, 1Password and similar) as a second step when signing in.
+        </p>
       </div>
 
-      {error && <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">{error}</div>}
+      {error && <InlineError message={error} />}
 
       {step === 'idle' && (
-        <button
-          onClick={startSetup}
-          disabled={busy}
-          className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition"
-        >
-          {busy ? 'Starting...' : 'Set up 2FA'}
-        </button>
+        <div>
+          <button onClick={startSetup} disabled={busy} className="cc-btn-primary">
+            {busy ? 'Starting…' : 'Set up 2FA'}
+          </button>
+        </div>
       )}
 
       {step === 'setup' && (
-        <div className="space-y-4">
-          <p className="text-xs text-slate-400">Scan this QR code with your authenticator app, or enter the secret manually.</p>
-          <div className="bg-white p-3 rounded-xl inline-block">
+        <div style={{ display: 'grid', gap: '16px' }}>
+          <p className="cc-help" style={{ margin: 0 }}>Scan this QR code with your authenticator app, or enter the secret by hand.</p>
+
+          {/* The QR needs a light background to stay scannable in the dark theme. */}
+          <div style={{ background: '#fff', padding: '12px', borderRadius: '10px', display: 'inline-block', width: 'fit-content' }}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={qrCodeDataUrl} alt="2FA QR Code" width={180} height={180} />
-          </div>
-          <div>
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Manual entry secret</div>
-            <code className="text-xs text-white font-mono bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 inline-block break-all">{secret}</code>
+            <img src={qrCodeDataUrl} alt="Two-factor setup QR code" width={180} height={180} />
           </div>
 
-          <form onSubmit={confirmEnable} className="space-y-3">
+          <div>
+            <span className="cc-label">Manual entry secret</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <code
+                style={{
+                  fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--text-primary)', background: 'var(--bg)',
+                  border: '1px solid var(--border-2)', borderRadius: '6px', padding: '7px 10px', wordBreak: 'break-all',
+                }}
+              >
+                {secret}
+              </code>
+              <button type="button" onClick={copySecret} className="cc-btn-ghost">Copy</button>
+            </div>
+          </div>
+
+          <form onSubmit={confirmEnable} style={{ display: 'grid', gap: '12px' }}>
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1.5">Enter the 6-digit code to confirm</label>
+              <label className="cc-label" htmlFor="tfa-confirm">Enter the 6-digit code to confirm</label>
               <input
-                type="text"
+                id="tfa-confirm"
                 required
                 autoFocus
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
                 value={code}
-                onChange={(e) => setCode(e.target.value)}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
                 placeholder="123456"
-                className="w-full max-w-[180px] bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white font-mono text-center tracking-widest focus:border-emerald-500 focus:outline-none"
+                className="cc-input"
+                style={{ maxWidth: '180px', fontFamily: 'var(--font-mono)', textAlign: 'center', letterSpacing: '0.3em' }}
               />
             </div>
-            <button type="submit" disabled={busy} className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition">
-              {busy ? 'Verifying...' : 'Confirm & Enable'}
-            </button>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button type="button" onClick={() => { setStep('idle'); setError(null); }} className="cc-btn-ghost">Cancel</button>
+              <button type="submit" disabled={busy || code.length !== 6} className="cc-btn-primary">
+                {busy ? 'Verifying…' : 'Confirm & enable'}
+              </button>
+            </div>
           </form>
         </div>
       )}
 
       {step === 'backupCodes' && (
-        <div className="space-y-4">
-          <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
-            <p className="text-xs font-bold text-emerald-400 mb-2">2FA is now enabled. Save these backup codes somewhere safe — each works once if you lose access to your authenticator app.</p>
-            <div className="grid grid-cols-2 gap-2 font-mono text-xs text-white">
-              {backupCodes.map((c) => (
-                <code key={c} className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5">{c}</code>
-              ))}
-            </div>
+        <div style={{ display: 'grid', gap: '16px' }}>
+          <Notice tone="warning">
+            <strong>Save these backup codes now.</strong> Each one works once, and they are the only way back into your
+            account if you lose your authenticator app. They will not be shown again.
+          </Notice>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px' }}>
+            {backupCodes.map((c) => (
+              <code
+                key={c}
+                style={{
+                  fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--text-primary)', background: 'var(--bg)',
+                  border: '1px solid var(--border-2)', borderRadius: '6px', padding: '7px 10px', textAlign: 'center', userSelect: 'all',
+                }}
+              >
+                {c}
+              </code>
+            ))}
           </div>
-          <button
-            onClick={() => { setStep('idle'); setBackupCodes([]); }}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold px-4 py-2 rounded-xl border border-slate-700 transition"
-          >
-            Done
-          </button>
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button onClick={copyCodes} className="cc-btn-ghost">Copy all codes</button>
+            <button
+              onClick={() => { setStep('idle'); setBackupCodes([]); }}
+              disabled={!codesAcknowledged}
+              title={codesAcknowledged ? undefined : 'Copy the codes first'}
+              className="cc-btn-primary"
+            >
+              I&apos;ve saved them
+            </button>
+          </div>
         </div>
       )}
-    </div>
+    </section>
   );
 }

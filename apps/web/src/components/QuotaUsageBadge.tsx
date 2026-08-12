@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { apiRequest } from '@/lib/api';
+import { Chip } from '@/components/ui';
 
 interface QuotaData {
   unlimited: boolean;
@@ -10,26 +12,45 @@ interface QuotaData {
   usedMemoryMb?: number;
 }
 
+/** Above this fraction of a limit the badge turns amber, so a near-full quota is noticeable. */
+const WARN_AT = 0.85;
+
 export default function QuotaUsageBadge() {
   const [quota, setQuota] = useState<QuotaData | null>(null);
 
   useEffect(() => {
-    fetch('/api/account/quota')
-      .then((res) => res.json())
-      .then(setQuota)
-      .catch(() => {});
+    let active = true;
+    apiRequest('/api/account/quota')
+      .then((data) => { if (active) setQuota(data); })
+      .catch(() => {
+        // Purely informational — no quota badge is better than an error here.
+      });
+    return () => { active = false; };
   }, []);
 
   if (!quota || quota.unlimited) return null;
 
-  const parts: string[] = [];
-  if (quota.maxServers != null) parts.push(`${quota.usedServers}/${quota.maxServers} servers`);
-  if (quota.maxMemoryMb != null) parts.push(`${quota.usedMemoryMb}/${quota.maxMemoryMb} MB`);
-  if (parts.length === 0) return null;
+  const entries: Array<{ text: string; ratio: number }> = [];
+  if (quota.maxServers != null && quota.maxServers > 0) {
+    entries.push({
+      text: `${quota.usedServers ?? 0}/${quota.maxServers} servers`,
+      ratio: (quota.usedServers ?? 0) / quota.maxServers,
+    });
+  }
+  if (quota.maxMemoryMb != null && quota.maxMemoryMb > 0) {
+    entries.push({
+      text: `${quota.usedMemoryMb ?? 0}/${quota.maxMemoryMb} MB`,
+      ratio: (quota.usedMemoryMb ?? 0) / quota.maxMemoryMb,
+    });
+  }
+  if (entries.length === 0) return null;
+
+  const highest = Math.max(...entries.map((e) => e.ratio));
+  const tone = highest >= 1 ? 'danger' : highest >= WARN_AT ? 'warning' : 'default';
 
   return (
-    <span className="text-[11px] text-slate-400 font-mono border border-slate-700 bg-slate-900 px-2.5 py-1.5 rounded-md">
-      {parts.join(' · ')}
-    </span>
+    <Chip tone={tone} title="Your resource quota across servers you own">
+      {entries.map((e) => e.text).join(' · ')}
+    </Chip>
   );
 }

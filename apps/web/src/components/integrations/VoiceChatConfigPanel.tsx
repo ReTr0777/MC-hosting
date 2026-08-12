@@ -1,162 +1,135 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { useToast } from '@/context/ToastContext';
+import { InlineError, Notice } from '@/components/ui';
 
 interface VoiceChatConfigPanelProps {
   serverId: string;
   canManage: boolean;
 }
 
+type Settings = Record<string, string>;
+
+const FIELDS: Array<{ key: string; label: string; help?: string; type: 'number' | 'text'; step?: string; fallback: string }> = [
+  { key: 'port', label: 'Voice port', help: 'Use -1 to share the server\'s own port.', type: 'number', fallback: '-1' },
+  { key: 'max_voice_distance', label: 'Max voice distance', help: 'How far away players can still hear each other, in blocks.', type: 'number', step: '0.5', fallback: '48.0' },
+  { key: 'voice_chat_prefix', label: 'Command prefix', type: 'text', fallback: '/vc' },
+  { key: 'group_radius', label: 'Group radius', help: 'In blocks. 0 keeps groups audible at any distance.', type: 'number', step: '0.5', fallback: '8.0' },
+];
+
 export default function VoiceChatConfigPanel({ serverId, canManage }: VoiceChatConfigPanelProps) {
-  const [settings, setSettings] = useState<Record<string, string>>({});
+  const toast = useToast();
+  const [settings, setSettings] = useState<Settings>({});
+  const [saved, setSaved] = useState<Settings>({});
   const [exists, setExists] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
-  const fetchConfig = async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const res = await fetch(`/api/servers/${serverId}/integrations/voicechat`);
-      const data = await res.json();
-      if (res.ok) {
-        setSettings(data.settings || {});
-        setExists(data.exists);
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Failed to load Voice Chat configuration' });
-      }
-    } catch (e: any) {
-      setMessage({ kind: 'err', text: 'Network error loading Voice Chat configuration' });
+      const data = await apiRequest(`/api/servers/${serverId}/integrations/voicechat`);
+      const next: Settings = data?.settings || {};
+      setSettings(next);
+      setSaved(next);
+      setExists(Boolean(data?.exists));
+      setLoadError('');
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Failed to load Voice Chat configuration'));
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchConfig();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
 
-  const handleChange = (key: string, value: string) => {
-    setSettings((prev) => ({ ...prev, [key]: value }));
-  };
+  useEffect(() => { load(); }, [load]);
+
+  const handleChange = (key: string, value: string) => setSettings((prev) => ({ ...prev, [key]: value }));
+
+  const isDirty = useMemo(
+    () => Object.keys({ ...saved, ...settings }).some((k) => (settings[k] ?? '') !== (saved[k] ?? '')),
+    [settings, saved]
+  );
 
   const handleSave = async () => {
     setSaving(true);
-    setMessage(null);
     try {
-      const res = await fetch(`/api/servers/${serverId}/integrations/voicechat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settings }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: data.message });
-        setExists(true);
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Failed to save configuration' });
-      }
-    } catch (e: any) {
-      setMessage({ kind: 'err', text: 'Network error saving configuration' });
+      const data = await apiPost(`/api/servers/${serverId}/integrations/voicechat`, { settings });
+      setSaved(settings);
+      setExists(true);
+      toast.success('Voice Chat settings saved', data?.message || 'Restart the server to apply them.');
+    } catch (err) {
+      toast.error('Could not save Voice Chat settings', errorMessage(err));
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) {
-    return <div className="text-xs text-slate-500 py-4 animate-pulse">Reading voicechat-server.properties...</div>;
-  }
+  if (loading) return <p className="cc-help" style={{ margin: 0 }}>Reading voicechat-server.properties…</p>;
 
   return (
-    <div className="space-y-4 pt-2">
+    <div style={{ display: 'grid', gap: '14px' }}>
+      {loadError && <InlineError message={loadError} onRetry={load} />}
+
       {!exists && (
-        <div className="p-3 rounded-xl text-[11px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-          This mod hasn't generated its config file yet — it's created the first time the server boots with the mod
-          installed. Saving here will create it now with these values.
-        </div>
+        <Notice tone="warning">
+          This mod hasn&apos;t generated its config file yet — it&apos;s created the first time the server boots with the mod
+          installed. Saving here creates it now with these values.
+        </Notice>
       )}
 
-      {message && (
-        <div
-          className={`p-3 rounded-xl text-[11px] font-semibold ${
-            message.kind === 'err'
-              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">
-            Voice Port <span className="text-slate-500 font-normal">(-1 = same as server port)</span>
-          </label>
-          <input
-            type="number"
-            value={settings['port'] ?? '-1'}
-            disabled={!canManage}
-            onChange={(e) => handleChange('port', e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none disabled:opacity-50"
-          />
-        </div>
-
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">Max Voice Distance (blocks)</label>
-          <input
-            type="number"
-            step="0.5"
-            value={settings['max_voice_distance'] ?? '48.0'}
-            disabled={!canManage}
-            onChange={(e) => handleChange('max_voice_distance', e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none disabled:opacity-50"
-          />
-        </div>
-
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">Chat Command Prefix</label>
-          <input
-            type="text"
-            value={settings['voice_chat_prefix'] ?? '/vc'}
-            disabled={!canManage}
-            onChange={(e) => handleChange('voice_chat_prefix', e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none disabled:opacity-50"
-          />
-        </div>
-
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">Group Radius (blocks)</label>
-          <input
-            type="number"
-            step="0.5"
-            value={settings['group_radius'] ?? '8.0'}
-            disabled={!canManage}
-            onChange={(e) => handleChange('group_radius', e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none disabled:opacity-50"
-          />
-        </div>
-
-        <label className="flex items-center justify-between p-3 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer md:col-span-2">
-          <span className="text-[11px] font-semibold text-slate-200">Voice Groups Enabled</span>
-          <input
-            type="checkbox"
-            checked={settings['groups_enabled'] !== 'false'}
-            disabled={!canManage}
-            onChange={(e) => handleChange('groups_enabled', e.target.checked ? 'true' : 'false')}
-            className="w-4 h-4 accent-emerald-500 rounded cursor-pointer disabled:opacity-50"
-          />
-        </label>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
+        {FIELDS.map((f) => {
+          const inputId = `vc-${f.key}`;
+          return (
+            <div key={f.key}>
+              <label className="cc-label" htmlFor={inputId}>{f.label}</label>
+              <input
+                id={inputId}
+                type={f.type}
+                step={f.step}
+                value={settings[f.key] ?? f.fallback}
+                disabled={!canManage}
+                onChange={(e) => handleChange(f.key, e.target.value)}
+                className="cc-input"
+              />
+              {f.help && <p className="cc-help">{f.help}</p>}
+            </div>
+          );
+        })}
       </div>
 
+      <label
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 14px',
+          background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px',
+          cursor: canManage ? 'pointer' : 'not-allowed',
+        }}
+      >
+        <span>
+          <span style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>Voice groups</span>
+          <span className="cc-help" style={{ display: 'block' }}>Let players form private voice channels.</span>
+        </span>
+        <input
+          type="checkbox"
+          checked={settings['groups_enabled'] !== 'false'}
+          disabled={!canManage}
+          onChange={(e) => handleChange('groups_enabled', e.target.checked ? 'true' : 'false')}
+          style={{ width: 16, height: 16, accentColor: 'var(--accent)', flexShrink: 0, cursor: 'inherit' }}
+        />
+      </label>
+
       {canManage && (
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-5 py-2 rounded-xl shadow-lg shadow-emerald-600/20 transition"
-        >
-          {saving ? 'Saving...' : 'Save Voice Chat Settings'}
-        </button>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button onClick={handleSave} disabled={saving || !isDirty} className="cc-btn-primary">
+            {saving ? 'Saving…' : isDirty ? 'Save settings' : 'Saved'}
+          </button>
+          {isDirty && (
+            <button onClick={() => setSettings(saved)} disabled={saving} className="cc-btn-ghost">Discard</button>
+          )}
+        </div>
       )}
     </div>
   );

@@ -1,7 +1,12 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useToast } from '@/context/ToastContext';
+import { usePolledResource } from '@/hooks/usePolledResource';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { formatRelative } from '@/lib/format';
+import { Chip, InlineError, LoadingLine, PanelHeader } from '@/components/ui';
 
 interface Channel {
   id: string;
@@ -23,6 +28,11 @@ interface Delivery {
   createdAt: string;
 }
 
+interface AlertsData {
+  channels: Channel[];
+  deliveries: Delivery[];
+}
+
 const EVENT_LABELS: Record<string, string> = {
   SERVER_CRASHED: 'Server crashed',
   SERVER_STARTED: 'Server started',
@@ -33,69 +43,57 @@ const EVENT_LABELS: Record<string, string> = {
   BACKUP_FAILED: 'Backup failed',
 };
 
-// TEST is delivery-only; it is never something you subscribe to
+// TEST is delivery-only; it is never something you subscribe to.
 const SUBSCRIBABLE = Object.keys(EVENT_LABELS);
+
+const EMPTY: AlertsData = { channels: [], deliveries: [] };
 
 export default function AlertsPanel() {
   const confirm = useConfirm();
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [type, setType] = useState<'DISCORD' | 'GENERIC'>('DISCORD');
   const [events, setEvents] = useState<string[]>([]);
 
-  const fetchData = async () => {
-    try {
-      const res = await fetch('/api/notifications');
-      const data = await res.json();
-      if (res.ok) {
-        setChannels(data.channels || []);
-        setDeliveries(data.deliveries || []);
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Failed to load alert settings' });
-      }
-    } catch {
-      setMessage({ kind: 'err', text: 'Network error loading alert settings' });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data, loading, error, refresh } = usePolledResource<AlertsData>('/api/notifications', EMPTY, {
+    select: (raw) => ({ channels: raw?.channels ?? [], deliveries: raw?.deliveries ?? [] }),
+  });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  const { channels, deliveries } = data;
 
-  const toggleEvent = (evt: string) => {
+  const toggleEvent = (evt: string) =>
     setEvents((prev) => (prev.includes(evt) ? prev.filter((e) => e !== evt) : [...prev, evt]));
+
+  /** Catches the most common paste mistake before the request is made. */
+  const urlLooksValid = (value: string) => {
+    try {
+      const parsed = new URL(value.trim());
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    } catch {
+      return false;
+    }
   };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!urlLooksValid(url)) {
+      toast.error('That webhook URL looks wrong', 'Paste the full https:// URL from Discord.');
+      return;
+    }
+
     setBusy('create');
-    setMessage(null);
     try {
-      const res = await fetch('/api/notifications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, url, type, events }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ kind: 'ok', text: `Channel "${name}" added.` });
-        setName('');
-        setUrl('');
-        setEvents([]);
-        await fetchData();
-      } else {
-        setMessage({ kind: 'err', text: data.error || 'Failed to add channel' });
-      }
-    } catch (err: any) {
-      setMessage({ kind: 'err', text: err.message || 'Network error' });
+      await apiPost('/api/notifications', { name: name.trim(), url: url.trim(), type, events });
+      toast.success(`Channel “${name.trim()}” added`);
+      setName('');
+      setUrl('');
+      setEvents([]);
+      await refresh();
+    } catch (err) {
+      toast.error('Could not add the channel', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -103,18 +101,12 @@ export default function AlertsPanel() {
 
   const handleTest = async (channelId?: string) => {
     setBusy(`test-${channelId || 'new'}`);
-    setMessage(null);
     try {
-      const res = await fetch('/api/notifications/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(channelId ? { channelId } : { url, type }),
-      });
-      const data = await res.json();
-      setMessage(res.ok ? { kind: 'ok', text: data.message } : { kind: 'err', text: data.error });
-      if (res.ok && channelId) await fetchData();
-    } catch (err: any) {
-      setMessage({ kind: 'err', text: err.message || 'Network error' });
+      const result = await apiPost('/api/notifications/test', channelId ? { channelId } : { url: url.trim(), type });
+      toast.success(result?.message || 'Test notification sent');
+      if (channelId) await refresh();
+    } catch (err) {
+      toast.error('Test notification failed', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -123,12 +115,16 @@ export default function AlertsPanel() {
   const handleToggle = async (channel: Channel) => {
     setBusy(`toggle-${channel.id}`);
     try {
-      await fetch(`/api/notifications/${channel.id}`, {
+      await apiRequest(`/api/notifications/${channel.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !channel.enabled }),
       });
-      await fetchData();
+      toast.success(channel.enabled ? `Paused “${channel.name}”` : `Resumed “${channel.name}”`);
+      await refresh();
+    } catch (err) {
+      // The old version ignored the response entirely, so a failed toggle looked like it worked.
+      toast.error('Could not update the channel', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -147,96 +143,64 @@ export default function AlertsPanel() {
       danger: true,
     });
     if (!ok) return;
+
     setBusy(`delete-${channel.id}`);
     try {
-      await fetch(`/api/notifications/${channel.id}`, { method: 'DELETE' });
-      await fetchData();
+      await apiRequest(`/api/notifications/${channel.id}`, { method: 'DELETE' });
+      toast.success(`Deleted “${channel.name}”`);
+      await refresh();
+    } catch (err) {
+      toast.error('Could not delete the channel', errorMessage(err));
     } finally {
       setBusy(null);
     }
   };
 
-  if (loading) {
-    return <div className="text-center py-10 text-slate-500 text-sm animate-pulse">Loading alert channels...</div>;
-  }
+  if (loading) return <LoadingLine>Loading alert channels…</LoadingLine>;
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-      <div className="border-b border-slate-800 pb-4">
-        <h2 className="text-base font-bold text-sky-400 flex items-center space-x-2">
-          <span>Alerts &amp; Webhooks</span>
-        </h2>
-        <p className="text-xs text-slate-400 mt-0.5">
-          Get notified in Discord when a server crashes, a node drops, or a backup fails. The panel polls every node in
-          the background and fires these on state changes.
-        </p>
-      </div>
+    <div className="cc-panel" style={{ display: 'grid', gap: '20px' }}>
+      <PanelHeader
+        title="Alerts & Webhooks"
+        chips={channels.length > 0 ? <Chip>{channels.length} channel{channels.length === 1 ? '' : 's'}</Chip> : undefined}
+        description="Get notified in Discord when a server crashes, a node drops, or a backup fails. The panel polls every node in the background and fires these on state changes."
+      />
 
-      {message && (
-        <div
-          className={`p-4 rounded-xl text-xs font-semibold ${
-            message.kind === 'err'
-              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
+      {error && <InlineError message={error} onRetry={refresh} />}
 
-      {/* Existing channels */}
       {channels.length > 0 && (
-        <div className="space-y-2">
+        <div style={{ display: 'grid', gap: '8px' }}>
           {channels.map((c) => (
-            <div
-              key={c.id}
-              className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-start justify-between gap-4 flex-wrap"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center space-x-2">
-                  <span className="font-bold text-white text-sm">{c.name}</span>
-                  <span className="bg-slate-800 text-slate-400 text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-slate-700">
-                    {c.type}
-                  </span>
-                  {c.enabled ? (
-                    <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-emerald-500/30">
-                      Active
-                    </span>
-                  ) : (
-                    <span className="bg-slate-700/40 text-slate-400 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border border-slate-600/40">
-                      Paused
-                    </span>
-                  )}
+            <div key={c.id} className="cc-row" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span className="cc-row-title">{c.name}</span>
+                  <Chip>{c.type}</Chip>
+                  <Chip tone={c.enabled ? 'accent' : 'default'}>{c.enabled ? 'Active' : 'Paused'}</Chip>
                 </div>
-                <div className="text-[11px] text-slate-500 font-mono mt-1 truncate">{c.urlPreview}</div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {c.events.length === 0
-                    ? 'All events'
-                    : c.events.map((e) => EVENT_LABELS[e] || e).join(' · ')}
+                <div className="cc-row-sub" style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.urlPreview}
+                </div>
+                <div className="cc-row-sub">
+                  {c.events.length === 0 ? 'All events' : c.events.map((e) => EVENT_LABELS[e] || e).join(' · ')}
                 </div>
               </div>
 
-              <div className="flex items-center space-x-2 flex-shrink-0">
-                <button
-                  onClick={() => handleTest(c.id)}
-                  disabled={!!busy}
-                  className="text-xs bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 px-3 py-1.5 rounded-lg border border-sky-500/20 font-bold transition disabled:opacity-40"
-                >
-                  {busy === `test-${c.id}` ? 'Sending...' : 'Test'}
+              <div className="cc-row-actions">
+                <button onClick={() => handleTest(c.id)} disabled={!!busy} className="cc-btn-ghost" style={{ padding: '4px 10px' }}>
+                  {busy === `test-${c.id}` ? 'Sending…' : 'Test'}
                 </button>
-                <button
-                  onClick={() => handleToggle(c)}
-                  disabled={!!busy}
-                  className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition disabled:opacity-40"
-                >
+                <button onClick={() => handleToggle(c)} disabled={!!busy} className="cc-btn-ghost" style={{ padding: '4px 10px' }}>
                   {c.enabled ? 'Pause' : 'Resume'}
                 </button>
                 <button
                   onClick={() => handleDelete(c)}
                   disabled={!!busy}
-                  className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-1.5 rounded-lg border border-red-500/20 font-bold transition disabled:opacity-40"
+                  aria-label={`Delete ${c.name}`}
+                  className="cc-btn-danger"
+                  style={{ padding: '4px 10px' }}
                 >
-                  ✕
+                  Delete
                 </button>
               </div>
             </div>
@@ -245,30 +209,40 @@ export default function AlertsPanel() {
       )}
 
       {/* Add form */}
-      <form onSubmit={handleCreate} className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-4">
-        <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">Add a channel</div>
+      <form onSubmit={handleCreate} style={{ display: 'grid', gap: '14px', background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '18px' }}>
+        <div className="cc-section-title">Add a channel</div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name (e.g. Admin Discord)"
-            className="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/60"
-          />
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://discord.com/api/webhooks/..."
-            className="md:col-span-2 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/60"
-          />
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) minmax(240px, 2fr)', gap: '10px' }}>
+          <div>
+            <label className="cc-label" htmlFor="alert-name">Name</label>
+            <input
+              id="alert-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Admin Discord"
+              className="cc-input"
+            />
+          </div>
+          <div>
+            <label className="cc-label" htmlFor="alert-url">Webhook URL</label>
+            <input
+              id="alert-url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://discord.com/api/webhooks/…"
+              className="cc-input"
+            />
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-slate-400">Format:</label>
+        <div>
+          <label className="cc-label" htmlFor="alert-format">Payload format</label>
           <select
+            id="alert-format"
             value={type}
             onChange={(e) => setType(e.target.value as 'DISCORD' | 'GENERIC')}
-            className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+            className="cc-input"
+            style={{ maxWidth: '220px' }}
           >
             <option value="DISCORD">Discord embed</option>
             <option value="GENERIC">Generic JSON</option>
@@ -276,80 +250,69 @@ export default function AlertsPanel() {
         </div>
 
         <div>
-          <div className="text-xs text-slate-400 mb-2">
-            Events — leave all unchecked to receive <strong className="text-slate-200">everything</strong>.
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {SUBSCRIBABLE.map((evt) => (
-              <button
-                key={evt}
-                type="button"
-                onClick={() => toggleEvent(evt)}
-                className={`text-[11px] px-3 py-1.5 rounded-lg border font-semibold transition ${
-                  events.includes(evt)
-                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
-                    : 'bg-slate-900 text-slate-400 border-slate-700 hover:border-slate-600'
-                }`}
-              >
-                {EVENT_LABELS[evt]}
-              </button>
-            ))}
+          <span className="cc-label">Events</span>
+          <p className="cc-help" style={{ margin: '0 0 10px' }}>
+            Leave everything unchecked to receive <strong style={{ color: 'var(--text-primary)' }}>all</strong> events.
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            {SUBSCRIBABLE.map((evt) => {
+              const on = events.includes(evt);
+              return (
+                <button
+                  key={evt}
+                  type="button"
+                  onClick={() => toggleEvent(evt)}
+                  aria-pressed={on}
+                  className="cc-btn-ghost"
+                  style={on ? { background: 'var(--accent-dim)', color: 'var(--accent)', borderColor: 'var(--accent-border)', fontWeight: 700 } : undefined}
+                >
+                  {EVENT_LABELS[evt]}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="submit"
-            disabled={!!busy || !name.trim() || !url.trim()}
-            className="bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-sky-600/20 transition"
-          >
-            {busy === 'create' ? 'Adding...' : '＋ Add Channel'}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button type="submit" disabled={!!busy || !name.trim() || !url.trim()} className="cc-btn-primary">
+            {busy === 'create' ? 'Adding…' : 'Add channel'}
           </button>
-          <button
-            type="button"
-            onClick={() => handleTest()}
-            disabled={!!busy || !url.trim()}
-            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl border border-slate-700 transition disabled:opacity-40"
-          >
-            {busy === 'test-new' ? 'Sending...' : 'Test before saving'}
+          <button type="button" onClick={() => handleTest()} disabled={!!busy || !url.trim()} className="cc-btn-ghost">
+            {busy === 'test-new' ? 'Sending…' : 'Test before saving'}
           </button>
         </div>
       </form>
 
       {/* Delivery history */}
       <div>
-        <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">Recent deliveries</div>
+        <div className="cc-section-title" style={{ marginBottom: '10px' }}>Recent deliveries</div>
         {deliveries.length === 0 ? (
-          <div className="text-xs text-slate-500 py-4">
-            Nothing sent yet. Add a channel and hit Test to confirm it works.
-          </div>
+          <p className="cc-help" style={{ margin: 0 }}>Nothing sent yet. Add a channel and hit Test to confirm it works.</p>
         ) : (
-          <div className="space-y-1 max-h-72 overflow-y-auto">
-            {deliveries.map((d) => (
-              <div
-                key={d.id}
-                className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 flex items-center justify-between gap-3 text-xs"
-              >
-                <div className="min-w-0">
-                  <span className="text-slate-200 font-semibold">{d.title}</span>
-                  {d.detail && <span className="text-red-400 ml-2">— {d.detail}</span>}
+          <div style={{ display: 'grid', gap: '6px', maxHeight: '18rem', overflowY: 'auto' }}>
+            {deliveries.map((d) => {
+              const failed = d.status !== 'SUCCESS';
+              return (
+                <div
+                  key={d.id}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+                    background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '6px', padding: '8px 12px',
+                  }}
+                >
+                  <div style={{ minWidth: 0, fontSize: '0.75rem' }}>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{d.title}</span>
+                    {d.detail && <span style={{ color: 'var(--danger)', marginLeft: '8px' }}>— {d.detail}</span>}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                    <Chip tone={failed ? 'danger' : 'accent'}>{d.status}</Chip>
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                      {formatRelative(d.createdAt)}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center space-x-3 flex-shrink-0">
-                  <span
-                    className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border ${
-                      d.status === 'SUCCESS'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                        : 'bg-red-500/10 text-red-400 border-red-500/20'
-                    }`}
-                  >
-                    {d.status}
-                  </span>
-                  <span className="text-slate-600 text-[10px] font-mono">
-                    {new Date(d.createdAt).toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

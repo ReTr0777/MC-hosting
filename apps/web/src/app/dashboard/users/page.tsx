@@ -1,10 +1,14 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useClipboard } from '@/hooks/useClipboard';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { formatDateTime } from '@/lib/format';
+import { Chip, EmptyState, InlineError, LoadingLine, Modal, PanelHeader } from '@/components/ui';
 
 interface UserItem {
   id: string;
@@ -26,84 +30,95 @@ interface InviteItem {
   creator?: { username: string };
 }
 
+/** Normalises the two response shapes the API has used over time. */
+function asArray<T>(payload: any, key: string): T[] {
+  if (Array.isArray(payload?.[key])) return payload[key];
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function quotaSummary(u: UserItem): string {
+  const parts = [
+    u.maxServers != null ? `${u.maxServers} srv` : null,
+    u.maxMemoryMb != null ? `${u.maxMemoryMb} MB` : null,
+    u.maxCpu != null ? `${u.maxCpu} cpu` : null,
+  ].filter(Boolean);
+  return parts.length === 0 ? 'Unlimited' : parts.join(' · ');
+}
+
 export default function UsersDashboardPage() {
-  const { user, logout, loading } = useAuth();
+  const { user, loading } = useAuth();
   const toast = useToast();
   const confirm = useConfirm();
+  const { copy } = useClipboard();
+
   const [users, setUsers] = useState<UserItem[]>([]);
   const [invites, setInvites] = useState<InviteItem[]>([]);
-  
   const [activeTab, setActiveTab] = useState<'users' | 'invites'>('users');
-  const [error, setError] = useState('');
-  
-  // Create User State
+  const [loadError, setLoadError] = useState('');
+  const [formError, setFormError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // window is not available during SSR, so the origin is read after mount.
+  const [origin, setOrigin] = useState('');
+  useEffect(() => setOrigin(window.location.origin), []);
+
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [newEmail, setNewEmail] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('USER');
-  
-  // Edit User State
+
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
   const [editPassword, setEditPassword] = useState('');
   const [editRole, setEditRole] = useState('USER');
-  const [editMaxServers, setEditMaxServers] = useState<string>('');
-  const [editMaxMemoryMb, setEditMaxMemoryMb] = useState<string>('');
-  const [editMaxCpu, setEditMaxCpu] = useState<string>('');
-  
-  // Create Invite State
+  const [editMaxServers, setEditMaxServers] = useState('');
+  const [editMaxMemoryMb, setEditMaxMemoryMb] = useState('');
+  const [editMaxCpu, setEditMaxCpu] = useState('');
+
   const [showCreateInvite, setShowCreateInvite] = useState(false);
   const [maxUses, setMaxUses] = useState<number | ''>('');
 
-  useEffect(() => {
-    if (user?.globalRole === 'GLOBAL_ADMIN') {
-      fetchUsers();
-      fetchInvites();
+  const isAdmin = user?.globalRole === 'GLOBAL_ADMIN';
+
+  const refresh = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const [usersData, invitesData] = await Promise.all([apiRequest('/api/users'), apiRequest('/api/invites')]);
+      setUsers(asArray<UserItem>(usersData, 'users'));
+      setInvites(asArray<InviteItem>(invitesData, 'invites'));
+      setLoadError('');
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Could not load users and invites'));
     }
-  }, [user]);
+  }, [isAdmin]);
 
-  const fetchUsers = async () => {
-    try {
-      const res = await fetch('/api/users');
-      if (res.ok) {
-        const data = await res.json();
-        setUsers(Array.isArray(data.users) ? data.users : Array.isArray(data) ? data : []);
-      }
-    } catch (e) { console.error(e); }
-  };
-
-  const fetchInvites = async () => {
-    try {
-      const res = await fetch('/api/invites');
-      if (res.ok) {
-        const data = await res.json();
-        setInvites(Array.isArray(data.invites) ? data.invites : Array.isArray(data) ? data : []);
-      }
-    } catch (e) { console.error(e); }
-  };
+  useEffect(() => { refresh(); }, [refresh]);
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setFormError('');
+    setBusy(true);
     try {
-      const res = await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: newEmail, username: newUsername, password: newPassword, globalRole: newRole }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || 'Failed to create user');
+      await apiPost('/api/users', { email: newEmail, username: newUsername, password: newPassword, globalRole: newRole });
       setShowCreateUser(false);
       setNewEmail(''); setNewUsername(''); setNewPassword(''); setNewRole('USER');
-      fetchUsers();
-    } catch (err: any) { setError(err.message); }
+      toast.success(`Created ${newUsername}`);
+      await refresh();
+    } catch (err) {
+      setFormError(errorMessage(err, 'Failed to create user'));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
-    setError('');
+    setFormError('');
+    setBusy(true);
     try {
-      const res = await fetch(`/api/users/${editingUser.id}`, {
+      await apiRequest(`/api/users/${editingUser.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -114,56 +129,59 @@ export default function UsersDashboardPage() {
           maxCpu: editMaxCpu === '' ? null : parseFloat(editMaxCpu),
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error || 'Failed to update user');
+      toast.success(`Updated ${editingUser.username}`);
       setEditingUser(null);
       setEditPassword('');
-      fetchUsers();
-    } catch (err: any) { setError(err.message); }
+      await refresh();
+    } catch (err) {
+      setFormError(errorMessage(err, 'Failed to update user'));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleDeleteUser = async (id: string) => {
-    const target = users.find((u) => u.id === id);
+  const handleDeleteUser = async (target: UserItem) => {
     const ok = await confirm({
       title: 'Delete this account?',
       message: (
         <>
-          <strong style={{ color: 'var(--text-primary)' }}>{target?.username || 'This user'}</strong> loses access to the panel
-          immediately. Servers they own are not deleted.
+          <strong style={{ color: 'var(--text-primary)' }}>{target.username}</strong> loses access to the panel immediately.
+          Servers they own are not deleted.
         </>
       ),
       confirmLabel: 'Delete account',
       danger: true,
+      requireText: target.username,
     });
     if (!ok) return;
 
     try {
-      const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        toast.error('Could not delete the account', (await res.json()).error);
-      } else {
-        toast.success('Account deleted', target?.username);
-      }
-      fetchUsers();
-    } catch (e) { console.error(e); }
+      await apiRequest(`/api/users/${target.id}`, { method: 'DELETE' });
+      toast.success('Account deleted', target.username);
+      await refresh();
+    } catch (err) {
+      toast.error('Could not delete the account', errorMessage(err));
+    }
   };
 
   const handleGenerateInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setFormError('');
+    setBusy(true);
     try {
-      const res = await fetch('/api/invites', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxUses: maxUses === '' ? null : maxUses }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || 'Failed to generate invite');
+      await apiPost('/api/invites', { maxUses: maxUses === '' ? null : maxUses });
       setShowCreateInvite(false);
       setMaxUses('');
-      fetchInvites();
-    } catch (err: any) { setError(err.message); }
+      toast.success('Invite generated');
+      await refresh();
+    } catch (err) {
+      setFormError(errorMessage(err, 'Failed to generate invite'));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleRevokeInvite = async (id: string) => {
+  const handleRevokeInvite = async (inv: InviteItem) => {
     const ok = await confirm({
       title: 'Revoke this invite code?',
       message: 'Anyone who still has the link will no longer be able to register with it. Accounts already created stay active.',
@@ -173,265 +191,323 @@ export default function UsersDashboardPage() {
     if (!ok) return;
 
     try {
-      const res = await fetch(`/api/invites/${id}`, { method: 'DELETE' });
-      if (!res.ok) toast.error('Could not revoke the invite');
-      else toast.success('Invite revoked');
-      fetchInvites();
-    } catch (e) { console.error(e); }
+      await apiRequest(`/api/invites/${inv.id}`, { method: 'DELETE' });
+      toast.success('Invite revoked');
+      await refresh();
+    } catch (err) {
+      toast.error('Could not revoke the invite', errorMessage(err));
+    }
   };
 
-  if (loading) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400">Loading...</div>;
-  if (!user || user.globalRole !== 'GLOBAL_ADMIN') {
+  const copyInvite = async (code: string) => {
+    if (await copy(`${origin}/register?invite=${code}`)) toast.success('Invite link copied');
+    else toast.error('Could not copy the link');
+  };
+
+  const openEditModal = (u: UserItem) => {
+    setEditingUser(u);
+    setEditRole(u.globalRole);
+    setEditPassword('');
+    setEditMaxServers(u.maxServers != null ? String(u.maxServers) : '');
+    setEditMaxMemoryMb(u.maxMemoryMb != null ? String(u.maxMemoryMb) : '');
+    setEditMaxCpu(u.maxCpu != null ? String(u.maxCpu) : '');
+    setFormError('');
+  };
+
+  if (loading) return <LoadingLine>Loading…</LoadingLine>;
+
+  if (!isAdmin) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 px-4 text-center">
-        <h2 className="text-2xl font-bold text-white mb-2">Unauthorized</h2>
-        <p className="text-slate-400 mb-6">Only Global Admins can access this page.</p>
-        <Link href="/dashboard" className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-2.5 rounded-xl">Back to Dashboard</Link>
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '24px', textAlign: 'center' }}>
+        <h2 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Not authorised</h2>
+        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', margin: 0 }}>Only global admins can manage users and invites.</p>
+        <Link href="/dashboard" className="cc-btn-primary" style={{ textDecoration: 'none' }}>Back to dashboard</Link>
       </div>
     );
   }
 
+  const th: React.CSSProperties = {
+    padding: '12px 20px', textAlign: 'left', fontSize: '0.62rem', fontWeight: 800,
+    letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-muted)', whiteSpace: 'nowrap',
+  };
+  const td: React.CSSProperties = { padding: '12px 20px', fontSize: '0.8125rem', color: 'var(--text-primary)' };
+
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950">
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-8 py-4 flex items-center justify-between sticky top-0 z-40">
-        <div className="flex items-center space-x-4">
-          <Link href="/dashboard" className="flex items-center space-x-3 group">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-xl shadow-lg shadow-emerald-500/20 group-hover:scale-105 transition">
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <header
+        style={{
+          borderBottom: '1px solid var(--border)', background: 'var(--surface)', padding: '14px 24px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap',
+          position: 'sticky', top: 0, zIndex: 40,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+          <Link href="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}>
+            <span
+              style={{
+                width: 30, height: 30, borderRadius: '7px', background: 'var(--accent)', color: 'var(--bg)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900,
+              }}
+            >
               M
-            </div>
-            <span className="font-bold text-lg text-white">CraftControl</span>
+            </span>
+            <span style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--text-primary)' }}>CraftControl</span>
           </Link>
-          <span className="text-xs px-2.5 py-1 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono">
-            Users & Invites
-          </span>
-          <Link href="/dashboard" className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-lg font-medium transition">
-            Back to Dashboard
-          </Link>
+          <Chip>Users &amp; invites</Chip>
+          <Link href="/dashboard" className="cc-btn-ghost" style={{ textDecoration: 'none' }}>Back to dashboard</Link>
         </div>
-        <div className="flex items-center space-x-4">
-          <div className="text-right">
-            <div className="text-sm font-semibold text-white">{user.username}</div>
-            <div className="text-xs text-slate-400">{user.email}</div>
-          </div>
+
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>{user!.username}</div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{user!.email}</div>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-8 py-8 space-y-8">
-        <div className="flex space-x-4 border-b border-slate-800">
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`pb-3 text-sm font-medium border-b-2 transition ${activeTab === 'users' ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
-          >
-            User Management
+      <main style={{ flex: 1, width: '100%', maxWidth: '80rem', margin: '0 auto', padding: '24px', display: 'grid', gap: '20px', alignContent: 'start' }}>
+        <nav style={{ display: 'flex', gap: '20px', borderBottom: '1px solid var(--border)' }}>
+          <button onClick={() => setActiveTab('users')} className={`cc-tab${activeTab === 'users' ? ' cc-tab-active' : ''}`}>
+            Users
           </button>
-          <button
-            onClick={() => setActiveTab('invites')}
-            className={`pb-3 text-sm font-medium border-b-2 transition ${activeTab === 'invites' ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
-          >
-            Invite Codes
+          <button onClick={() => setActiveTab('invites')} className={`cc-tab${activeTab === 'invites' ? ' cc-tab-active' : ''}`}>
+            Invite codes
           </button>
-        </div>
+        </nav>
+
+        {loadError && <InlineError message={loadError} onRetry={refresh} />}
 
         {activeTab === 'users' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-xl font-bold text-white">Registered Users</h2>
-              <button onClick={() => setShowCreateUser(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition">
-                + Create User
-              </button>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-              <table className="w-full text-left text-sm text-slate-300">
-                <thead className="bg-slate-800/50 text-xs uppercase text-slate-400 border-b border-slate-800">
-                  <tr>
-                    <th className="px-6 py-4">Username</th>
-                    <th className="px-6 py-4">Email</th>
-                    <th className="px-6 py-4">Role</th>
-                    <th className="px-6 py-4">Quota</th>
-                    <th className="px-6 py-4">Created</th>
-                    <th className="px-6 py-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/50">
-                  {(Array.isArray(users) ? users : []).map(u => (
-                    <tr key={u.id} className="hover:bg-slate-800/20 transition">
-                      <td className="px-6 py-4 font-medium text-white">{u.username}</td>
-                      <td className="px-6 py-4">{u.email}</td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded text-xs font-mono ${u.globalRole === 'GLOBAL_ADMIN' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
-                          {u.globalRole}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-xs text-slate-400 font-mono">
-                        {u.maxServers == null && u.maxMemoryMb == null && u.maxCpu == null
-                          ? 'Unlimited'
-                          : [
-                              u.maxServers != null ? `${u.maxServers} srv` : null,
-                              u.maxMemoryMb != null ? `${u.maxMemoryMb}MB` : null,
-                              u.maxCpu != null ? `${u.maxCpu} cpu` : null,
-                            ].filter(Boolean).join(' · ')}
-                      </td>
-                      <td className="px-6 py-4">{new Date(u.createdAt).toLocaleDateString()}</td>
-                      <td className="px-6 py-4 text-right space-x-3">
-                        <button onClick={() => {
-                          setEditingUser(u);
-                          setEditRole(u.globalRole);
-                          setEditPassword('');
-                          setEditMaxServers(u.maxServers != null ? String(u.maxServers) : '');
-                          setEditMaxMemoryMb(u.maxMemoryMb != null ? String(u.maxMemoryMb) : '');
-                          setEditMaxCpu(u.maxCpu != null ? String(u.maxCpu) : '');
-                        }} className="text-indigo-400 hover:text-indigo-300 font-medium">Edit</button>
-                        {u.id !== user.id && (
-                          <button onClick={() => handleDeleteUser(u.id)} className="text-red-400 hover:text-red-300 font-medium">Delete</button>
-                        )}
-                      </td>
+          <div style={{ display: 'grid', gap: '16px' }}>
+            <PanelHeader
+              title="Registered users"
+              chips={<Chip>{users.length}</Chip>}
+              description="Accounts that can sign in to this panel, and the resource quotas applied to servers they own."
+              actions={<button onClick={() => { setShowCreateUser(true); setFormError(''); }} className="cc-btn-primary">Create user</button>}
+            />
+
+            {users.length === 0 ? (
+              <EmptyState title="No users yet" description="Create an account or generate an invite link to get started." />
+            ) : (
+              <div className="cc-card" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '760px' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
+                      <th style={th}>Username</th>
+                      <th style={th}>Email</th>
+                      <th style={th}>Role</th>
+                      <th style={th}>Quota</th>
+                      <th style={th}>Created</th>
+                      <th style={{ ...th, textAlign: 'right' }} />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {users.map((u) => (
+                      <tr key={u.id} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ ...td, fontWeight: 600 }}>{u.username}</td>
+                        <td style={{ ...td, color: 'var(--text-muted)' }}>{u.email}</td>
+                        <td style={td}>
+                          <Chip tone={u.globalRole === 'GLOBAL_ADMIN' ? 'accent' : 'default'}>
+                            {u.globalRole === 'GLOBAL_ADMIN' ? 'Admin' : 'User'}
+                          </Chip>
+                        </td>
+                        <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          {quotaSummary(u)}
+                        </td>
+                        <td style={{ ...td, color: 'var(--text-muted)', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+                          {formatDateTime(u.createdAt)}
+                        </td>
+                        <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          <span style={{ display: 'inline-flex', gap: '6px' }}>
+                            <button onClick={() => openEditModal(u)} className="cc-btn-ghost" style={{ padding: '4px 10px' }}>Edit</button>
+                            {u.id !== user!.id && (
+                              <button onClick={() => handleDeleteUser(u)} className="cc-btn-danger" style={{ padding: '4px 10px' }}>Delete</button>
+                            )}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
         {activeTab === 'invites' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-xl font-bold text-white">Active Invite Codes</h2>
-              <button onClick={() => setShowCreateInvite(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition">
-                + Generate Invite
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {(Array.isArray(invites) ? invites : []).length === 0 && <div className="col-span-full text-slate-500 text-sm">No active invites.</div>}
-              {(Array.isArray(invites) ? invites : []).map(inv => {
-                const inviteUrl = `${window.location.origin}/register?invite=${inv.code}`;
-                return (
-                  <div key={inv.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative">
-                    <div className="flex justify-between items-start mb-4">
+          <div style={{ display: 'grid', gap: '16px' }}>
+            <PanelHeader
+              title="Invite codes"
+              chips={<Chip>{invites.length} active</Chip>}
+              description="Share a link so someone can register their own account without you setting a password for them."
+              actions={<button onClick={() => { setShowCreateInvite(true); setFormError(''); }} className="cc-btn-primary">Generate invite</button>}
+            />
+
+            {invites.length === 0 ? (
+              <EmptyState title="No active invites" description="Generate one to let someone register an account." />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
+                {invites.map((inv) => (
+                  <div key={inv.id} className="cc-panel" style={{ display: 'grid', gap: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
                       <div>
-                        <div className="text-xs text-slate-400 mb-1">Invite Code</div>
-                        <div className="font-mono text-emerald-400 font-bold tracking-wider">{inv.code}</div>
+                        <span className="cc-label">Invite code</span>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.05em' }}>
+                          {inv.code}
+                        </div>
                       </div>
-                      <button onClick={() => handleRevokeInvite(inv.id)} className="text-xs bg-red-500/10 text-red-400 px-2 py-1 rounded hover:bg-red-500/20 transition">Revoke</button>
+                      <button onClick={() => handleRevokeInvite(inv)} className="cc-btn-danger" style={{ padding: '4px 10px' }}>Revoke</button>
                     </div>
-                    <div className="flex items-center space-x-2 mb-4">
-                      <input type="text" readOnly value={inviteUrl} className="w-full bg-slate-950 text-slate-300 text-xs px-3 py-2 rounded border border-slate-800 focus:outline-none" />
-                      <button onClick={() => { navigator.clipboard.writeText(inviteUrl); toast.success('Invite link copied'); }} className="bg-slate-800 text-slate-300 hover:text-white px-3 py-2 rounded text-xs transition border border-slate-700">Copy</button>
+
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        readOnly
+                        value={origin ? `${origin}/register?invite=${inv.code}` : `/register?invite=${inv.code}`}
+                        aria-label="Invite link"
+                        onFocus={(e) => e.currentTarget.select()}
+                        className="cc-input"
+                        style={{ fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}
+                      />
+                      <button onClick={() => copyInvite(inv.code)} className="cc-btn-ghost">Copy</button>
                     </div>
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>Uses: {inv.uses} / {inv.maxUses || '∞'}</span>
-                      <span>By: {inv.creator?.username || 'System'}</span>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      <span>Uses: {inv.uses} / {inv.maxUses ?? '∞'}</span>
+                      <span>By {inv.creator?.username || 'System'}</span>
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
-
       </main>
 
-      {/* Edit User Modal */}
+      {/* Edit user */}
       {editingUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-4">Edit {editingUser.username}</h3>
-            {error && <div className="mb-4 text-sm text-red-400 bg-red-500/10 p-3 rounded">{error}</div>}
-            <form onSubmit={handleEditUser} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">New Password (Leave blank to keep)</label>
-                <input type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Role</label>
-                <select value={editRole} onChange={e => setEditRole(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white">
-                  <option value="USER">User</option>
-                  <option value="GLOBAL_ADMIN">Global Admin</option>
-                </select>
-              </div>
+        <Modal
+          title={`Edit ${editingUser.username}`}
+          onClose={() => setEditingUser(null)}
+          footer={
+            <>
+              <button type="button" onClick={() => setEditingUser(null)} className="cc-btn-ghost">Cancel</button>
+              <button type="submit" form="edit-user-form" disabled={busy} className="cc-btn-primary">
+                {busy ? 'Saving…' : 'Save changes'}
+              </button>
+            </>
+          }
+        >
+          <form id="edit-user-form" onSubmit={handleEditUser} style={{ display: 'grid', gap: '16px' }}>
+            {formError && <InlineError message={formError} />}
 
-              <div className="pt-2 border-t border-slate-800">
-                <div className="text-xs font-semibold uppercase text-slate-400 mb-1 mt-2">Resource Quotas (blank = unlimited)</div>
-                <p className="text-[11px] text-slate-500 mb-3">Only counts servers this user owns. Ignored for Global Admins.</p>
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">Max Servers</label>
-                    <input type="number" min="0" placeholder="∞" value={editMaxServers} onChange={e => setEditMaxServers(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm" />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">Max RAM (MB)</label>
-                    <input type="number" min="0" placeholder="∞" value={editMaxMemoryMb} onChange={e => setEditMaxMemoryMb(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm" />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">Max CPU (cores)</label>
-                    <input type="number" min="0" step="0.5" placeholder="∞" value={editMaxCpu} onChange={e => setEditMaxCpu(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-sm" />
-                  </div>
+            <div>
+              <label className="cc-label" htmlFor="eu-pw">New password</label>
+              <input id="eu-pw" type="password" autoComplete="new-password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} className="cc-input" />
+              <p className="cc-help">Leave blank to keep their current password.</p>
+            </div>
+
+            <div>
+              <label className="cc-label" htmlFor="eu-role">Role</label>
+              <select id="eu-role" value={editRole} onChange={(e) => setEditRole(e.target.value)} className="cc-input">
+                <option value="USER">User</option>
+                <option value="GLOBAL_ADMIN">Global admin</option>
+              </select>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+              <span className="cc-label">Resource quotas</span>
+              <p className="cc-help" style={{ margin: '0 0 12px' }}>
+                Blank means unlimited. Only counts servers this user owns, and is ignored for global admins.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '10px' }}>
+                <div>
+                  <label className="cc-label" htmlFor="eu-srv">Max servers</label>
+                  <input id="eu-srv" type="number" min="0" placeholder="∞" value={editMaxServers} onChange={(e) => setEditMaxServers(e.target.value)} className="cc-input" />
+                </div>
+                <div>
+                  <label className="cc-label" htmlFor="eu-ram">Max RAM (MB)</label>
+                  <input id="eu-ram" type="number" min="0" placeholder="∞" value={editMaxMemoryMb} onChange={(e) => setEditMaxMemoryMb(e.target.value)} className="cc-input" />
+                </div>
+                <div>
+                  <label className="cc-label" htmlFor="eu-cpu">Max CPU</label>
+                  <input id="eu-cpu" type="number" min="0" step="0.5" placeholder="∞" value={editMaxCpu} onChange={(e) => setEditMaxCpu(e.target.value)} className="cc-input" />
                 </div>
               </div>
-
-              <div className="flex justify-end space-x-3 pt-4">
-                <button type="button" onClick={() => setEditingUser(null)} className="px-4 py-2 text-sm text-slate-400 hover:text-white transition">Cancel</button>
-                <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-4 py-2 rounded-xl transition">Save Changes</button>
-              </div>
-            </form>
-          </div>
-        </div>
+            </div>
+          </form>
+        </Modal>
       )}
 
-      {/* Generate Invite Modal */}
+      {/* Generate invite */}
       {showCreateInvite && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-4">Generate Invite Link</h3>
-            {error && <div className="mb-4 text-sm text-red-400 bg-red-500/10 p-3 rounded">{error}</div>}
-            <form onSubmit={handleGenerateInvite} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Max Uses (Optional)</label>
-                <input type="number" min="1" placeholder="Unlimited" value={maxUses} onChange={e => setMaxUses(e.target.value ? parseInt(e.target.value) : '')} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white" />
-                <p className="text-xs text-slate-500 mt-1">Leave blank for unlimited uses</p>
-              </div>
-              <div className="flex justify-end space-x-3 pt-4">
-                <button type="button" onClick={() => setShowCreateInvite(false)} className="px-4 py-2 text-sm text-slate-400 hover:text-white transition">Cancel</button>
-                <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-xl transition">Generate Link</button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <Modal
+          title="Generate an invite link"
+          onClose={() => setShowCreateInvite(false)}
+          width={440}
+          footer={
+            <>
+              <button type="button" onClick={() => setShowCreateInvite(false)} className="cc-btn-ghost">Cancel</button>
+              <button type="submit" form="invite-form" disabled={busy} className="cc-btn-primary">
+                {busy ? 'Generating…' : 'Generate link'}
+              </button>
+            </>
+          }
+        >
+          <form id="invite-form" onSubmit={handleGenerateInvite} style={{ display: 'grid', gap: '14px' }}>
+            {formError && <InlineError message={formError} />}
+            <div>
+              <label className="cc-label" htmlFor="inv-uses">Max uses</label>
+              <input
+                id="inv-uses"
+                type="number"
+                min="1"
+                placeholder="Unlimited"
+                value={maxUses}
+                onChange={(e) => setMaxUses(e.target.value ? parseInt(e.target.value, 10) : '')}
+                className="cc-input"
+              />
+              <p className="cc-help">Leave blank to let the link be used any number of times.</p>
+            </div>
+          </form>
+        </Modal>
       )}
 
-      {/* Create User Modal */}
+      {/* Create user */}
       {showCreateUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-4">Create New User</h3>
-            {error && <div className="mb-4 text-sm text-red-400 bg-red-500/10 p-3 rounded">{error}</div>}
-            <form onSubmit={handleCreateUser} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Email</label>
-                <input required type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Username</label>
-                <input required type="text" value={newUsername} onChange={e => setNewUsername(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Password</label>
-                <input required type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Role</label>
-                <select value={newRole} onChange={e => setNewRole(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white">
-                  <option value="USER">User</option>
-                  <option value="GLOBAL_ADMIN">Global Admin</option>
-                </select>
-              </div>
-              <div className="flex justify-end space-x-3 pt-4">
-                <button type="button" onClick={() => setShowCreateUser(false)} className="px-4 py-2 text-sm text-slate-400 hover:text-white transition">Cancel</button>
-                <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-xl transition">Create User</button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <Modal
+          title="Create a user"
+          onClose={() => setShowCreateUser(false)}
+          width={440}
+          footer={
+            <>
+              <button type="button" onClick={() => setShowCreateUser(false)} className="cc-btn-ghost">Cancel</button>
+              <button type="submit" form="create-user-form" disabled={busy} className="cc-btn-primary">
+                {busy ? 'Creating…' : 'Create user'}
+              </button>
+            </>
+          }
+        >
+          <form id="create-user-form" onSubmit={handleCreateUser} style={{ display: 'grid', gap: '14px' }}>
+            {formError && <InlineError message={formError} />}
+            <div>
+              <label className="cc-label" htmlFor="cu-email">Email</label>
+              <input id="cu-email" required type="email" autoComplete="off" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} className="cc-input" />
+            </div>
+            <div>
+              <label className="cc-label" htmlFor="cu-username">Username</label>
+              <input id="cu-username" required autoComplete="off" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="cc-input" />
+            </div>
+            <div>
+              <label className="cc-label" htmlFor="cu-pw">Password</label>
+              <input id="cu-pw" required type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="cc-input" />
+            </div>
+            <div>
+              <label className="cc-label" htmlFor="cu-role">Role</label>
+              <select id="cu-role" value={newRole} onChange={(e) => setNewRole(e.target.value)} className="cc-input">
+                <option value="USER">User</option>
+                <option value="GLOBAL_ADMIN">Global admin</option>
+              </select>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );

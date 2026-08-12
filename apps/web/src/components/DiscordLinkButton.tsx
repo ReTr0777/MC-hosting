@@ -36,7 +36,7 @@ export default function DiscordLinkButton() {
     <>
       <button
         onClick={openModal}
-        className="text-xs text-slate-400 hover:text-indigo-400 border border-slate-700 hover:border-indigo-500/30 px-2.5 py-1 rounded-md transition"
+        className="cc-btn-ghost"
       >
         Link Discord
       </button>

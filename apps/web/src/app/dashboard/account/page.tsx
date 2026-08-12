@@ -1,10 +1,14 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useAuth } from '@/context/AuthContext';
 import TwoFactorSection from '@/components/TwoFactorSection';
 import { useConfirm } from '@/context/ConfirmContext';
+import { useToast } from '@/context/ToastContext';
+import { useClipboard } from '@/hooks/useClipboard';
+import { apiPost, apiRequest, errorMessage } from '@/lib/api';
+import { formatDateTime, formatRelative } from '@/lib/format';
+import { Chip, EmptyState, InlineError, LoadingLine, Notice, PanelHeader } from '@/components/ui';
 
 interface AccountInfo {
   id: string;
@@ -25,13 +29,22 @@ interface ApiKeyInfo {
   createdAt: string;
 }
 
+const EXPIRY_OPTIONS = [
+  { value: 'never', label: 'Never' },
+  { value: '30', label: '30 days' },
+  { value: '90', label: '90 days' },
+  { value: '365', label: '1 year' },
+];
+
 export default function AccountPage() {
-  const { user } = useAuth();
   const confirm = useConfirm();
+  const toast = useToast();
+  const { copy } = useClipboard();
+
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [resending, setResending] = useState(false);
-  const [resendMessage, setResendMessage] = useState<string | null>(null);
 
   const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
   const [newKeyName, setNewKeyName] = useState('');
@@ -40,257 +53,255 @@ export default function AccountPage() {
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
 
-  const fetchAccount = async () => {
-    const res = await fetch('/api/account');
-    const data = await res.json();
-    setAccount(data.user);
-  };
-
-  useEffect(() => {
-    fetchAccount().finally(() => setLoading(false));
-    fetchApiKeys();
+  const fetchAccount = useCallback(async () => {
+    try {
+      const data = await apiRequest('/api/account');
+      setAccount(data?.user ?? null);
+      setLoadError('');
+    } catch (err) {
+      // Without this the page sat on its loading spinner forever.
+      setLoadError(errorMessage(err, 'Could not load your account'));
+    }
   }, []);
 
-  const fetchApiKeys = async () => {
-    const res = await fetch('/api/account/api-keys');
-    if (res.ok) {
-      const data = await res.json();
-      setApiKeys(data.keys || []);
+  const fetchApiKeys = useCallback(async () => {
+    try {
+      const data = await apiRequest('/api/account/api-keys');
+      setApiKeys(data?.keys || []);
+    } catch {
+      // The keys list is secondary; the profile above is still usable without it.
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    Promise.all([fetchAccount(), fetchApiKeys()]).finally(() => setLoading(false));
+  }, [fetchAccount, fetchApiKeys]);
 
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreatingKey(true);
     setKeyError(null);
     try {
-      const res = await fetch('/api/account/api-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newKeyName,
-          expiresInDays: newKeyExpiry === 'never' ? null : newKeyExpiry,
-        }),
+      const data = await apiPost('/api/account/api-keys', {
+        name: newKeyName.trim(),
+        expiresInDays: newKeyExpiry === 'never' ? null : newKeyExpiry,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create key');
       setRevealedKey(data.rawKey);
       setNewKeyName('');
-      fetchApiKeys();
-    } catch (err: any) {
-      setKeyError(err.message);
+      await fetchApiKeys();
+    } catch (err) {
+      setKeyError(errorMessage(err, 'Failed to create key'));
     } finally {
       setCreatingKey(false);
     }
   };
 
-  const handleRevokeKey = async (id: string) => {
+  const handleRevokeKey = async (key: ApiKeyInfo) => {
     const ok = await confirm({
       title: 'Revoke this API key?',
-      message: 'Any script or integration still using it will start failing immediately. Keys cannot be restored — you would need to issue a new one.',
+      message: (
+        <>
+          Any script or integration still using <strong style={{ color: 'var(--text-primary)' }}>{key.name}</strong> will start
+          failing immediately. Keys can&apos;t be restored — you would need to issue a new one.
+        </>
+      ),
       confirmLabel: 'Revoke key',
       danger: true,
     });
     if (!ok) return;
-    await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE' });
-    fetchApiKeys();
+
+    try {
+      await apiRequest(`/api/account/api-keys/${key.id}`, { method: 'DELETE' });
+      toast.success(`Revoked “${key.name}”`);
+      await fetchApiKeys();
+    } catch (err) {
+      toast.error('Could not revoke the key', errorMessage(err));
+    }
   };
 
   const handleResendVerification = async () => {
     setResending(true);
-    setResendMessage(null);
     try {
-      const res = await fetch('/api/account/resend-verification', { method: 'POST' });
-      const data = await res.json();
-      setResendMessage(res.ok ? `${data.message}` : `${data.error}`);
-    } catch (err: any) {
-      setResendMessage(`${err.message}`);
+      const data = await apiPost('/api/account/resend-verification', {});
+      toast.success('Verification email sent', data?.message);
+    } catch (err) {
+      toast.error('Could not send the verification email', errorMessage(err));
     } finally {
       setResending(false);
     }
   };
 
-  if (loading || !account) {
+  const copyKey = async () => {
+    if (!revealedKey) return;
+    if (await copy(revealedKey)) toast.success('API key copied');
+    else toast.error('Could not copy the key', 'Select it and copy manually before dismissing.');
+  };
+
+  if (loading) return <LoadingLine>Loading your account…</LoadingLine>;
+
+  if (!account) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
-        <div className="animate-pulse text-sm text-slate-500 font-mono">Loading Account...</div>
-      </div>
+      <main style={{ maxWidth: '48rem', margin: '0 auto', padding: '32px 24px', display: 'grid', gap: '16px' }}>
+        <InlineError message={loadError || 'Your account could not be loaded.'} onRetry={fetchAccount} />
+        <Link href="/dashboard" className="cc-btn-ghost" style={{ textDecoration: 'none', justifySelf: 'start' }}>Back to dashboard</Link>
+      </main>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
-      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 bg-gradient-to-tr from-emerald-500 to-teal-500 rounded-xl flex items-center justify-center font-bold text-white shadow-lg shadow-emerald-500/20">
+    <div style={{ minHeight: '100vh' }}>
+      <header style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)', position: 'sticky', top: 0, zIndex: 50 }}>
+        <div style={{ maxWidth: '80rem', margin: '0 auto', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span
+              style={{
+                width: 34, height: 34, borderRadius: '8px', background: 'var(--accent)', color: 'var(--bg)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '1rem',
+              }}
+            >
               {account.username?.charAt(0).toUpperCase() || '?'}
-            </div>
+            </span>
             <div>
-              <h1 className="text-base font-bold text-white tracking-wide">My Account</h1>
-              <span className="text-[11px] text-slate-400">Manage your profile, security, and email preferences</span>
+              <h1 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>My account</h1>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Profile, API keys and security</span>
             </div>
           </div>
-
-          <Link
-            href="/dashboard"
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2 rounded-xl border border-slate-700 transition flex items-center space-x-2"
-          >
-            <span>← Back to Dashboard</span>
-          </Link>
+          <Link href="/dashboard" className="cc-btn-ghost" style={{ textDecoration: 'none' }}>Back to dashboard</Link>
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-8">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="border-b border-slate-800 pb-4">
-            <h2 className="text-base font-bold text-white">Profile</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Your account identity on this panel.</p>
-          </div>
+      <main style={{ maxWidth: '48rem', margin: '0 auto', padding: '24px', display: 'grid', gap: '20px' }}>
+        {loadError && <InlineError message={loadError} onRetry={fetchAccount} />}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Username</div>
-              <div className="text-white font-semibold">{account.username}</div>
-            </div>
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Role</div>
-              <div className="text-white font-semibold">{account.globalRole}</div>
-            </div>
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Email</div>
-              <div className="text-white font-semibold flex items-center gap-2">
-                {account.email}
-                {account.emailVerifiedAt ? (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                    Verified
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                    Unverified
-                  </span>
-                )}
-              </div>
-            </div>
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Member Since</div>
-              <div className="text-white font-semibold">{new Date(account.createdAt).toLocaleDateString()}</div>
-            </div>
+        {/* Profile */}
+        <section className="cc-panel" style={{ display: 'grid', gap: '18px' }}>
+          <PanelHeader title="Profile" description="Your identity on this panel." />
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+            <Detail label="Username" value={account.username} />
+            <Detail label="Role" value={account.globalRole === 'GLOBAL_ADMIN' ? 'Global admin' : 'User'} />
+            <Detail
+              label="Email"
+              value={
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  {account.email}
+                  <Chip tone={account.emailVerifiedAt ? 'accent' : 'warning'}>
+                    {account.emailVerifiedAt ? 'Verified' : 'Unverified'}
+                  </Chip>
+                </span>
+              }
+            />
+            <Detail label="Member since" value={formatDateTime(account.createdAt)} />
           </div>
 
           {!account.emailVerifiedAt && (
-            <div className="pt-2 border-t border-slate-800 flex items-center justify-between flex-wrap gap-3">
-              <p className="text-xs text-slate-400">Verify your email so you can recover your account if you ever forget your password.</p>
-              <button
-                onClick={handleResendVerification}
-                disabled={resending}
-                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-2 rounded-xl transition"
-              >
-                {resending ? 'Sending...' : 'Send verification email'}
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+              <p className="cc-help" style={{ margin: 0, flex: 1, minWidth: '220px' }}>
+                Verify your email so you can recover the account if you forget your password.
+              </p>
+              <button onClick={handleResendVerification} disabled={resending} className="cc-btn-primary">
+                {resending ? 'Sending…' : 'Send verification email'}
               </button>
             </div>
           )}
+        </section>
 
-          {resendMessage && (
-            <div className="text-xs font-semibold text-slate-300">{resendMessage}</div>
-          )}
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="border-b border-slate-800 pb-4">
-            <h2 className="text-base font-bold text-white">API Keys</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Personal access tokens for scripting against the panel API. Each key has the same access as your account.</p>
-          </div>
+        {/* API keys */}
+        <section className="cc-panel" style={{ display: 'grid', gap: '18px' }}>
+          <PanelHeader
+            title="API keys"
+            chips={apiKeys.length > 0 ? <Chip>{apiKeys.length}</Chip> : undefined}
+            description="Personal access tokens for scripting against the panel API. Each key has the same access as your account."
+          />
 
           {revealedKey && (
-            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 space-y-2">
-              <p className="text-xs font-bold text-emerald-400">Copy this key now — it won't be shown again.</p>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono break-all">{revealedKey}</code>
-                <button
-                  type="button"
-                  onClick={() => navigator.clipboard.writeText(revealedKey)}
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition shrink-0"
+            <div style={{ display: 'grid', gap: '10px', padding: '16px', borderRadius: '8px', background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' }}>
+              <p style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--accent)', margin: 0 }}>
+                Copy this key now — it won&apos;t be shown again.
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <code
+                  style={{
+                    flex: 1, minWidth: '220px', background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '6px',
+                    padding: '8px 10px', fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)',
+                    wordBreak: 'break-all', userSelect: 'all',
+                  }}
                 >
-                  Copy
-                </button>
+                  {revealedKey}
+                </code>
+                <button type="button" onClick={copyKey} className="cc-btn-primary">Copy</button>
+                <button type="button" onClick={() => setRevealedKey(null)} className="cc-btn-ghost">Dismiss</button>
               </div>
-              <button
-                type="button"
-                onClick={() => setRevealedKey(null)}
-                className="text-[11px] text-slate-400 hover:text-slate-200"
-              >
-                Dismiss
-              </button>
             </div>
           )}
 
-          {keyError && (
-            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">{keyError}</div>
-          )}
+          {keyError && <InlineError message={keyError} />}
 
-          <form onSubmit={handleCreateKey} className="flex flex-wrap items-end gap-3">
-            <div className="flex-1 min-w-[160px] space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">Key Name</label>
+          <form onSubmit={handleCreateKey} style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: '180px' }}>
+              <label className="cc-label" htmlFor="key-name">Key name</label>
               <input
-                type="text"
+                id="key-name"
                 required
                 value={newKeyName}
                 onChange={(e) => setNewKeyName(e.target.value)}
-                placeholder="e.g. backup script"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
+                placeholder="backup script"
+                className="cc-input"
               />
             </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">Expires</label>
-              <select
-                value={newKeyExpiry}
-                onChange={(e) => setNewKeyExpiry(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
-              >
-                <option value="never">Never</option>
-                <option value="30">30 days</option>
-                <option value="90">90 days</option>
-                <option value="365">1 year</option>
+            <div>
+              <label className="cc-label" htmlFor="key-expiry">Expires</label>
+              <select id="key-expiry" value={newKeyExpiry} onChange={(e) => setNewKeyExpiry(e.target.value)} className="cc-input">
+                {EXPIRY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
-            <button
-              type="submit"
-              disabled={creatingKey}
-              className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition"
-            >
-              {creatingKey ? 'Creating...' : 'Create Key'}
+            <button type="submit" disabled={creatingKey || !newKeyName.trim()} className="cc-btn-primary">
+              {creatingKey ? 'Creating…' : 'Create key'}
             </button>
           </form>
 
           {apiKeys.length === 0 ? (
-            <div className="text-center py-8 text-slate-500 text-xs font-mono">No API keys yet.</div>
+            <EmptyState title="No API keys yet" description="Create one above to script against the panel API." />
           ) : (
-            <div className="divide-y divide-slate-800/60">
-              {apiKeys.map((key) => (
-                <div key={key.id} className="py-3 flex items-center justify-between gap-3 flex-wrap">
-                  <div>
-                    <div className="text-sm font-semibold text-white">{key.name}</div>
-                    <div className="text-[11px] text-slate-500 font-mono">
-                      {key.prefix}••••••••
-                      {key.expiresAt && <span> · expires {new Date(key.expiresAt).toLocaleDateString()}</span>}
-                      {key.lastUsedAt ? <span> · last used {new Date(key.lastUsedAt).toLocaleDateString()}</span> : <span> · never used</span>}
+            <div style={{ display: 'grid', gap: '8px' }}>
+              {apiKeys.map((key) => {
+                const expired = Boolean(key.expiresAt && new Date(key.expiresAt).getTime() < Date.now());
+                return (
+                  <div key={key.id} className="cc-row">
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span className="cc-row-title">{key.name}</span>
+                        {expired && <Chip tone="danger">Expired</Chip>}
+                      </div>
+                      <div className="cc-row-sub" style={{ fontFamily: 'var(--font-mono)' }}>
+                        {key.prefix}••••••••
+                        {key.expiresAt && ` · expires ${formatDateTime(key.expiresAt)}`}
+                        {key.lastUsedAt ? ` · last used ${formatRelative(key.lastUsedAt)}` : ' · never used'}
+                      </div>
                     </div>
+                    <button onClick={() => handleRevokeKey(key)} className="cc-btn-danger" style={{ padding: '4px 10px' }}>
+                      Revoke
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleRevokeKey(key.id)}
-                    className="text-xs text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/40 px-3 py-1.5 rounded-lg transition"
-                  >
-                    Revoke
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
-        </div>
+
+          <Notice>Treat API keys like passwords — anyone holding one can do anything your account can.</Notice>
+        </section>
 
         <TwoFactorSection enabled={account.totpEnabled} onChanged={fetchAccount} />
       </main>
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <div className="cc-label">{label}</div>
+      <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)' }}>{value}</div>
     </div>
   );
 }
