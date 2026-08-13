@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { ServerType, ExecutionMode } from '@mc-manager/shared';
+import { writeAudit } from '@/lib/audit';
 
 export async function GET(req: NextRequest) {
   try {
@@ -357,7 +358,12 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[Web API /servers POST] ===== REQUEST COMPLETED SUCCESSFULLY =====`);
-    return NextResponse.json({ 
+    await writeAudit({
+      userId: user.userId,
+      action: 'SERVER_CREATE',
+      details: { serverId: server.id, name: server.name, serverType: server.serverType, mcVersion: server.mcVersion, nodeId: node.id },
+    });
+    return NextResponse.json({
       message: 'Server created successfully', 
       server: JSON.parse(JSON.stringify(server)),
       nodeName: node.name 

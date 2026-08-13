@@ -41,6 +41,14 @@ const FileIcon = () => (
   </svg>
 );
 
+/** One stored version of a config file, newest first as returned by the daemon. */
+interface Revision {
+  id: string;
+  savedAt: string;
+  size: number;
+  sha1: string;
+}
+
 export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -57,6 +65,12 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
   const [loadingContent, setLoadingContent] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [editorError, setEditorError] = useState('');
+
+  // Version history for the file currently open in the editor.
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [previewing, setPreviewing] = useState<{ id: string; content: string } | null>(null);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -118,6 +132,10 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
     setSavedContent('');
     setLoadingContent(true);
 
+    setRevisions([]);
+    setShowHistory(false);
+    setPreviewing(null);
+
     try {
       const data = await apiRequest(`/api/servers/${serverId}/files/content?path=${encodeURIComponent(file.path)}`);
       const content = data?.content || '';
@@ -127,6 +145,72 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
       setEditorError(errorMessage(err, 'Failed to read file'));
     } finally {
       setLoadingContent(false);
+    }
+
+    // History is a nice-to-have next to the file itself, so a failure here stays silent rather
+    // than covering the editor with an error about a feature the user didn't ask for yet.
+    loadRevisions(file.path);
+  };
+
+  const loadRevisions = async (filePath: string) => {
+    try {
+      const data = await apiRequest(
+        `/api/servers/${serverId}/files/revisions?path=${encodeURIComponent(filePath)}`
+      );
+      setRevisions(data?.revisions ?? []);
+    } catch (err) {
+      setRevisions([]);
+    }
+  };
+
+  const previewRevision = async (revisionId: string) => {
+    if (!editingFilePath) return;
+    if (previewing?.id === revisionId) {
+      setPreviewing(null);
+      return;
+    }
+    try {
+      const data = await apiRequest(
+        `/api/servers/${serverId}/files/revisions?path=${encodeURIComponent(editingFilePath)}&revisionId=${revisionId}`
+      );
+      setPreviewing({ id: revisionId, content: data?.content ?? '' });
+    } catch (err) {
+      toast.error('Could not open that version', errorMessage(err));
+    }
+  };
+
+  const restoreRevision = async (revision: Revision) => {
+    if (!editingFilePath) return;
+
+    const ok = await confirm({
+      title: `Restore the version from ${new Date(revision.savedAt).toLocaleString()}?`,
+      message: editorDirty
+        ? 'This overwrites the file on the server and discards the unsaved edits in this editor. The current file contents are saved as a new version first, so this can be undone.'
+        : 'This overwrites the file on the server. The current contents are saved as a new version first, so this can be undone.',
+      confirmLabel: 'Restore this version',
+      danger: true,
+    });
+    if (!ok) return;
+
+    setRestoringId(revision.id);
+    try {
+      await apiPost(`/api/servers/${serverId}/files/revisions`, {
+        path: editingFilePath,
+        revisionId: revision.id,
+      });
+      const data = await apiRequest(
+        `/api/servers/${serverId}/files/content?path=${encodeURIComponent(editingFilePath)}`
+      );
+      const content = data?.content || '';
+      setFileContent(content);
+      setSavedContent(content);
+      setPreviewing(null);
+      await loadRevisions(editingFilePath);
+      toast.success('Version restored', 'Restart the server if it reads this file at startup.');
+    } catch (err) {
+      toast.error('Could not restore that version', errorMessage(err));
+    } finally {
+      setRestoringId(null);
     }
   };
 
@@ -156,7 +240,7 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
       });
       setSavedContent(fileContent);
       setEditingFilePath(null);
-      toast.success('File saved', 'Restart the server if it reads this file at startup.');
+      toast.success('File saved', 'The previous version is kept in this file’s history if you need to go back.');
       fetchFiles(currentPath);
     } catch (err) {
       setEditorError(errorMessage(err, 'Failed to save file'));
@@ -457,6 +541,15 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
               <span style={{ marginRight: 'auto', fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                 {fileContent.length} characters{editorDirty ? ' · unsaved' : ''}
               </span>
+              {revisions.length > 0 && (
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="cc-btn-ghost"
+                  title="Earlier versions of this file, saved automatically before each edit"
+                >
+                  {showHistory ? 'Hide history' : `History (${revisions.length})`}
+                </button>
+              )}
               <button onClick={closeEditor} className="cc-btn-ghost">Cancel</button>
               {canManageFiles && (
                 <button onClick={handleSaveFile} disabled={isSaving || loadingContent || !editorDirty} className="cc-btn-primary">
@@ -467,6 +560,76 @@ export function FileExplorer({ serverId, canManageFiles }: FileExplorerProps) {
           }
         >
           {editorError && <div style={{ marginBottom: '12px' }}><InlineError message={editorError} /></div>}
+
+          {showHistory && (
+            <div
+              style={{
+                marginBottom: '12px',
+                border: '1px solid var(--border-2)',
+                borderRadius: '8px',
+                padding: '10px 12px',
+                display: 'grid',
+                gap: '8px',
+              }}
+            >
+              <p style={{ margin: 0, fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                Saved automatically before each edit — newest first. Restoring keeps the current contents as a new
+                version, so nothing is lost either way.
+              </p>
+              {revisions.map((revision, index) => (
+                <div
+                  key={revision.id}
+                  style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.75rem' }}
+                >
+                  <span style={{ minWidth: '150px' }}>{new Date(revision.savedAt).toLocaleString()}</span>
+                  <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    {revision.size} bytes
+                  </span>
+                  {index === 0 && <span style={{ color: 'var(--text-muted)' }}>(before the last save)</span>}
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => previewRevision(revision.id)}
+                      className="cc-btn-ghost"
+                      style={{ padding: '3px 9px', fontSize: '0.72rem' }}
+                    >
+                      {previewing?.id === revision.id ? 'Hide' : 'View'}
+                    </button>
+                    {canManageFiles && (
+                      <button
+                        onClick={() => restoreRevision(revision)}
+                        disabled={restoringId === revision.id}
+                        className="cc-btn-ghost"
+                        style={{ padding: '3px 9px', fontSize: '0.72rem' }}
+                      >
+                        {restoringId === revision.id ? 'Restoring…' : 'Restore'}
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {previewing && (
+            <div style={{ marginBottom: '12px' }}>
+              <p style={{ margin: '0 0 6px', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                Viewing the version from{' '}
+                {new Date(revisions.find((r) => r.id === previewing.id)?.savedAt ?? '').toLocaleString()} — read-only.
+              </p>
+              <textarea
+                value={previewing.content}
+                readOnly
+                spellCheck={false}
+                aria-label="Previous version contents"
+                style={{
+                  width: '100%', minHeight: '22vh', background: 'var(--bg)', border: '1px dashed var(--border-2)',
+                  borderRadius: '8px', padding: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
+                  fontSize: '0.74rem', lineHeight: 1.6, resize: 'vertical', outline: 'none',
+                }}
+              />
+            </div>
+          )}
+
           <textarea
             value={loadingContent ? 'Loading file content…' : fileContent}
             onChange={(e) => setFileContent(e.target.value)}

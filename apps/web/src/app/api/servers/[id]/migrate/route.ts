@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { CreateServerContainerDto } from '@mc-manager/shared';
 import { VelocityClient } from '@/lib/velocity-client';
+import { writeAudit } from '@/lib/audit';
 
 async function updateLimboTitle(title: string, subtitle: string) {
   try {
@@ -141,12 +142,18 @@ export async function POST(
         // 4. Update Database
         await prisma.server.update({
           where: { id: server.id },
-          data: { 
+          data: {
             nodeId: destNode.id,
             status: 'OFFLINE'
           }
         });
-        
+
+        await writeAudit({
+          userId: user.userId,
+          action: 'SERVER_MIGRATE',
+          details: { serverId: server.id, fromNodeId: server.nodeId, toNodeId: destNode.id },
+        });
+
         await updateLimboTitle('<green>Migration Complete</green>', '<gray>Cleaning up old node...</gray>');
         
         // Update proxy with new node routing

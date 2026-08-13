@@ -20,6 +20,8 @@ interface BulkStatus {
     string,
     {
       running: boolean;
+      /** The server answered a status ping — i.e. it is genuinely joinable, not merely booting. */
+      pingOk?: boolean;
       mode: string;
       sleeping?: boolean;
       players?: number | null;
@@ -37,6 +39,61 @@ interface BulkStatus {
  * which some servers omit or truncate, so this is a nice-to-have, not authoritative.
  */
 const lastSeenPlayers = new Map<string, Set<string>>();
+
+/** One completed visit, as reported by the daemon's presence tracker. */
+interface DaemonPlayerSession {
+  serverId: string;
+  username: string;
+  uuid: string | null;
+  joinedAt: string;
+  leftAt: string;
+  seconds: number;
+}
+
+/**
+ * Writes one session and folds it into the player's running totals.
+ *
+ * `upsert` on (serverId, username) is what makes this safe to call repeatedly: the first sighting
+ * of a name creates the player row, every later one just accumulates. The totals are denormalised
+ * because the alternative — summing the session table on every page load — gets slow on a server
+ * that has been up for a year.
+ */
+async function recordPlaySession(session: DaemonPlayerSession): Promise<void> {
+  const joinedAt = new Date(session.joinedAt);
+  const leftAt = new Date(session.leftAt);
+  // A session shorter than a second is a connection that failed during login, not a visit.
+  if (session.seconds < 1) return;
+
+  const player = await prisma.serverPlayer.upsert({
+    where: { serverId_username: { serverId: session.serverId, username: session.username } },
+    create: {
+      serverId: session.serverId,
+      username: session.username,
+      uuid: session.uuid,
+      firstSeenAt: joinedAt,
+      lastSeenAt: leftAt,
+      playtimeSeconds: session.seconds,
+      sessionCount: 1,
+    },
+    update: {
+      lastSeenAt: leftAt,
+      playtimeSeconds: { increment: session.seconds },
+      sessionCount: { increment: 1 },
+      // Backfills the UUID for players first seen before the server logged one.
+      ...(session.uuid ? { uuid: session.uuid } : {}),
+    },
+  });
+
+  await prisma.playerSession.create({
+    data: {
+      playerId: player.id,
+      serverId: session.serverId,
+      joinedAt,
+      leftAt,
+      seconds: session.seconds,
+    },
+  });
+}
 
 export async function POST(request: NextRequest) {
   if (request.headers.get('x-monitor-key') !== monitorKey()) {
@@ -119,6 +176,25 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
+      // ── Play sessions ──
+      // Draining empties the daemon's queue, so this must persist what it takes. Failures are
+      // logged rather than swallowed: a silent loss here shows up much later as missing playtime.
+      try {
+        const serverIds = new Set(node.servers.map((s) => s.id));
+        const { sessions } = await client.request<{ sessions: DaemonPlayerSession[] }>(
+          '/servers/players/sessions/drain',
+          { method: 'POST' },
+          15000
+        );
+        for (const session of sessions) {
+          if (!serverIds.has(session.serverId)) continue;
+          await recordPlaySession(session);
+        }
+        if (sessions.length > 0) summary.events.push(`Recorded ${sessions.length} play session(s)`);
+      } catch (err: any) {
+        console.warn(`[monitor] Session drain failed for node ${node.name}:`, err?.message);
+      }
+
       for (const server of node.servers) {
         summary.serversChecked++;
         const live = bulk.statuses?.[server.id];
@@ -158,7 +234,7 @@ export async function POST(request: NextRequest) {
         }
 
         // ── Resource history sample ──
-        // Docker-mode servers report null cpu/memory today (no in-process sampler), so skip them.
+        // Null when the server isn't running or the daemon couldn't sample it.
         if (live.running && !live.sleeping && live.cpuPercent !== null && live.cpuPercent !== undefined) {
           await prisma.serverStatSample.create({
             data: {
@@ -223,7 +299,11 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        const dbSaysUp = server.status === 'RUNNING';
+        // STARTING counts as "we believed it was up": the container was created and handed off,
+        // so if it has since vanished the boot crashed and deserves the same handling as a
+        // crash mid-session. (Before start set STARTING instead of RUNNING, this case arrived
+        // here labelled RUNNING and was covered by the same branch.)
+        const dbSaysUp = server.status === 'RUNNING' || server.status === 'STARTING';
         const recentlyTouched = Date.now() - new Date(server.updatedAt).getTime() < STARTUP_GRACE_MS;
 
         // Node just bounced back: resume anything that was supposed to be up, regardless of
@@ -315,8 +395,12 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
+        // "Up" means joinable, not merely process-alive. Older daemons don't report pingOk, so
+        // fall back to `running` there rather than pinning those servers at STARTING forever.
+        const joinable = live.pingOk ?? live.running;
+
         // Came up (either finished booting, or was started outside the panel)
-        if (live.running && (server.status === 'OFFLINE' || server.status === 'ERROR')) {
+        if (joinable && (server.status === 'OFFLINE' || server.status === 'ERROR')) {
           summary.events.push(`${server.name}: STARTED`);
           await prisma.server.update({ where: { id: server.id }, data: { status: 'RUNNING' } }).catch(() => {});
           await dispatchNotification({
@@ -329,7 +413,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Silent drift with no alert-worthy transition (e.g. STARTING -> RUNNING)
-        if (live.running && server.status === 'STARTING') {
+        if (joinable && server.status === 'STARTING') {
           await prisma.server.update({ where: { id: server.id }, data: { status: 'RUNNING' } }).catch(() => {});
           continue;
         }

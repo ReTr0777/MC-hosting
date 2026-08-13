@@ -6,8 +6,19 @@
 
 /* ─────────────────────────────────────────────────
    Design Tokens
+
+   Every palette below defines the same token set, so a theme swap is a single
+   `data-theme` attribute on <html> and never a re-style of the components.
+   `:root` carries the default (Emerald) palette, which means an unknown or
+   missing attribute still renders a complete, correct theme.
+
+   --on-accent is the text colour that sits ON an accent-filled surface
+   (primary buttons, RUNNING badge). It is a token because a light theme's
+   accent needs light text where a dark theme's needs dark.
 ───────────────────────────────────────────────── */
-:root {
+:root,
+[data-theme='emerald'] {
+  color-scheme: dark;
   --bg: #0d1117;
   --surface: #161b22;
   --surface-2: #1c2333;
@@ -18,8 +29,247 @@
   --accent: #00d97e;
   --accent-dim: rgba(0, 217, 126, 0.1);
   --accent-border: rgba(0, 217, 126, 0.25);
+  --on-accent: #0d1117;
   --warning: #f0883e;
   --danger: #f85149;
+  --advanced: #a78bfa;
+  --advanced-solid: #8b5cf6;
+  --advanced-dim: rgba(139, 92, 246, 0.12);
+  --advanced-border: rgba(139, 92, 246, 0.28);
+}
+
+[data-theme='cyberpunk'] {
+  color-scheme: dark;
+  --bg: #0a0714;
+  --surface: #140d24;
+  --surface-2: #1d1435;
+  --border: #2a1f47;
+  --border-2: #3d2d63;
+  --text-primary: #f0e9ff;
+  --text-muted: #9d8bc4;
+  --accent: #00f0ff;
+  --accent-dim: rgba(0, 240, 255, 0.1);
+  --accent-border: rgba(0, 240, 255, 0.28);
+  --on-accent: #05010f;
+  --warning: #ffb800;
+  --danger: #ff2e63;
+  --advanced: #ff6ec7;
+  --advanced-solid: #e0399f;
+  --advanced-dim: rgba(255, 110, 199, 0.14);
+  --advanced-border: rgba(255, 110, 199, 0.3);
+}
+
+[data-theme='dracula'] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --surface: #343746;
+  --surface-2: #3d4152;
+  --border: #44475a;
+  --border-2: #565a70;
+  --text-primary: #f8f8f2;
+  --text-muted: #9aa0b8;
+  --accent: #bd93f9;
+  --accent-dim: rgba(189, 147, 249, 0.12);
+  --accent-border: rgba(189, 147, 249, 0.3);
+  --on-accent: #21222c;
+  --warning: #ffb86c;
+  --danger: #ff5555;
+  --advanced: #8be9fd;
+  --advanced-solid: #50c8e0;
+  --advanced-dim: rgba(139, 233, 253, 0.12);
+  --advanced-border: rgba(139, 233, 253, 0.3);
+}
+
+[data-theme='nord'] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --surface: #343b48;
+  --surface-2: #3b4252;
+  --border: #434c5e;
+  --border-2: #4c566a;
+  --text-primary: #eceff4;
+  --text-muted: #a2aab8;
+  --accent: #88c0d0;
+  --accent-dim: rgba(136, 192, 208, 0.12);
+  --accent-border: rgba(136, 192, 208, 0.32);
+  --on-accent: #2e3440;
+  --warning: #ebcb8b;
+  --danger: #bf616a;
+  --advanced: #b48ead;
+  --advanced-solid: #a3789c;
+  --advanced-dim: rgba(180, 142, 173, 0.14);
+  --advanced-border: rgba(180, 142, 173, 0.32);
+}
+
+[data-theme='midnight'] {
+  color-scheme: dark;
+  --bg: #05070f;
+  --surface: #0c1120;
+  --surface-2: #131a2e;
+  --border: #1b2440;
+  --border-2: #293453;
+  --text-primary: #dfe6f5;
+  --text-muted: #7d89a8;
+  --accent: #4f8cff;
+  --accent-dim: rgba(79, 140, 255, 0.12);
+  --accent-border: rgba(79, 140, 255, 0.3);
+  --on-accent: #030510;
+  --warning: #f2a65a;
+  --danger: #ef5f6b;
+  --advanced: #9d8bff;
+  --advanced-solid: #7c66f0;
+  --advanced-dim: rgba(124, 102, 240, 0.14);
+  --advanced-border: rgba(124, 102, 240, 0.3);
+}
+
+[data-theme='tokyo-night'] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --surface: #1f2335;
+  --surface-2: #272b3f;
+  --border: #2f334d;
+  --border-2: #414868;
+  --text-primary: #c0caf5;
+  --text-muted: #7f87b0;
+  --accent: #7aa2f7;
+  --accent-dim: rgba(122, 162, 247, 0.12);
+  --accent-border: rgba(122, 162, 247, 0.3);
+  --on-accent: #1a1b26;
+  --warning: #e0af68;
+  --danger: #f7768e;
+  --advanced: #bb9af7;
+  --advanced-solid: #9d7cd8;
+  --advanced-dim: rgba(187, 154, 247, 0.14);
+  --advanced-border: rgba(187, 154, 247, 0.3);
+}
+
+[data-theme='catppuccin'] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --surface: #26263a;
+  --surface-2: #313244;
+  --border: #383a53;
+  --border-2: #45475a;
+  --text-primary: #cdd6f4;
+  --text-muted: #9399b2;
+  --accent: #a6e3a1;
+  --accent-dim: rgba(166, 227, 161, 0.12);
+  --accent-border: rgba(166, 227, 161, 0.3);
+  --on-accent: #1e1e2e;
+  --warning: #fab387;
+  --danger: #f38ba8;
+  --advanced: #cba6f7;
+  --advanced-solid: #b48ef0;
+  --advanced-dim: rgba(203, 166, 247, 0.14);
+  --advanced-border: rgba(203, 166, 247, 0.3);
+}
+
+[data-theme='gruvbox'] {
+  color-scheme: dark;
+  --bg: #1d2021;
+  --surface: #282828;
+  --surface-2: #32302f;
+  --border: #3c3836;
+  --border-2: #504945;
+  --text-primary: #ebdbb2;
+  --text-muted: #a89984;
+  --accent: #b8bb26;
+  --accent-dim: rgba(184, 187, 38, 0.12);
+  --accent-border: rgba(184, 187, 38, 0.3);
+  --on-accent: #1d2021;
+  --warning: #fabd2f;
+  --danger: #fb4934;
+  --advanced: #d3869b;
+  --advanced-solid: #b16286;
+  --advanced-dim: rgba(211, 134, 155, 0.14);
+  --advanced-border: rgba(211, 134, 155, 0.32);
+}
+
+[data-theme='rose-pine'] {
+  color-scheme: dark;
+  --bg: #191724;
+  --surface: #1f1d2e;
+  --surface-2: #26233a;
+  --border: #2f2b43;
+  --border-2: #403d52;
+  --text-primary: #e0def4;
+  --text-muted: #908caa;
+  --accent: #9ccfd8;
+  --accent-dim: rgba(156, 207, 216, 0.12);
+  --accent-border: rgba(156, 207, 216, 0.3);
+  --on-accent: #191724;
+  --warning: #f6c177;
+  --danger: #eb6f92;
+  --advanced: #c4a7e7;
+  --advanced-solid: #a789d4;
+  --advanced-dim: rgba(196, 167, 231, 0.14);
+  --advanced-border: rgba(196, 167, 231, 0.3);
+}
+
+[data-theme='high-contrast'] {
+  color-scheme: dark;
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-2: #161616;
+  --border: #3a3a3a;
+  --border-2: #6a6a6a;
+  --text-primary: #ffffff;
+  --text-muted: #d0d0d0;
+  --accent: #00ff9c;
+  --accent-dim: rgba(0, 255, 156, 0.16);
+  --accent-border: rgba(0, 255, 156, 0.5);
+  --on-accent: #000000;
+  --warning: #ffb000;
+  --danger: #ff5a5a;
+  --advanced: #d0a8ff;
+  --advanced-solid: #a865ff;
+  --advanced-dim: rgba(208, 168, 255, 0.18);
+  --advanced-border: rgba(208, 168, 255, 0.5);
+}
+
+[data-theme='solarized-light'] {
+  color-scheme: light;
+  --bg: #fdf6e3;
+  --surface: #fffbf0;
+  --surface-2: #f2ebd7;
+  --border: #e5dcc3;
+  --border-2: #d3cbb4;
+  --text-primary: #073642;
+  --text-muted: #5f7079;
+  --accent: #268bd2;
+  --accent-dim: rgba(38, 139, 210, 0.1);
+  --accent-border: rgba(38, 139, 210, 0.3);
+  --on-accent: #ffffff;
+  --warning: #b58900;
+  --danger: #dc322f;
+  --advanced: #6c71c4;
+  --advanced-solid: #6c71c4;
+  --advanced-dim: rgba(108, 113, 196, 0.1);
+  --advanced-border: rgba(108, 113, 196, 0.3);
+}
+
+[data-theme='slate-light'] {
+  color-scheme: light;
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #eef1f7;
+  --border: #dee3ec;
+  --border-2: #c8d0de;
+  --text-primary: #161d2b;
+  --text-muted: #5a6478;
+  --accent: #0f9d58;
+  --accent-dim: rgba(15, 157, 88, 0.1);
+  --accent-border: rgba(15, 157, 88, 0.3);
+  --on-accent: #ffffff;
+  --warning: #b25d09;
+  --danger: #c0392b;
+  --advanced: #5b2fc4;
+  --advanced-solid: #6d3fd4;
+  --advanced-dim: rgba(109, 63, 212, 0.1);
+  --advanced-border: rgba(109, 63, 212, 0.28);
+}
+
+:root {
   --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
 }
@@ -33,15 +283,75 @@
 
 html {
   scroll-behavior: smooth;
+
+  /* The page colour and the still scene live here rather than on `body` because `body`
+     carries the animation: `background-position` keyframes apply to every layer of the
+     element they run on, so a moon painted alongside the petals would drift with them.
+     Splitting across the two elements is what keeps the scene fixed and the petals moving. */
+  background-color: var(--bg);
+  background-image: var(--bg-scene, none);
+  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
 }
 
 body {
-  background-color: var(--bg);
+  /* Transparent so the scene painted on <html> shows through. The page colour is set on
+     <html> instead, which paints the canvas identically for themes with no decoration. */
+  background-color: transparent;
   color: var(--text-primary);
   font-family: var(--font-ui);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Optional decoration layer. Themes that set no --bg-image are unaffected: the fallbacks
+     resolve to a plain colour background, and `animation: none` is inert. Painting this on
+     the body rather than an overlay element keeps it strictly behind every panel and out of
+     the way of pointer events. */
+  background-image: var(--bg-image, none);
+  background-size: var(--bg-size, auto);
+  background-repeat: repeat;
+  background-attachment: fixed;
+
+  /* --bg-animation carries a keyframe name from a fixed allowlist, so a theme chooses
+     between the motions defined below and cannot describe its own. */
+  animation: var(--bg-animation, none) 90s linear infinite;
+}
+
+/* Both motions travel a whole number of tiles in each axis, or the pattern jumps at the
+   loop point because the tile no longer lands back on itself. Every distance below is a
+   multiple of 480, so a theme may use a 240px or 480px --bg-size and stay seamless. */
+
+/* Slow diagonal drift, as if the petals were caught in a breeze. */
+@keyframes drift {
+  from { background-position: 0 0; }
+  to   { background-position: 960px 480px; }
+}
+
+/* Downward fall. The horizontal component keeps it from reading as a rigid vertical slide. */
+@keyframes fall {
+  from { background-position: 0 -960px; }
+  to   { background-position: 480px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body { animation: none; }
+}
+
+/* Separates the nodes column from the servers area. Stacked on narrow screens the rule
+   belongs underneath; side by side it belongs between them, which an inline style cannot
+   express because it has no breakpoint. --border-2 rather than --border so the line still
+   reads over a decorated background. */
+.cc-side-divider {
+  border-bottom: 1px solid var(--border-2);
+}
+@media (min-width: 1024px) {
+  .cc-side-divider {
+    border-bottom: none;
+    border-right: 1px solid var(--border-2);
+  }
 }
 
 /* ─────────────────────────────────────────────────
@@ -67,7 +377,7 @@ body {
 ───────────────────────────────────────────────── */
 .cc-badge-running {
   background: var(--accent);
-  color: #0d1117;
+  color: var(--on-accent);
   font-weight: 700;
   font-size: 0.65rem;
   letter-spacing: 0.08em;
@@ -187,7 +497,7 @@ body {
 ───────────────────────────────────────────────── */
 .cc-btn-primary {
   background: var(--accent);
-  color: #0d1117;
+  color: var(--on-accent);
   font-weight: 700;
   font-size: 0.75rem;
   padding: 7px 16px;
@@ -304,7 +614,7 @@ body {
   flex-shrink: 0;
 }
 .cc-adv-toggle:hover {
-  border-color: rgba(139, 92, 246, 0.6) !important;
+  border-color: var(--advanced-solid) !important;
 }
 
 .cc-switch {
@@ -317,7 +627,7 @@ body {
   transition: background 0.18s ease;
 }
 .cc-switch[data-on='true'] {
-  background: #8b5cf6;
+  background: var(--advanced-solid);
 }
 .cc-switch-knob {
   position: absolute;
@@ -339,9 +649,9 @@ body {
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #a78bfa;
-  background: rgba(139, 92, 246, 0.12);
-  border: 1px solid rgba(139, 92, 246, 0.28);
+  color: var(--advanced);
+  background: var(--advanced-dim);
+  border: 1px solid var(--advanced-border);
   border-radius: 4px;
   padding: 1px 5px;
   vertical-align: middle;
@@ -360,9 +670,9 @@ body {
   padding: 10px 14px;
 }
 .cc-adv-hint button {
-  background: rgba(139, 92, 246, 0.12);
-  color: #a78bfa;
-  border: 1px solid rgba(139, 92, 246, 0.28);
+  background: var(--advanced-dim);
+  color: var(--advanced);
+  border: 1px solid var(--advanced-border);
   border-radius: 6px;
   padding: 3px 10px;
   font-size: 0.7rem;
@@ -370,7 +680,7 @@ body {
   cursor: pointer;
 }
 .cc-adv-hint button:hover {
-  background: rgba(139, 92, 246, 0.22);
+  background: var(--advanced-border);
 }
 
 /* ─────────────────────────────────────────────────
@@ -712,8 +1022,8 @@ body {
    Selection color
 ───────────────────────────────────────────────── */
 ::selection {
-  background: rgba(0, 217, 126, 0.25);
-  color: #ffffff;
+  background: var(--accent-border);
+  color: var(--text-primary);
 }
 
 /* ─────────────────────────────────────────────────

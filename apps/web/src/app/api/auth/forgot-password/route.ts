@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { generateToken } from '@/lib/tokens';
 import { sendPasswordResetEmail, isEmailConfigured } from '@/lib/email';
+import { getPublicOrigin } from '@/lib/public-url';
 
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
 
@@ -31,7 +32,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const resetUrl = `${req.nextUrl.origin}/reset-password?token=${raw}`;
+    const resetUrl = `${await getPublicOrigin(req)}/reset-password?token=${raw}`;
     const sent = await sendPasswordResetEmail(user.email, resetUrl);
 
     if (!sent) {

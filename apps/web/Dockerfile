@@ -43,6 +43,9 @@ ENV PORT=3000
 
 # Copy built app output from Next.js builder
 COPY --from=builder /app/apps/web/public ./apps/web/public
+# Bundled theme files. Deliberately outside public/ so they are not served as unauthenticated
+# static assets — /api/themes reads them from here and requires a signed-in user.
+COPY --from=builder /app/apps/web/themes ./apps/web/themes
 COPY --from=builder /app/apps/web/.next ./apps/web/.next
 COPY --from=builder /app/apps/web/prisma ./apps/web/prisma
 COPY --from=builder /app/apps/web/package.json ./apps/web/package.json

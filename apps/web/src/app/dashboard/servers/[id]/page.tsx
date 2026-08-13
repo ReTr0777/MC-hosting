@@ -23,10 +23,12 @@ import SubdomainTab from '@/components/SubdomainTab';
 import UpdateCenterTab from '@/components/UpdateCenterTab';
 import { SchedulesTab } from '@/components/SchedulesTab';
 import ModBrowserTab from '@/components/ModBrowserTab';
+import PackHealthTab from '@/components/PackHealthTab';
 import IntegrationsTab from '@/components/IntegrationsTab';
 import BroadcastBar from '@/components/BroadcastBar';
 import ResourceHistoryChart from '@/components/ResourceHistoryChart';
 import ExportImportCard from '@/components/ExportImportCard';
+import CrashAnalysisModal from '@/components/CrashAnalysisModal';
 
 interface ServerDetail {
   id: string;
@@ -54,10 +56,10 @@ interface ServerDetail {
 function StatusBadge({ status }: { status: string }) {
   const cls =
     status === 'RUNNING' ? 'cc-badge-running' :
-    status === 'STARTING' ? 'cc-badge-starting' :
-    status === 'ERROR' ? 'cc-badge-error' :
-    status === 'SLEEPING' ? 'cc-badge-starting' :
-    'cc-badge-offline';
+      status === 'STARTING' ? 'cc-badge-starting' :
+        status === 'ERROR' ? 'cc-badge-error' :
+          status === 'SLEEPING' ? 'cc-badge-starting' :
+            'cc-badge-offline';
   return <span className={cls}>{status}</span>;
 }
 
@@ -77,6 +79,7 @@ const TABS = [
   { key: 'properties', label: 'Settings', advanced: false, hint: 'Game rules from server.properties — difficulty, MOTD, view distance and more.' },
   { key: 'map', label: 'World Map', advanced: false, hint: 'Browse a live rendered map of your world in the browser.' },
 
+  { key: 'pack-health', label: 'Pack Health', advanced: true, hint: 'Which mods the installer disabled and why, plus any dependency a mod needs but the pack never shipped.' },
   { key: 'update', label: 'Update Centre', advanced: true, hint: 'Change the Minecraft or mod-loader version. Back up first — version jumps can break worlds.' },
   { key: 'schedules', label: 'Schedules', advanced: true, hint: 'Run restarts, backups and commands automatically on a timetable.' },
   { key: 'sleep', label: 'Sleep & Wake', advanced: true, hint: 'Idle the server to free resources and wake it automatically when a player connects.' },
@@ -108,6 +111,10 @@ export default function ServerConsolePage() {
   const initialTab = TABS.some((t) => t.key === searchParams.get('tab')) ? (searchParams.get('tab') as TabKey) : 'console';
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+  const [showCrashAnalysis, setShowCrashAnalysis] = useState(false);
+  // A crashed server keeps reporting ERROR on every poll, so the diagnosis is offered
+  // automatically only the first time it is seen — after that it stays a button.
+  const crashAutoOffered = useRef(false);
 
   const [iconKey, setIconKey] = useState<number>(Date.now());
   const [uploadingIcon, setUploadingIcon] = useState(false);
@@ -229,6 +236,13 @@ export default function ServerConsolePage() {
   useEffect(() => {
     if (serverId) fetchServerDetails();
   }, [serverId]);
+
+  useEffect(() => {
+    if (server?.status === 'ERROR' && !crashAutoOffered.current) {
+      crashAutoOffered.current = true;
+      setShowCrashAnalysis(true);
+    }
+  }, [server?.status]);
 
   const connectAddress = server ? `${server.node.host}:${server.serverPort}` : '';
 
@@ -363,7 +377,7 @@ export default function ServerConsolePage() {
 
   if (loading) {
     return (
-      <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)' }}>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)' }}>
         Loading your server…
       </div>
     );
@@ -371,7 +385,7 @@ export default function ServerConsolePage() {
 
   if (error || !server) {
     return (
-      <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '24px', fontFamily: 'var(--font-ui)' }}>
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '24px', fontFamily: 'var(--font-ui)' }}>
         <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>We couldn&apos;t open this server</h2>
         <p style={{ color: 'var(--text-muted)', marginBottom: '24px', maxWidth: '420px', lineHeight: 1.6 }}>
           {error || 'This server no longer exists, or you don’t have access to it.'}
@@ -386,7 +400,7 @@ export default function ServerConsolePage() {
   const isRunning = server.status === 'RUNNING';
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
 
       {/* ── Top Header Bar ── */}
       <header className="cc-header-responsive" style={{
@@ -636,11 +650,44 @@ export default function ServerConsolePage() {
                 )}
               </div>
               {!isRunning && (
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  Server is {server.status.toLowerCase()} — press <strong style={{ color: 'var(--accent)' }}>Start Server</strong> above to let players in.
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Server is {server.status.toLowerCase()} — press <strong style={{ color: 'var(--accent)' }}>Start Server</strong> above to let players in.
+                  </div>
+                  <button
+                    onClick={() => setShowCrashAnalysis(true)}
+                    className={server.status === 'ERROR' ? 'cc-btn-primary' : 'cc-btn-ghost'}
+                    title="Read the server log and explain why it stopped"
+                  >
+                    Diagnose
+                  </button>
                 </div>
               )}
             </div>
+
+            {/* A crashed server gets an unmissable prompt rather than a quiet status badge. */}
+            {server.status === 'ERROR' && (
+              <div
+                style={{
+                  background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.25)', borderRadius: '10px',
+                  padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: '12px', flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ minWidth: '220px', flex: 1 }}>
+                  <div style={{ fontSize: '0.8125rem', fontWeight: 800, color: 'var(--danger)', marginBottom: '4px' }}>
+                    This server stopped unexpectedly
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.6 }}>
+                    The crash analyser reads the log and the crash report, names the cause in plain language, and offers the
+                    fixes that apply to it.
+                  </p>
+                </div>
+                <button onClick={() => setShowCrashAnalysis(true)} className="cc-btn-primary" style={{ flexShrink: 0 }}>
+                  Analyse the crash
+                </button>
+              </div>
+            )}
 
             {/* Modrinth notice */}
             {server.serverType === 'MODRINTH' && server.modpackSlug && (
@@ -680,7 +727,7 @@ export default function ServerConsolePage() {
             {/* Everything below is expert territory — hidden unless the user asks for it. */}
             <AdvancedOnly hint="Resource history, node migration and full server export live in advanced mode.">
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <ResourceHistoryChart serverId={server.id} />
+                <ResourceHistoryChart serverId={server.id} memoryLimitMb={server.memoryMb} />
 
                 {/* Migration */}
                 <div className="cc-card" style={{ padding: '20px 24px' }}>
@@ -748,6 +795,9 @@ export default function ServerConsolePage() {
           <div className="animate-fadeIn"><BanListTab serverId={server.id} canManage={canManage} /></div>
         )}
         {activeTab === 'properties' && <PropertiesTab serverId={server.id} canManage={canManage} />}
+        {activeTab === 'pack-health' && (
+          <div className="animate-fadeIn"><PackHealthTab serverId={server.id} canManage={canManage} /></div>
+        )}
         {activeTab === 'update' && <UpdateCenterTab server={server} canManage={canManage} onUpdateSuccess={fetchServerDetails} />}
         {activeTab === 'schedules' && <SchedulesTab serverId={server.id} canManage={canManage} />}
         {activeTab === 'backups' && <BackupsTab serverId={server.id} canManage={canManage} />}
@@ -811,6 +861,19 @@ export default function ServerConsolePage() {
           isOpen={showPermissionsModal}
           onClose={() => setShowPermissionsModal(false)}
         />
+
+        {showCrashAnalysis && (
+          <CrashAnalysisModal
+            serverId={server.id}
+            serverName={server.name}
+            canManage={canManage}
+            onClose={() => setShowCrashAnalysis(false)}
+            onNavigateTab={(tab) => {
+              if (TABS.some((t) => t.key === tab)) setActiveTab(tab as TabKey);
+            }}
+            onServerChanged={fetchServerDetails}
+          />
+        )}
       </main>
     </div>
   );

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { cronError, nextRun } from '@/lib/cron';
 import { SCHEDULE_ACTIONS } from '@/lib/scheduler';
+import { writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +48,12 @@ export async function PUT(
       },
     });
 
+    await writeAudit({
+      userId: user.userId,
+      action: 'SCHEDULE_UPDATE',
+      details: { serverId: params.id, scheduleId: schedule.id },
+    });
+
     return NextResponse.json({ success: true, schedule });
   } catch (err: any) {
     return NextResponse.json({ error: 'Failed to update schedule', details: err.message }, { status: 500 });
@@ -67,6 +74,11 @@ export async function DELETE(
     }
 
     await prisma.serverSchedule.delete({ where: { id: params.scheduleId } });
+    await writeAudit({
+      userId: user.userId,
+      action: 'SCHEDULE_DELETE',
+      details: { serverId: params.id, scheduleId: params.scheduleId },
+    });
     return NextResponse.json({ success: true, message: 'Schedule deleted' });
   } catch (err: any) {
     return NextResponse.json({ error: 'Failed to delete schedule', details: err.message }, { status: 500 });

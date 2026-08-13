@@ -85,11 +85,11 @@ export const ConsoleViewer: React.FC<ConsoleViewerProps> = ({
         // Connect to our Next.js WS proxy instead of directly to daemon
         const wsUrl = `${wsProtocol}//${window.location.host}/api/ws/console?serverId=${serverId}&containerId=${containerId}`;
         setStatus('authenticating');
-        
+
         if (wsRef.current) {
           wsRef.current.close();
         }
-        
+
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 

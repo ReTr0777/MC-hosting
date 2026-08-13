@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (!daemonRes.ok) {
       throw new Error(data.error || data.details || 'Daemon repair failed');
     }
+
+    await writeAudit({ userId: user.userId, action: 'WORLD_REPAIR', details: { serverId: server.id, serverName: server.name } });
 
     return NextResponse.json(data);
   } catch (err: any) {

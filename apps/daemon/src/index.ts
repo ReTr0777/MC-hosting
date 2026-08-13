@@ -11,11 +11,25 @@ import setupRoutes from './routes/setup';
 import { handleConsoleWebSocket } from './services/console';
 import { tunnelManager } from './services/frpc';
 import { schedulerService } from './services/scheduler';
-import { ensureContainerRestartPolicies } from './services/docker';
+import { ensureContainerRestartPolicies, docker } from './services/docker';
+import { presenceService } from './services/presence';
 
 tunnelManager.init();
 schedulerService.start();
 ensureContainerRestartPolicies().catch(() => {});
+
+// Presence tracking has to survive a daemon restart: containers keep running, and players who
+// were online before the restart are still online after it. Re-attach to everything already up.
+presenceService.hookProcessManager();
+docker
+  .listContainers({ filters: { name: ['mc-server-'] } })
+  .then((containers) => {
+    for (const c of containers) {
+      const name = (c.Names?.[0] || '').replace(/^\/?mc-server-/, '');
+      if (name) presenceService.trackContainer(name).catch(() => {});
+    }
+  })
+  .catch(() => {});
 
 const config = loadConfig();
 const app = express();

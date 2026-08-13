@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { syncCloudflareDns } from '@/lib/cloudflare';
 import { encryptSecret, tryDecryptSecret } from '@/lib/crypto';
+import { writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -144,6 +145,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         finalMessage = `⚠️ Subdomain saved in DB, but Cloudflare API failed: ${cloudflareResult.message}`;
       }
     }
+
+    await writeAudit({
+      userId: user.userId,
+      action: 'SUBDOMAIN_CHANGE',
+      details: { serverId: server.id, subdomain: cleanSubdomain, domain: cleanDomain },
+    });
 
     return NextResponse.json({
       success: true,

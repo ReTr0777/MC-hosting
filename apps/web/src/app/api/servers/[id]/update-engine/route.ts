@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -52,6 +53,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       const errText = await daemonRes.text();
       throw new Error(`Daemon update-engine failed (${daemonRes.status}): ${errText}`);
     }
+
+    await writeAudit({
+      userId: user.userId,
+      action: 'SERVER_VERSION_CHANGE',
+      details: { serverId: server.id, from: `${server.serverType} ${server.mcVersion}`, to: `${serverType} ${mcVersion}` },
+    });
 
     return NextResponse.json({ message: 'Server engine and version updated successfully' });
   } catch (err: any) {

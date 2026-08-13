@@ -10,6 +10,8 @@
     "dev:daemon": "npm --prefix apps/daemon run dev",
     "dev:discord-bot": "npm --prefix apps/discord-bot run dev",
     "build:web": "npm --prefix apps/web run build",
+    "test:web": "npm --prefix apps/web run test",
+    "test:daemon": "npm --prefix apps/daemon run test",
     "build:daemon": "npm --prefix apps/daemon run build",
     "build:discord-bot": "npm --prefix apps/discord-bot run build",
     "prisma:generate": "npm --prefix apps/web run prisma:generate",

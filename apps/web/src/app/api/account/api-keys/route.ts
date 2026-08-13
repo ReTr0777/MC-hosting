@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest, API_KEY_PREFIX } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -39,6 +40,8 @@ export async function POST(req: NextRequest) {
     data: { userId: user.userId, name: name.trim(), tokenHash, prefix, expiresAt },
     select: { id: true, name: true, prefix: true, expiresAt: true, createdAt: true },
   });
+
+  await writeAudit({ userId: user.userId, action: 'API_KEY_CREATE', details: { name: apiKey.name } });
 
   return NextResponse.json({
     key: apiKey,

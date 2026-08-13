@@ -473,6 +473,9 @@ class ProcessManager extends EventEmitter {
       console.log(`[ProcessManager] Standalone process for server ${dto.serverId} exited with code ${code}`);
       mp.status = 'OFFLINE';
       this.processes.delete(dto.serverId);
+      // Emitted rather than calling the presence service directly: process.ts is imported by
+      // presence.ts, and reaching back the other way would make the cycle load-order sensitive.
+      this.emit('exit', { serverId: dto.serverId, code });
       tunnelManager.removeTunnel(dto.serverId).catch(() => {});
       provisioningManager.emit('status', {
         serverId: dto.serverId,

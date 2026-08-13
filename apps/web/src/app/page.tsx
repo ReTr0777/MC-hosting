@@ -1,8 +1,13 @@
 import Link from 'next/link';
+import { cookies } from 'next/headers';
+import { COOKIE_NAME, verifyJwtToken } from '@/lib/auth';
 
-export default function Home() {
+export default async function Home() {
+  const token = (await cookies()).get(COOKIE_NAME)?.value;
+  const isLoggedIn = token ? !!(await verifyJwtToken(token)) : false;
+
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
 
       {/* Top Navigation Bar */}
       <header style={{
@@ -31,9 +36,11 @@ export default function Home() {
           }}>v1.0</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Link href="/login" style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', textDecoration: 'none', fontWeight: 500 }}>
-            Sign In
-          </Link>
+          {!isLoggedIn && (
+            <Link href="/login" style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', textDecoration: 'none', fontWeight: 500 }}>
+              Sign In
+            </Link>
+          )}
           <Link href="/dashboard" className="cc-btn-primary" style={{ textDecoration: 'none', display: 'inline-block' }}>
             Dashboard
           </Link>
@@ -75,9 +82,11 @@ export default function Home() {
           <Link href="/dashboard" className="cc-btn-primary" style={{ textDecoration: 'none', padding: '10px 24px', fontSize: '0.875rem', borderRadius: '8px' }}>
             Open Dashboard →
           </Link>
-          <Link href="/login" className="cc-btn-ghost" style={{ textDecoration: 'none', padding: '10px 24px', fontSize: '0.875rem', borderRadius: '8px' }}>
-            Sign In
-          </Link>
+          {!isLoggedIn && (
+            <Link href="/login" className="cc-btn-ghost" style={{ textDecoration: 'none', padding: '10px 24px', fontSize: '0.875rem', borderRadius: '8px' }}>
+              Sign In
+            </Link>
+          )}
         </div>
 
         {/* Feature Cards */}

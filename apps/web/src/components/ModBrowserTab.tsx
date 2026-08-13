@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
 
@@ -67,6 +67,21 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
   const [totalHits, setTotalHits] = useState(0);
   const [activeTab, setActiveTab] = useState<'search' | 'installed'>('search');
   const [projectType, setProjectType] = useState<'mod' | 'modpack'>('mod');
+  const [installedFilter, setInstalledFilter] = useState('');
+
+  /**
+   * Filters the installed list client-side — the whole list is already in memory, and a
+   * modpack server can carry several hundred jars, which is far too many to scan by eye.
+   * Matching ignores the separators mod filenames are inconsistent about (`-`, `_`, `+`, `.`)
+   * so "journeymap" finds `journeymap-1.20.1-5.9.7-fabric.jar`.
+   */
+  const normalizeForMatch = (s: string) => s.toLowerCase().replace(/[-_+.\s]/g, '');
+
+  const filteredInstalledMods = useMemo(() => {
+    const q = normalizeForMatch(installedFilter.trim());
+    if (!q) return installedMods;
+    return installedMods.filter((mod) => normalizeForMatch(mod.fileName).includes(q));
+  }, [installedMods, installedFilter]);
 
   // Load installed mods on mount
   useEffect(() => {
@@ -528,16 +543,56 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
       )}
 
       {activeTab === 'installed' && (
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, overflow: 'hidden' }}>
+          {installedMods.length > 0 && (
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
+                <input
+                  type="text"
+                  value={installedFilter}
+                  onChange={(e) => setInstalledFilter(e.target.value)}
+                  placeholder="Filter installed mods by filename..."
+                  className="cc-input"
+                  style={{ width: '100%', paddingRight: installedFilter ? '32px' : undefined }}
+                />
+                {installedFilter && (
+                  <button
+                    onClick={() => setInstalledFilter('')}
+                    aria-label="Clear filter"
+                    style={{
+                      position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+                      background: 'none', border: 'none', color: 'var(--text-muted)',
+                      cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: '4px',
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                {installedFilter
+                  ? `${filteredInstalledMods.length} of ${installedMods.length} mods`
+                  : `${installedMods.length} mods`}
+              </div>
+            </div>
+          )}
+
+          <div style={{ flex: 1, overflow: 'auto' }}>
           {installedMods.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '16px' }}>No mods</div>
               <h3 style={{ marginBottom: '8px', color: 'var(--text-primary)' }}>No Mods Installed</h3>
               <p>Use the "Browse Mods" tab to search and install mods from Modrinth.</p>
             </div>
+          ) : filteredInstalledMods.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '16px' }}>No matches</div>
+              <h3 style={{ marginBottom: '8px', color: 'var(--text-primary)' }}>No installed mod matches “{installedFilter}”</h3>
+              <p>Check the spelling, or clear the filter to see all {installedMods.length} mods.</p>
+            </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
-              {installedMods.map((mod) => (
+              {filteredInstalledMods.map((mod) => (
                 <div key={mod.fileName} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
                     <div style={{ width: '40px', height: '40px', borderRadius: '6px', background: 'linear-gradient(135deg, var(--accent), #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -571,6 +626,7 @@ export default function ModBrowserTab({ serverId, serverType, mcVersion, canMana
               ))}
             </div>
           )}
+          </div>
         </div>
       )}
     </div>

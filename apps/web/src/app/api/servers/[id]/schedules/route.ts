@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { cronError, nextRun } from '@/lib/cron';
 import { SCHEDULE_ACTIONS } from '@/lib/scheduler';
+import { writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +74,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         isEnabled: isEnabled !== undefined ? Boolean(isEnabled) : true,
         nextRunAt: nextRun(cronExpression),
       },
+    });
+
+    await writeAudit({
+      userId: user.userId,
+      action: 'SCHEDULE_CREATE',
+      details: { serverId: params.id, scheduleId: schedule.id, name, cronExpression, actionType },
     });
 
     return NextResponse.json({ success: true, schedule });

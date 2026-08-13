@@ -19,6 +19,8 @@ import {
   getContainerByIdOrName,
   getItzgImageTag,
   ensureDockerImage,
+  getContainerStats,
+  getContainerStatsHistory,
 } from '../services/docker';
 import { provisioningManager } from '../services/provisioning';
 import { processManager } from '../services/process';
@@ -32,10 +34,21 @@ import {
   getModrinthProjectVersions,
   downloadModrinthFile,
 } from '../services/modrinth';
-import { findMrpackRoot, materializeMrpack, MrpackBuildResult } from '../services/mrpack';
+import {
+  findMrpackRoot,
+  materializeMrpack,
+  MrpackBuildResult,
+  readPackHealth,
+  analyzeInstalledMods,
+  CLIENT_MODS_DIR,
+  PACK_HEALTH_FILE,
+} from '../services/mrpack';
+import { provisionModrinthPack } from '../services/modrinth-provision';
 import { schedulerService } from '../services/scheduler';
 import { sendServerCommand } from '../services/console';
 import { tryPing } from '../services/mc-ping';
+import { presenceService } from '../services/presence';
+import { snapshot, listRevisions, readRevision, isVersionable, forgetHistory, HISTORY_DIR } from '../services/file-history';
 import { sleep as sleepServer, wake as wakeServer, cancelSleep, isSleeping, sleepInfo, listSleeping } from '../services/sleeper';
 import { startTarget, stopTarget, serverPortFor, bareServerId } from '../services/lifecycle';
 import {
@@ -66,6 +79,12 @@ router.get('/statuses', async (req: Request, res: Response) => {
     string,
     {
       running: boolean;
+      /**
+       * Whether the server answered a Server List Ping — i.e. whether a player could actually
+       * join right now. `running` only means the container/process exists, which stays true for
+       * the many minutes a large modpack spends loading before it opens its port.
+       */
+      pingOk: boolean;
       mode: 'process' | 'docker' | 'unknown';
       sleeping: boolean;
       players: number | null;
@@ -73,6 +92,8 @@ router.get('/statuses', async (req: Request, res: Response) => {
       playerNames: string[] | null;
       cpuPercent: number | null;
       memoryMb: number | null;
+      /** Container memory cap, when one is set. Null in process mode and for unconstrained containers. */
+      memoryLimitMb: number | null;
     }
   > = {};
 
@@ -102,35 +123,60 @@ router.get('/statuses', async (req: Request, res: Response) => {
       let players: number | null = null;
       let maxPlayers: number | null = null;
       let playerNames: string[] | null = null;
+      let pingOk = false;
 
       if (running && !sleeping) {
         const port = serverPortFor(id);
         if (port) {
           const ping = await tryPing('127.0.0.1', port, 2000);
           if (ping) {
+            pingOk = true;
             players = ping.online;
             maxPlayers = ping.max;
             playerNames = ping.sampleNames;
           }
         }
       } else if (sleeping) {
+        // A sleeping server's port is held open by our own listener, so it is joinable.
+        pingOk = true;
         players = 0;
       }
 
-      // Only PROCESS mode has an in-memory sample loop today; Docker containers report null here.
       let cpuPercent: number | null = null;
       let memoryMb: number | null = null;
-      if (running && !sleeping && mode === 'process') {
-        const procStats = processManager.getProcessStats(id);
-        cpuPercent = procStats.cpuPercent;
-        memoryMb = procStats.memoryMb;
+      let memoryLimitMb: number | null = null;
+      if (running && !sleeping) {
+        if (mode === 'process') {
+          const procStats = processManager.getProcessStats(id);
+          cpuPercent = procStats.cpuPercent;
+          memoryMb = procStats.memoryMb;
+        } else if (mode === 'docker') {
+          // Costs ~1s inside the Docker daemon's sample window, but every id in this
+          // request is sampled concurrently so the endpoint still returns in about that long.
+          const stats = await getContainerStats(id);
+          if (stats) {
+            cpuPercent = stats.cpuPercent;
+            memoryMb = stats.memoryMb;
+            memoryLimitMb = stats.memoryLimitMb;
+          }
+        }
       }
 
-      statuses[id] = { running, mode, sleeping, players, maxPlayers, playerNames, cpuPercent, memoryMb };
+      statuses[id] = { running, pingOk, mode, sleeping, players, maxPlayers, playerNames, cpuPercent, memoryMb, memoryLimitMb };
     })
   );
 
   res.json({ statuses, sleeping: listSleeping() });
+});
+
+// POST /api/v1/servers/players/sessions/drain
+//
+// Hands completed play sessions to the panel, which owns persisting them. Draining empties the
+// daemon's queue, so the caller must write them before it acknowledges — a failed write loses
+// them. Declared up here with /statuses so 'players' can't be parsed as a server id.
+router.post('/players/sessions/drain', (req: Request, res: Response) => {
+  const sessions = presenceService.drainSessions();
+  res.json({ sessions, count: sessions.length });
 });
 
 // POST /api/v1/servers/create
@@ -156,6 +202,21 @@ router.post('/create', async (req: Request, res: Response) => {
 
     // Pre-download server jar in background non-blocking so starting later is instant
     provisioningManager.run(dto.serverId, async () => {
+      // A Modrinth deploy has to be built before anything else looks at the directory:
+      // the pack decides the loader, the Minecraft version and the launch target, and
+      // ensureServerJar would otherwise provision a bare server and ignore the pack.
+      if (dto.serverType === 'MODRINTH' && dto.modpackSlug && !dto.isMigration) {
+        await provisionModrinthPack(dto.serverId, serverDir, {
+          slug: dto.modpackSlug,
+          mcVersion: dto.mcVersion,
+        });
+        // Re-read what the pack actually installed so the container and launcher agree with it.
+        try {
+          const merged = JSON.parse(fs.readFileSync(path.join(serverDir, 'craftcontrol-meta.json'), 'utf8'));
+          if (merged.mcVersion) dto.mcVersion = merged.mcVersion;
+        } catch { }
+      }
+
       await processManager.ensureServerJar(serverDir, dto);
       if (!isProcessMode) {
         await createServerContainer(dto);
@@ -207,7 +268,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   let mrpackResult: MrpackBuildResult | null = null;
 
   console.log(`[Daemon API] Serverpack archive saved to disk, detecting format & extracting...`);
-  
+
   // Detect format (ZIP vs RAR) and extract using native CLI tools or WASM fallback
   const headerBuf = Buffer.alloc(8);
   const fd = fs.openSync(archivePath, 'r');
@@ -331,7 +392,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   try {
     execSync(`chown -R 1000:1000 "${serverDir}"`);
     execSync(`chmod -R 775 "${serverDir}"`);
-  } catch (e) {}
+  } catch (e) { }
 
   console.log(`[Daemon API] Serverpack archive extracted into '${serverDir}'`);
 
@@ -356,7 +417,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   let launchScript: string | null = null;
   const runShPath = path.join(serverDir, 'run.sh');
   const runBatPath = path.join(serverDir, 'run.bat');
-  
+
   if (fs.existsSync(runShPath) && fs.statSync(runShPath).size === 0) {
     console.log(`[Daemon Extractor] run.sh exists at root but is 0 bytes (likely a stray stub or a failed archive entry) — ignoring it`);
   }
@@ -365,7 +426,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     launchScript = 'run.sh';
     try {
       execSync(`chmod +x "${runShPath}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     // Strip Windows CRLF line endings from run.sh and companion arg files eagerly
     // (server packs created on Windows have \r\n endings, causing silent bash exit 0)
@@ -378,7 +439,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
             fs.writeFileSync(fp, raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
             console.log(`[Daemon Extractor] Stripped CRLF from ${f}`);
           }
-        } catch (e) {}
+        } catch (e) { }
       }
     }
   } else if (fs.existsSync(runBatPath) && fs.statSync(runBatPath).size > 0) {
@@ -456,7 +517,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(serverDir, 'craftcontrol-meta.json'), 'utf8'));
       memoryMb = meta.memoryMb;
-    } catch (e) {}
+    } catch (e) { }
 
     if (synthesizeForgeRunScript(serverDir, memoryMb)) {
       launchScript = 'run.sh';
@@ -546,7 +607,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
   let meta: any = {};
   if (fs.existsSync(metaPath)) {
-    try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
+    try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) { }
   }
   meta.versionLocked = true;
 
@@ -589,16 +650,16 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     detectedVersion: detectedMcVersion,
     ...(mrpackResult
       ? {
-          mrpack: {
-            name: mrpackResult.name,
-            loader: mrpackResult.loader,
-            loaderVersion: mrpackResult.loaderVersion,
-            modsDownloaded: mrpackResult.modsDownloaded,
-            modsFailed: mrpackResult.modsFailed,
-            clientModsDisabled: mrpackResult.clientModsDisabled,
-            launchTarget: mrpackResult.launchTarget,
-          },
-        }
+        mrpack: {
+          name: mrpackResult.name,
+          loader: mrpackResult.loader,
+          loaderVersion: mrpackResult.loaderVersion,
+          modsDownloaded: mrpackResult.modsDownloaded,
+          modsFailed: mrpackResult.modsFailed,
+          clientModsDisabled: mrpackResult.clientModsDisabled,
+          launchTarget: mrpackResult.launchTarget,
+        },
+      }
       : {}),
   });
 }
@@ -615,11 +676,11 @@ router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
     }
 
     const archivePath = path.join(serverDir, 'serverpack_uploaded.tmp');
-    
+
     // Stream directly to disk to prevent RAM exhaustion and event loop blocking
     const writeStream = fs.createWriteStream(archivePath);
     req.pipe(writeStream);
-    
+
     await new Promise<void>((resolve, reject) => {
       writeStream.on('finish', resolve);
       writeStream.on('error', reject);
@@ -778,7 +839,7 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
           try {
             execSync(`chown -R 1000:1000 "${serverDir}"`);
             execSync(`chmod -R 775 "${serverDir}"`);
-          } catch (e) {}
+          } catch (e) { }
           res.json({ message: 'Server archive imported successfully' });
           resolve();
         });
@@ -793,7 +854,7 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
     try {
       execSync(`chown -R 1000:1000 "${destinationPath}"`);
       execSync(`chmod -R 775 "${destinationPath}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     res.json({ message: 'File assembled and uploaded successfully', path: destinationPath });
   } catch (err: any) {
@@ -841,12 +902,12 @@ router.post('/:serverId/icon', async (req: Request, res: Response) => {
     try {
       execSync(`chown 1000:1000 "${iconPath}"`);
       execSync(`chmod 664 "${iconPath}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     const containerName = `mc-server-${serverId}`;
     try {
       await syncServerDirToContainer(containerName, serverId);
-    } catch (syncErr: any) {}
+    } catch (syncErr: any) { }
 
     console.log(`[Daemon API] Server icon updated for '${serverId}'`);
     res.json({ message: 'Server icon uploaded successfully', serverId });
@@ -869,7 +930,7 @@ router.post('/:containerId/start', async (req: Request, res: Response) => {
       const serverId = containerId.replace('process-', '');
       const serverDir = path.join(config.dataDir, serverId);
       const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
-      
+
       let dto: CreateServerContainerDto = {
         serverId,
         serverType: 'FABRIC' as any,
@@ -885,7 +946,7 @@ router.post('/:containerId/start', async (req: Request, res: Response) => {
         try {
           const savedMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
           dto = { ...dto, ...savedMeta, serverId };
-        } catch (e) {}
+        } catch (e) { }
       }
 
       // Merge incoming metadata from Web API (database source of truth)
@@ -893,7 +954,7 @@ router.post('/:containerId/start', async (req: Request, res: Response) => {
         dto = { ...dto, ...req.body, serverId };
         try {
           fs.writeFileSync(metaPath, JSON.stringify(dto, null, 2));
-        } catch (e) {}
+        } catch (e) { }
       }
 
       await processManager.startProcess(dto);
@@ -920,7 +981,7 @@ router.post('/:containerId/stop', async (req: Request, res: Response) => {
       await processManager.stopProcess(serverId);
       return res.json({ message: 'Standalone server process stopped' });
     }
-    
+
     if (countdown && !isNaN(Number(countdown))) {
       const seconds = Number(countdown);
       // Run it asynchronously so the HTTP request completes immediately
@@ -953,7 +1014,7 @@ router.post('/:containerId/restart', async (req: Request, res: Response) => {
       const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
       let meta: any = {};
       if (fs.existsSync(metaPath)) {
-        try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) {}
+        try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (e) { }
       }
 
       await processManager.startProcess({
@@ -1098,16 +1159,16 @@ router.post('/import', (req: Request, res: Response) => {
     }
 
     console.log(`[Daemon API] Import complete for ${serverId}. Proceeding to create container...`);
-    
+
     // We expect the original CreateServerContainerDto to be passed in a header because the body is the stream
     const dtoHeader = req.headers['x-create-dto'];
     if (dtoHeader && typeof dtoHeader === 'string') {
       try {
         const dto: CreateServerContainerDto = JSON.parse(dtoHeader);
-        
+
         // Immediately respond 202, build container asynchronously
         res.status(202).json({ message: 'Import successful, creating container...', serverId });
-        
+
         provisioningManager.run(dto.serverId, async () => {
           const containerId = await createServerContainer(dto);
           // Do NOT automatically start it here so the user can review it first, or we can start it?
@@ -1140,6 +1201,9 @@ function getSafeServerPath(serverId: string, subPath: string = ''): string | nul
   return targetPath;
 }
 
+/** Panel-managed entries hidden from the file browser at the server root. */
+const PANEL_INTERNAL_ENTRIES = new Set([HISTORY_DIR, PACK_HEALTH_FILE, '.tmp_uploads']);
+
 // GET /api/v1/servers/:serverId/files/list?path=...
 router.get('/:serverId/files/list', async (req: Request, res: Response) => {
   const { serverId } = req.params;
@@ -1165,7 +1229,13 @@ router.get('/:serverId/files/list', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Path is not a directory' });
     }
 
-    const items = fs.readdirSync(targetPath);
+    // The panel's own bookkeeping lives in the server directory so it travels with backups and
+    // migrations, but it is not something the user should be browsing or editing — the history
+    // store in particular is a folder of hash-named snapshots that means nothing on its own.
+    const items = fs
+      .readdirSync(targetPath)
+      .filter((name) => !(relPath === '' && PANEL_INTERNAL_ENTRIES.has(name)));
+
     const files = items.map((name) => {
       const itemPath = path.join(targetPath, name);
       let isDir = false;
@@ -1177,7 +1247,7 @@ router.get('/:serverId/files/list', async (req: Request, res: Response) => {
         isDir = s.isDirectory();
         size = s.size;
         mtime = s.mtime;
-      } catch (e) {}
+      } catch (e) { }
 
       return {
         name,
@@ -1254,10 +1324,68 @@ router.post('/:serverId/files/write', (req: Request, res: Response) => {
       fs.mkdirSync(parentDir, { recursive: true });
     }
 
+    // Snapshot the outgoing contents before they're overwritten. Never allowed to fail the write.
+    const revision = snapshot(path.join(config.dataDir, serverId), relPath);
+
     fs.writeFileSync(targetPath, content, 'utf8');
-    res.json({ success: true, path: relPath });
+    res.json({ success: true, path: relPath, revisionSaved: !!revision });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to write file', details: err.message });
+  }
+});
+
+// GET /api/v1/servers/:serverId/files/revisions?path=...
+router.get('/:serverId/files/revisions', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const relPath = req.query.path as string;
+  const revisionId = req.query.revisionId as string | undefined;
+
+  if (!relPath) return res.status(400).json({ error: 'Missing path parameter' });
+  if (!getSafeServerPath(serverId, relPath)) {
+    return res.status(403).json({ error: 'Access denied: Invalid path' });
+  }
+
+  const serverDir = path.join(config.dataDir, serverId);
+
+  // With a revisionId this returns that version's contents, for the diff view.
+  if (revisionId) {
+    const content = readRevision(serverDir, relPath, revisionId);
+    if (content === null) return res.status(404).json({ error: 'Revision not found' });
+    return res.json({ path: relPath, revisionId, content });
+  }
+
+  res.json({
+    path: relPath,
+    versionable: isVersionable(relPath),
+    revisions: listRevisions(serverDir, relPath),
+  });
+});
+
+// POST /api/v1/servers/:serverId/files/restore  { path, revisionId }
+//
+// Restoring is itself a write, so the current contents are snapshotted first — undoing a restore
+// has to work as readily as the restore did.
+router.post('/:serverId/files/restore', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const { path: relPath, revisionId } = req.body || {};
+
+  if (!relPath || !revisionId) {
+    return res.status(400).json({ error: 'Missing path or revisionId' });
+  }
+
+  const targetPath = getSafeServerPath(serverId, relPath);
+  if (!targetPath) return res.status(403).json({ error: 'Access denied: Invalid path' });
+
+  const serverDir = path.join(config.dataDir, serverId);
+  const content = readRevision(serverDir, relPath, revisionId);
+  if (content === null) return res.status(404).json({ error: 'Revision not found' });
+
+  try {
+    snapshot(serverDir, relPath, 'restore');
+    fs.writeFileSync(targetPath, content, 'utf8');
+    res.json({ success: true, path: relPath, restartRequired: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to restore revision', details: err.message });
   }
 });
 
@@ -1332,6 +1460,9 @@ router.post('/:serverId/files/delete', (req: Request, res: Response) => {
     // data directory is a Windows-hosted Docker bind mount and entries settle slightly
     // after their children are removed.
     fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    // Keeping revisions for a file the user deleted would leave orphaned history that no screen
+    // can reach, growing the server directory for no benefit.
+    forgetHistory(path.join(config.dataDir, serverId), relPath);
     res.json({ success: true, path: relPath });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete file or directory', details: err.message });
@@ -1342,9 +1473,42 @@ router.post('/:serverId/files/delete', (req: Request, res: Response) => {
 router.get('/:serverId/players', (req: Request, res: Response) => {
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
+
+  // The presence tracker covers both execution modes; processManager's roster only ever existed
+  // for PROCESS mode, so it stays as the fallback for a server the tracker hasn't attached to yet.
+  const tracked = presenceService.getOnline(targetId);
+  if (tracked.length > 0) {
+    const ops = readOpNames(targetId);
+    const players = tracked.map((p) => ({
+      username: p.username,
+      isOp: ops.has(p.username.toLowerCase()),
+      avatarUrl: `https://mc-heads.net/avatar/${p.username}/64`,
+      uuid: p.uuid,
+      /** How long they have been connected in the current session. */
+      onlineSeconds: p.sinceSeconds,
+    }));
+    return res.json({ players, count: players.length });
+  }
+
   const players = processManager.getOnlinePlayers(targetId);
   res.json({ players, count: players.length });
 });
+
+/** Operator names from the server's own ops.json, lowercased for comparison. */
+function readOpNames(serverId: string): Set<string> {
+  const names = new Set<string>();
+  try {
+    const raw = fs.readFileSync(path.join(config.dataDir, serverId, 'ops.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      for (const op of parsed) if (op?.name) names.add(String(op.name).toLowerCase());
+    }
+  } catch (e) {
+    // No ops.json yet, or it's mid-write — nobody is an operator as far as this render goes.
+  }
+  return names;
+}
+
 
 // POST /api/v1/servers/:serverId/players/action
 router.post('/:serverId/players/action', (req: Request, res: Response) => {
@@ -1393,7 +1557,7 @@ function readServerProperties(targetId: string): Record<string, string> {
       const idx = line.indexOf('=');
       properties[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
     }
-  } catch (e) {}
+  } catch (e) { }
   return properties;
 }
 
@@ -1523,10 +1687,10 @@ router.post('/:serverId/whitelist', async (req: Request, res: Response) => {
     if (live) {
       const cmd =
         action === 'add' ? `whitelist add ${username}` :
-        action === 'remove' ? `whitelist remove ${username}` :
-        action === 'on' ? 'whitelist on' :
-        action === 'off' ? 'whitelist off' :
-        'whitelist reload';
+          action === 'remove' ? `whitelist remove ${username}` :
+            action === 'on' ? 'whitelist on' :
+              action === 'off' ? 'whitelist off' :
+                'whitelist reload';
 
       await sendServerCommand(targetId, cmd);
       // Give the server a moment to flush whitelist.json before the client re-reads it
@@ -1752,6 +1916,9 @@ router.post('/:serverId/properties', (req: Request, res: Response) => {
   }
 
   try {
+    // The Settings tab is where server.properties actually gets edited, so it needs the same undo
+    // history the raw file editor has.
+    snapshot(path.join(config.dataDir, targetId), 'server.properties');
     applyServerProperties(targetId, properties);
     res.json({ success: true, message: 'Updated server.properties successfully' });
   } catch (err: any) {
@@ -1760,11 +1927,108 @@ router.post('/:serverId/properties', (req: Request, res: Response) => {
 });
 
 // GET /api/v1/servers/:serverId/stats
-router.get('/:serverId/stats', (req: Request, res: Response) => {
+router.get('/:serverId/stats', async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
-  const stats = processManager.getProcessStats(targetId);
-  res.json(stats);
+
+  if (processManager.isRunning(targetId)) {
+    return res.json(processManager.getProcessStats(targetId));
+  }
+
+  // Docker mode: sample the container directly. Falls through to zeroes when the server is
+  // stopped, which is what the panel already renders as an idle gauge.
+  const stats = await getContainerStats(targetId);
+  if (stats) {
+    return res.json({
+      cpuPercent: stats.cpuPercent,
+      memoryMb: stats.memoryMb,
+      memoryLimitMb: stats.memoryLimitMb,
+      history: getContainerStatsHistory(targetId),
+    });
+  }
+
+  res.json({ cpuPercent: 0, memoryMb: 0, memoryLimitMb: null, history: getContainerStatsHistory(targetId) });
+});
+
+// GET /api/v1/servers/:serverId/pack-health
+//
+// The stored report explains *why* mods were disabled at install time; the dependency picture is
+// recomputed live because installing or restoring a mod changes it and the stored copy would lie.
+router.get('/:serverId/pack-health', (req: Request, res: Response) => {
+  const targetId = req.params.serverId.replace('process-', '');
+  const serverDir = path.join(config.dataDir, targetId);
+
+  if (!fs.existsSync(serverDir)) {
+    return res.status(404).json({ error: 'Server directory not found' });
+  }
+
+  const stored = readPackHealth(serverDir);
+  const { scanned, unresolved } = analyzeInstalledMods(serverDir);
+
+  // Reconcile the stored reasons against what is actually sitting in the quarantine folder, so a
+  // mod restored by hand (or by the endpoint below) stops being listed as disabled.
+  const quarantineDir = path.join(serverDir, CLIENT_MODS_DIR);
+  const disabledNow = fs.existsSync(quarantineDir)
+    ? fs.readdirSync(quarantineDir).filter((f) => f.toLowerCase().endsWith('.jar'))
+    : [];
+
+  const byName = new Map((stored?.quarantined ?? []).map((q) => [q.fileName, q]));
+  const quarantined = disabledNow.map(
+    (fileName) =>
+      byName.get(fileName) || {
+        fileName,
+        reason: 'declared-client' as const,
+        // Restored-then-requarantined jars, or ones disabled before this report existed.
+        detail: 'Disabled before the current health report was generated — reason not recorded',
+      }
+  );
+
+  res.json({
+    generatedAt: stored?.generatedAt ?? null,
+    scanned,
+    enabled: scanned,
+    quarantined,
+    unresolved,
+    unidentified: (stored?.unidentified ?? []).filter((f) => !disabledNow.includes(f)),
+  });
+});
+
+// POST /api/v1/servers/:serverId/pack-health/toggle  { fileName, enable }
+//
+// Moves a single jar between mods/ and client-mods-disabled/. Restoring is the escape hatch for
+// when the scan is wrong about a mod — which is why quarantine moves files instead of deleting.
+router.post('/:serverId/pack-health/toggle', (req: Request, res: Response) => {
+  const targetId = req.params.serverId.replace('process-', '');
+  const { fileName, enable } = req.body || {};
+
+  if (typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.jar')) {
+    return res.status(400).json({ error: 'fileName must be a .jar' });
+  }
+  // The name is pasted straight into a path, so it must be a bare filename.
+  if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) {
+    return res.status(400).json({ error: 'fileName must not contain a path' });
+  }
+
+  const serverDir = path.join(config.dataDir, targetId);
+  const modsDir = path.join(serverDir, 'mods');
+  const quarantineDir = path.join(serverDir, CLIENT_MODS_DIR);
+
+  const from = enable ? path.join(quarantineDir, fileName) : path.join(modsDir, fileName);
+  const to = enable ? path.join(modsDir, fileName) : path.join(quarantineDir, fileName);
+
+  if (!fs.existsSync(from)) {
+    return res.status(404).json({ error: `'${fileName}' is not in ${enable ? CLIENT_MODS_DIR : 'mods'}/` });
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.renameSync(from, to);
+  } catch (e: any) {
+    return res.status(500).json({ error: 'Failed to move mod', details: e.message });
+  }
+
+  const { unresolved } = analyzeInstalledMods(serverDir);
+  res.json({ success: true, fileName, enabled: !!enable, unresolved, restartRequired: true });
 });
 
 // GET /api/v1/servers/:serverId/backups
@@ -1795,7 +2059,7 @@ router.post('/:serverId/backups', async (req: Request, res: Response) => {
         const container = await getContainerByIdOrName(containerId);
         const exec = await container.exec({ Cmd: ['rcli', 'save-all'], AttachStdin: false, AttachStdout: false });
         await exec.start({});
-      } catch (e) {}
+      } catch (e) { }
       try {
         console.log(`[Backups] Syncing live container volume data to host for '${targetId}'...`);
         await syncContainerToHost(targetId);
@@ -1835,7 +2099,7 @@ router.post('/:serverId/backups/restore', async (req: Request, res: Response) =>
         if (wasRunning) {
           await stopServerContainer(containerId);
         }
-      } catch (e) {}
+      } catch (e) { }
     } else {
       wasRunning = processManager.isRunning(targetId);
       if (wasRunning) {
@@ -1850,7 +2114,7 @@ router.post('/:serverId/backups/restore', async (req: Request, res: Response) =>
     try {
       execSync(`chown -R 1000:1000 "${serverDir}"`);
       execSync(`chmod -R 775 "${serverDir}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     // In Docker mode, wipe stale container volume data and sync restored files into volume mc_data_${targetId}
     if (isDocker) {
@@ -1874,7 +2138,7 @@ router.post('/:serverId/backups/restore', async (req: Request, res: Response) =>
         const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
         let dto: any = { serverId: targetId, mcVersion: '26.2', serverType: 'FABRIC', serverPort: 25565, memoryMb: 4096, eulaAccepted: true, executionMode: ExecutionMode.PROCESS };
         if (fs.existsSync(metaPath)) {
-          try { dto = { ...dto, ...JSON.parse(fs.readFileSync(metaPath, 'utf8')) }; } catch (e) {}
+          try { dto = { ...dto, ...JSON.parse(fs.readFileSync(metaPath, 'utf8')) }; } catch (e) { }
         }
         await processManager.startProcess(dto).catch((err) => {
           console.error(`[Backups] Failed to restart process ${targetId}:`, err);
@@ -1922,7 +2186,7 @@ router.post('/:serverId/subdomain', (req: Request, res: Response) => {
       meta.subdomain = subdomain;
       meta.domain = domain;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-    } catch (e) {}
+    } catch (e) { }
   }
 
   console.log(`[ProxyRouter] Configured subdomain route for server ${targetId}: ${subdomain}.${domain} -> port ${port}`);
@@ -1952,14 +2216,14 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
     for (const f of stagedFiles) {
       const stagedPath = path.join(stagingDir, f);
       if (fs.existsSync(stagedPath)) {
-        try { fs.renameSync(stagedPath, path.join(serverDir, f)); } catch (e) {}
+        try { fs.renameSync(stagedPath, path.join(serverDir, f)); } catch (e) { }
       }
     }
     if (originalMetaRaw !== null) {
-      try { fs.writeFileSync(metaPath, originalMetaRaw); } catch (e) {}
+      try { fs.writeFileSync(metaPath, originalMetaRaw); } catch (e) { }
     }
     if (stagingActive) {
-      try { fs.rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) {}
+      try { fs.rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { }
       stagingActive = false;
     }
   };
@@ -1985,7 +2249,7 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
         if (wasRunning) {
           await stopServerContainer(containerId);
         }
-      } catch (e) {}
+      } catch (e) { }
     } else {
       wasRunning = processManager.isRunning(targetId);
       if (wasRunning) {
@@ -2019,7 +2283,7 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
       try {
         originalMetaRaw = fs.readFileSync(metaPath, 'utf8');
         meta = { ...JSON.parse(originalMetaRaw), ...meta };
-      } catch (e) {}
+      } catch (e) { }
     }
     meta.serverType = serverType;
     meta.mcVersion = mcVersion;
@@ -2075,7 +2339,7 @@ router.post('/:serverId/update-engine', async (req: Request, res: Response) => {
     try {
       execSync(`chown -R 1000:1000 "${serverDir}"`);
       execSync(`chmod -R 775 "${serverDir}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     // 7. Restart server if it was previously running
     if (wasRunning) {
@@ -2125,7 +2389,7 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
         if (wasRunning) {
           await stopServerContainer(containerId);
         }
-      } catch (e) {}
+      } catch (e) { }
     } else {
       wasRunning = processManager.isRunning(targetId);
       if (wasRunning) {
@@ -2143,12 +2407,12 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
     if (fs.existsSync(worldDir)) {
       // 1. Backup all level headers on host
       if (fs.existsSync(levelDat)) {
-        try { fs.copyFileSync(levelDat, path.join(worldDir, 'level.dat.corrupt')); } catch (e) {}
-        try { fs.rmSync(levelDat, { force: true }); } catch (e) {}
+        try { fs.copyFileSync(levelDat, path.join(worldDir, 'level.dat.corrupt')); } catch (e) { }
+        try { fs.rmSync(levelDat, { force: true }); } catch (e) { }
       }
       if (fs.existsSync(levelDatOld)) {
-        try { fs.copyFileSync(levelDatOld, path.join(worldDir, 'level.dat_old.corrupt')); } catch (e) {}
-        try { fs.rmSync(levelDatOld, { force: true }); } catch (e) {}
+        try { fs.copyFileSync(levelDatOld, path.join(worldDir, 'level.dat_old.corrupt')); } catch (e) { }
+        try { fs.rmSync(levelDatOld, { force: true }); } catch (e) { }
       }
 
       // 2. Disable incompatible datapacks if present
@@ -2159,13 +2423,13 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
           if (fs.existsSync(dpBackup)) fs.rmSync(dpBackup, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
           fs.renameSync(datapacksDir, dpBackup);
           fs.mkdirSync(datapacksDir, { recursive: true });
-        } catch (e) {}
+        } catch (e) { }
       }
 
       // 3. Remove legacy './world/players' directory causing conversion exception
       const oldPlayersDir = path.join(worldDir, 'players');
       if (fs.existsSync(oldPlayersDir)) {
-        try { fs.rmSync(oldPlayersDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) {}
+        try { fs.rmSync(oldPlayersDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { }
       }
 
       repairedMethod = 'Purged invalid level.dat headers, removed legacy ./world/players, & disabled incompatible datapacks';
@@ -2178,20 +2442,20 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
       try {
         console.log(`[RepairWorld] Purging level.dat & legacy players inside Docker volume mc_data_${targetId}...`);
         execSync(`docker run --rm -v "mc_data_${targetId}:/data" alpine rm -rf /data/world/level.dat /data/world/level.dat_old /data/world/datapacks /data/world/players`, { stdio: 'ignore' });
-      } catch (e) {}
+      } catch (e) { }
     }
 
     // Fix host directory permissions for UID 1000
     try {
       execSync(`chown -R 1000:1000 "${serverDir}"`);
       execSync(`chmod -R 775 "${serverDir}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     // Sync repaired files to container volume if in Docker mode
     if (isDocker) {
       try {
         await syncServerDirToContainer(containerId, targetId);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     // Restart server if it was previously running
@@ -2204,7 +2468,7 @@ router.post('/:serverId/repair-world', async (req: Request, res: Response) => {
         const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
         let dto: any = { serverId: targetId, mcVersion: '26.2', serverType: 'FABRIC', serverPort: 25565, memoryMb: 4096, eulaAccepted: true, executionMode: ExecutionMode.CONTAINER };
         if (fs.existsSync(metaPath)) {
-          try { dto = { ...dto, ...JSON.parse(fs.readFileSync(metaPath, 'utf8')) }; } catch (e) {}
+          try { dto = { ...dto, ...JSON.parse(fs.readFileSync(metaPath, 'utf8')) }; } catch (e) { }
         }
         await processManager.startProcess(dto).catch((err) => {
           console.error(`[RepairWorld] Failed to restart process:`, err);
@@ -2234,7 +2498,7 @@ router.post('/:serverId/recreate-container', async (req: Request, res: Response)
     return res.json({ success: true, skipped: true, message: 'Process-mode servers have no container to rebuild.' });
   }
 
-  const { bluemapPort } = req.body || {};
+  const { bluemapPort, memoryMb, cpuLimit } = req.body || {};
   const serverDir = getSafeServerPath(targetId, '');
   if (!serverDir) return res.status(403).json({ error: 'Access denied' });
 
@@ -2264,8 +2528,14 @@ router.post('/:serverId/recreate-container', async (req: Request, res: Response)
       console.warn(`[Recreate] Remove warning for ${targetId}: ${e.message}`);
     }
 
-    // 3. Rebuild with the map port published
+    // 3. Rebuild with the map port published, and with any resource limits the panel is
+    //    changing — a container's memory and CPU limits are fixed at creation, so a rebuild
+    //    is the only point at which they can be revised.
     if (bluemapPort) dto.bluemapPort = parseInt(String(bluemapPort), 10);
+    const newMemoryMb = parseInt(String(memoryMb), 10);
+    if (Number.isFinite(newMemoryMb) && newMemoryMb > 0) dto.memoryMb = newMemoryMb;
+    const newCpuLimit = parseFloat(String(cpuLimit));
+    if (Number.isFinite(newCpuLimit) && newCpuLimit > 0) dto.cpuLimit = newCpuLimit;
     dto.eulaAccepted = true;
     fs.writeFileSync(metaPath, JSON.stringify(dto, null, 2));
 
@@ -2370,7 +2640,7 @@ router.get('/:serverId/logs/tail', async (req: Request, res: Response) => {
           return res.json({ source: `crash-reports/${newest.f}`, lines: content.slice(0, lines) });
         }
       }
-    } catch (e) {}
+    } catch (e) { }
 
     // 3. logs/latest.log — where a crashed server's output actually survives on disk
     for (const rel of ['logs/latest.log', 'logs/console.log']) {
@@ -2380,7 +2650,7 @@ router.get('/:serverId/logs/tail', async (req: Request, res: Response) => {
           const content = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
           if (content.length > 0) return res.json({ source: rel, lines: content.slice(-lines) });
         }
-      } catch (e) {}
+      } catch (e) { }
     }
   }
 
@@ -2467,7 +2737,7 @@ router.get('/:serverId/bluemap/probe', async (req: Request, res: Response) => {
       const socket = new (require('net').Socket)();
       const done = (ok: boolean, err?: string) => {
         if (err) result.listenError = err;
-        try { socket.destroy(); } catch (e) {}
+        try { socket.destroy(); } catch (e) { }
         resolve(ok);
       };
       socket.setTimeout(3000);
@@ -2602,7 +2872,7 @@ router.delete('/:serverId/bluemap', async (req: Request, res: Response) => {
     if (!serverId.startsWith('process-')) {
       try {
         await syncServerDirToContainer(`mc-server-${targetId}`, targetId);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     res.json({ success: true, message: 'BlueMap removed. Restart the server to unload it.' });
@@ -2856,7 +3126,7 @@ router.get('/:serverId/mods/search', async (req: Request, res: Response) => {
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
           detectedVersion = detectedVersion || meta.mcVersion || meta.installedVersion;
           detectedLoader = detectedLoader || meta.serverType;
-        } catch (e) {}
+        } catch (e) { }
       }
     }
 
@@ -2895,7 +3165,7 @@ router.get('/:serverId/mods/versions/:projectId', async (req: Request, res: Resp
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
           detectedVersion = detectedVersion || meta.mcVersion || meta.installedVersion;
           detectedLoader = detectedLoader || meta.serverType;
-        } catch (e) {}
+        } catch (e) { }
       }
     }
 
@@ -2938,7 +3208,7 @@ router.post('/:serverId/mods/install', async (req: Request, res: Response) => {
     }
 
     const outputPath = path.join(modsDir, fileName);
-    
+
     // Check if file already exists
     if (fs.existsSync(outputPath)) {
       return res.status(409).json({ error: 'Mod already installed', fileName });
@@ -2950,7 +3220,7 @@ router.post('/:serverId/mods/install', async (req: Request, res: Response) => {
     try {
       execSync(`chown -R 1000:1000 "${modsDir}"`);
       execSync(`chmod -R 775 "${modsDir}"`);
-    } catch (e) {}
+    } catch (e) { }
 
     // Sync to container if running in Docker mode
     const containerName = `mc-server-${serverId}`;

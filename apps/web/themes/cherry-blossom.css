@@ -1,0 +1,48 @@
+/*
+ * @name Cherry Blossom
+ * @author CraftControl
+ * @description Soft sakura pinks over warm paper — a light theme for spring.
+ * @scheme light
+ *
+ * A CraftControl theme. Upload it under My account → Appearance.
+ *
+ * Only the tokens below are read. The panel validates every value as a colour and then
+ * rebuilds the stylesheet from the parsed result, so anything else in this file — other
+ * selectors, url(), @import, extra properties — is ignored rather than applied.
+ *
+ * Copy this file, change the values, re-upload. Any token you leave out falls back to the
+ * built-in light palette, so a partial theme is perfectly valid.
+ */
+
+:root {
+  /* Page and panel surfaces, lightest to deepest */
+  --bg: #fff5f7;
+  --surface: #ffffff;
+  --surface-2: #ffe9f0;
+
+  /* Hairlines and card outlines */
+  --border: #f9d9e4;
+  --border-2: #f0bbcf;
+
+  /* Body copy and secondary text */
+  --text-primary: #4a2c38;
+  --text-muted: #8d6b78;
+
+  /* The petal pink everything keys off. --on-accent is the text that sits ON it,
+     so it has to contrast with --accent rather than with the page. */
+  --accent: #d13a72;
+  --accent-dim: rgba(209, 58, 114, 0.10);
+  --accent-border: rgba(209, 58, 114, 0.28);
+  --on-accent: #ffffff;
+
+  /* Status colours — kept deliberately distinct from the pink accent so a warning
+     still reads as a warning and not as decoration. */
+  --warning: #b5651d;
+  --danger: #c0392b;
+
+  /* Advanced-mode highlights: a plum that sits beside the pink without clashing */
+  --advanced: #7a4fbf;
+  --advanced-solid: #8b5cf6;
+  --advanced-dim: rgba(139, 92, 246, 0.10);
+  --advanced-border: rgba(139, 92, 246, 0.28);
+}

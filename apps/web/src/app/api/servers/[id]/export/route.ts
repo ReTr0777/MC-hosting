@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       const text = await exportRes.text().catch(() => '');
       return NextResponse.json({ error: `Export failed: HTTP ${exportRes.status}${text ? ` — ${text.slice(0, 200)}` : ''}` }, { status: 502 });
     }
+
+    await writeAudit({ userId: user.userId, action: 'SERVER_EXPORT', details: { serverId: server.id, serverName: server.name } });
 
     return new NextResponse(exportRes.body, {
       status: 200,

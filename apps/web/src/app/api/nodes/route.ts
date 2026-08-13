@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
+import { writeAudit } from '@/lib/audit';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -75,6 +76,8 @@ export async function POST(req: NextRequest) {
         totalCpu: totalCpu || 4,
       },
     });
+
+    await writeAudit({ userId: user.userId, action: 'NODE_CREATE', details: { nodeId: node.id, name: node.name, host: node.host } });
 
     return NextResponse.json({ message: 'Node registered successfully', node }, { status: 201 });
   } catch (err: any) {

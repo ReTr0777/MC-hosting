@@ -607,7 +607,7 @@ export default function DashboardPage() {
   const initials = user.username.slice(0, 2).toUpperCase();
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', display: 'flex', flexDirection: 'column' }}>
 
       {/* ── Top Navbar ── */}
       <header className="p-3 sm:px-6 sticky top-0 z-40" style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
@@ -629,6 +629,9 @@ export default function DashboardPage() {
                 </Link>
                 <Link href="/dashboard/settings" className="text-xs font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-md">
                   Settings
+                </Link>
+                <Link href="/dashboard/audit-log" className="text-xs font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/20 px-2.5 py-1 rounded-md">
+                  Audit Log
                 </Link>
               </div>
             )}
@@ -715,7 +718,7 @@ export default function DashboardPage() {
       <main className="flex-1 flex flex-col lg:flex-row w-full">
 
         {/* LEFT: Active Nodes panel */}
-        <aside className="w-full lg:w-72 lg:min-w-[288px] p-4 lg:p-6 space-y-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <aside className="w-full lg:w-72 lg:min-w-[288px] p-4 lg:p-6 space-y-3 cc-side-divider">
           <div className="cc-section-title" style={{ marginBottom: '8px' }}>Active nodes</div>
 
           {nodes.length === 0 ? (

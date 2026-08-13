@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -81,6 +82,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           select: { id: true, username: true, email: true },
         },
       },
+    });
+
+    await writeAudit({
+      userId: user.userId,
+      action: 'PERMISSION_GRANT',
+      details: { serverId: params.id, targetUserId, role },
     });
 
     return NextResponse.json({ permission });

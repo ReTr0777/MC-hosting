@@ -154,11 +154,57 @@ export const DENYLIST_PROJECT_SLUGS = [
   'modmenu',
 ];
 
-// Substring matching against paths & bundled jars in overrides/mods/
+/**
+ * Substring matching against paths & bundled jars in overrides/mods/.
+ *
+ * The single source of truth for "this mod cannot run on a dedicated server", shared by every
+ * install path. It used to be duplicated — a three-entry copy here for daemon-side mrpack
+ * builds and a much longer one in docker.ts for the itzg image — and the two drifted, so a mod
+ * one path knew to exclude would sail through the other and crash the boot.
+ *
+ * Entries are matched as substrings of the jar filename, so keep them specific enough not to
+ * collide with unrelated mods.
+ */
 export const DENYLIST_PATH_SUBSTRINGS = [
+  // Open a GUI or otherwise assume a display, and die on HeadlessException.
   'missingmodschecker',
   'missing-mods-checker',
+  'bettercompatibilitychecker',
+  'better-compatibility-checker',
+  'bcc',
+  'crashexploitfixer',
+  'crash-exploit-fixer',
+  // Client config / menu UI.
   'modmenu',
+  'mod-menu',
+  'forgeconfigscreens',
+  'forge-config-screens',
+  'catalogue',
+  'configured',
+  'controlify',
+  'serverbrowser',
+  'server-browser',
+  // Client rendering and input.
+  'iris',
+  'sodium',
+  'oculus',
+  'rubidium',
+  'entityculling',
+  '3dskinlayers',
+  'zoomify',
+  'freecam',
+  'soundphysics',
+  'sound_physics',
+  // Client inventory / QoL.
+  'item-group-extra',
+  'inventorytabs',
+  'inventory-tabs',
+  'client-sort',
+  'smooth-swapping',
+  // Rich presence integrations.
+  'discord-rpc',
+  'presence',
+  'craftpresence',
 ];
 
 function pathMatchesDenylist(lowerPath: string): boolean {
@@ -172,25 +218,49 @@ export interface ModrinthVersionDetails {
   modrinthPageUrl: string;
 }
 
+/**
+ * Finds the newest .mrpack for a modpack project.
+ *
+ * `loader` is optional on purpose. Filtering by `loaders: ["fabric"]` — which this used to do
+ * unconditionally — makes every Forge, NeoForge and Quilt pack resolve to "No matching
+ * versions found", because their versions are not tagged fabric. The loader a pack needs is
+ * declared inside its own `modrinth.index.json` and is detected when the pack is
+ * materialized, so there is nothing to gain by guessing it here.
+ */
 export async function resolveMrpackDetails(slug: string, options: { gameVersion?: string; loader?: string } = {}): Promise<ModrinthVersionDetails> {
-  const { gameVersion, loader = 'fabric' } = options;
+  const { gameVersion, loader } = options;
   const params = new URLSearchParams();
   if (loader) params.set('loaders', JSON.stringify([loader]));
-  if (gameVersion) params.set('game_versions', JSON.stringify([gameVersion]));
+  // 'LATEST' is the panel's own placeholder, not a Minecraft version Modrinth knows.
+  if (gameVersion && gameVersion.toUpperCase() !== 'LATEST') {
+    params.set('game_versions', JSON.stringify([gameVersion]));
+  }
 
-  const res = await fetch(`${MODRINTH_API}/project/${slug}/version?${params}`, {
+  const query = params.toString();
+  const res = await fetch(`${MODRINTH_API}/project/${slug}/version${query ? `?${query}` : ''}`, {
     headers: { 'User-Agent': 'CraftControl-Daemon/1.0.0 (https://github.com/mc-server-manager)' },
   });
 
   if (!res.ok) throw new Error(`Modrinth version lookup failed for ${slug}: ${res.status}`);
   const versions = await res.json();
-  if (!versions.length) throw new Error(`No matching versions found for ${slug}`);
-
-  const chosen = versions[0];
-  const primaryFile = chosen.files.find((f: any) => f.primary) ?? chosen.files[0];
-  if (!primaryFile?.url?.endsWith('.mrpack')) {
-    throw new Error(`Resolved version for ${slug} has no .mrpack file`);
+  if (!Array.isArray(versions) || versions.length === 0) {
+    throw new Error(
+      `No published versions of '${slug}'` +
+        (gameVersion && gameVersion.toUpperCase() !== 'LATEST' ? ` for Minecraft ${gameVersion}` : '') +
+        (loader ? ` on ${loader}` : '') +
+        '. Check the version and loader on the modpack page.'
+    );
   }
+
+  // The API returns newest first. Skip any version whose primary file is not a .mrpack
+  // rather than failing on it — some projects attach extra artefacts.
+  const chosen = pickMrpackVersion(versions);
+  if (!chosen) {
+    throw new Error(`No version of '${slug}' ships a .mrpack file, so there is nothing to build a server from.`);
+  }
+
+  const primaryFile = chosen.files.find((f: any) => f.primary && f.url?.endsWith('.mrpack'))
+    ?? chosen.files.find((f: any) => f.url?.endsWith('.mrpack'));
 
   return {
     url: primaryFile.url,
@@ -198,6 +268,14 @@ export async function resolveMrpackDetails(slug: string, options: { gameVersion?
     versionNumber: chosen.version_number,
     modrinthPageUrl: `https://modrinth.com/modpack/${slug}/version/${chosen.id}`,
   };
+}
+
+export function pickMrpackVersion(versions: any[]): any | null {
+  for (const version of versions) {
+    const files: any[] = Array.isArray(version?.files) ? version.files : [];
+    if (files.some((f) => typeof f?.url === 'string' && f.url.endsWith('.mrpack'))) return version;
+  }
+  return null;
 }
 
 /**

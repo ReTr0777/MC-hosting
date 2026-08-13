@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest, hashPassword } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function PATCH(
   req: NextRequest,
@@ -39,6 +40,12 @@ export async function PATCH(
         maxCpu: true,
       }
     });
+    const changedFields = Object.keys(dataToUpdate).map((f) => (f === 'passwordHash' ? 'password' : f));
+    await writeAudit({
+      userId: admin.userId,
+      action: 'USER_UPDATE',
+      details: { targetUserId: params.id, changedFields },
+    });
     return NextResponse.json(user);
   } catch (error) {
     return NextResponse.json({ error: 'Failed to update user' }, { status: 500 });
@@ -62,6 +69,7 @@ export async function DELETE(
     await prisma.user.delete({
       where: { id: params.id }
     });
+    await writeAudit({ userId: admin.userId, action: 'USER_DELETE', details: { targetUserId: params.id } });
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to delete user' }, { status: 500 });

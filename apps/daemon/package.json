@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
+    "test": "tsx --test src/**/*.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@types/node": "^20.11.30",
     "@types/ws": "^8.5.10",
     "ts-node-dev": "^2.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.4.0"
   }
 }

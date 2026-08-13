@@ -5,50 +5,25 @@ import AdmZip from 'adm-zip';
 import { execSync } from 'child_process';
 import { CreateServerContainerDto } from '@mc-manager/shared';
 import { getConfig } from '../config';
-import { sanitizeMrpack } from './modrinth';
+import { sanitizeMrpack, DENYLIST_PATH_SUBSTRINGS } from './modrinth';
+import { readInstalledModpack } from './modrinth-provision';
 import { buildServerWithServerPackCreator } from './serverpackcreator';
 import { installCurseForgeModpack } from './curseforge';
 import { provisioningManager, STATUS } from './provisioning';
 import { tunnelManager } from './frpc';
+import { tryPing } from './mc-ping';
+// presence.ts imports getContainerByIdOrName from here, so this is a cycle. It is safe because
+// neither side touches the other at module scope — both only call across inside functions.
+import { presenceService } from './presence';
 
 const docker = new Docker();
-const CLIENT_ONLY_DENYLIST = [
-  'missingmodschecker',
-  'missing-mods-checker',
-  'modmenu',
-  'mod-menu',
-  'crashexploitfixer',
-  'crash-exploit-fixer',
-  'entityculling',
-  'item-group-extra',
-  'inventorytabs',
-  'inventory-tabs',
-  'discord-rpc',
-  'presence',
-  'craftpresence',
-  'catalogue',
-  'configured',
-  'client-sort',
-  'smooth-swapping',
-  'controlify',
-  '3dskinlayers',
-  'forgeconfigscreens',
-  'krypton',
-  'forge-config-screens',
-  'bettercompatibilitychecker',
-  'better-compatibility-checker',
-  'bcc',
-  'serverbrowser',
-  'server-browser',
-  'soundphysics',
-  'sound_physics',
-  'zoomify',
-  'freecam',
-  'iris',
-  'sodium',
-  'oculus',
-  'rubidium',
-];
+
+/**
+ * Client-only mods, shared with the daemon-side mrpack builder so both install paths exclude
+ * exactly the same set. Keeping a second copy here is what let `forgeconfigscreens` be filtered
+ * on one path and crash the boot on the other.
+ */
+const CLIENT_ONLY_DENYLIST = DENYLIST_PATH_SUBSTRINGS;
 
 export function getItzgImageTag(mcVersion?: string): string {
   if (!mcVersion || mcVersion === 'LATEST') return 'itzg/minecraft-server:latest';
@@ -294,7 +269,30 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
   }
 
   if (dto.serverType === 'MODRINTH' && dto.modpackSlug) {
-    if (!dto.isMigration) {
+    // The pack is built once, by the daemon, before the container is ever created — see
+    // provisionModrinthPack. When that has already happened the directory holds a complete
+    // server, so the container's job is only to run it. Letting the image fetch the modpack
+    // again here would download it a second time and fight the files already on disk.
+    const prebuilt = readInstalledModpack(serverDir);
+
+    if (prebuilt && !dto.isMigration) {
+      const typeForLoader: Record<string, string> = {
+        fabric: 'FABRIC',
+        quilt: 'QUILT',
+        forge: 'FORGE',
+        neoforge: 'NEOFORGE',
+        vanilla: 'VANILLA',
+      };
+      const resolvedType = typeForLoader[prebuilt.loader] || 'FABRIC';
+      console.log(
+        `[Daemon] Modpack '${dto.modpackSlug}' is already built (${prebuilt.loader}, ` +
+        `${prebuilt.modsDownloaded} mods) — launching container with TYPE=${resolvedType}.`
+      );
+      envVars.push(`TYPE=${resolvedType}`);
+
+      const version = prebuilt.mcVersion || dto.mcVersion;
+      if (version && version !== 'LATEST') envVars.push(`VERSION=${version}`);
+    } else if (!dto.isMigration) {
       console.log(`[Daemon] Triggering ServerPackCreator CLI workflow for Modrinth modpack '${dto.modpackSlug}'...`);
       let spcSuccess = false;
       try {
@@ -547,6 +545,51 @@ const FATAL_PATTERNS = [
 const MOD_COUNT_PATTERN = /Loading\s+(\d+)\s+mods?:/i;
 const READY_PATTERN = /Done \([\d.]+s\)! For help, type "help"/i;
 
+/**
+ * How long a container gets to reach "accepting connections" before the watchdog gives up.
+ * Large modpacks legitimately need far longer than a vanilla server — hundreds of mods plus
+ * first-run world generation routinely runs past ten minutes — so the budget is generous and
+ * overridable per deployment.
+ */
+const BOOT_BUDGET_MS = Number(process.env.BOOT_TIMEOUT_MS) || 30 * 60 * 1000;
+const BOOT_PING_INTERVAL_MS = 10000;
+
+/**
+ * Every address the daemon might reach this container's Minecraft port on. The daemon runs on
+ * the host in some deployments and inside a container in others, so rather than guess we try
+ * each candidate and keep whichever answers.
+ */
+async function resolveProbeTargets(container: Docker.Container): Promise<Array<{ host: string; port: number }>> {
+  const targets: Array<{ host: string; port: number }> = [];
+  try {
+    const inspect = await container.inspect();
+
+    const containerIp = inspect.NetworkSettings?.IPAddress;
+    if (containerIp) targets.push({ host: containerIp, port: 25565 });
+
+    const binding = inspect.HostConfig?.PortBindings?.['25565/tcp']?.[0]?.HostPort;
+    if (binding) {
+      const port = parseInt(binding, 10);
+      targets.push({ host: '127.0.0.1', port });
+      if (process.env.HOST_IP) targets.push({ host: process.env.HOST_IP, port });
+      targets.push({ host: 'host.docker.internal', port });
+    }
+  } catch (e: any) {
+    console.warn(`[Daemon Watchdog] Could not inspect container for probe targets: ${e.message}`);
+  }
+  return targets;
+}
+
+/**
+ * Watches a freshly started container until the Minecraft server is genuinely joinable.
+ *
+ * Readiness is confirmed two independent ways — the "Done (…)" log line and a real status ping
+ * against the server port — because a boot can succeed without the watcher ever seeing that log
+ * line (dropped log stream, non-standard launch script, restored container). The watchdog never
+ * reports RUNNING on a timeout: a server that has not answered a ping is not one a player can
+ * join, and claiming otherwise is exactly what makes the panel show RUNNING while the client
+ * sees "Can't connect to server".
+ */
 export async function watchContainerStartup(
   containerId: string,
   serverId: string,
@@ -563,88 +606,141 @@ export async function watchContainerStartup(
       tail: 0,
     });
   } catch (err: any) {
+    // Losing the log stream is survivable — the ping probe below is authoritative on its own.
     console.warn(`[Daemon Watchdog] Could not attach log watcher to container ${containerId}: ${err.message}`);
-    return { status: 'RUNNING' };
   }
 
   return new Promise((resolve) => {
     let actualModCount: number | null = null;
+    let settled = false;
+    let pingTimer: NodeJS.Timeout | null = null;
+    const startedAt = Date.now();
 
     const cleanup = () => {
+      if (pingTimer) clearInterval(pingTimer);
+      clearTimeout(timeout);
       if (stream) {
         try { (stream as any).destroy(); } catch (e) {}
       }
     };
 
-    const timeout = setTimeout(() => {
+    const succeed = (via: string) => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      resolve({ status: 'RUNNING', degraded: true, reason: 'Boot log watcher timed out' });
-    }, 180000);
 
-    stream.on('data', async (chunk: Buffer) => {
-      const line = chunk.toString('utf8');
+      let isDegraded = false;
+      let reason = `Server booted cleanly (confirmed via ${via})`;
 
-      // 1. Fail Fast: Check for fatal launcher/DNS installation errors
-      for (const pattern of FATAL_PATTERNS) {
-        if (pattern.test(line)) {
-          clearTimeout(timeout);
-          cleanup();
-
-          const reason = `Fabric loader install failed: ${line.trim()}`;
-          console.error(`[Daemon Watchdog Fatal] ${reason}`);
-          provisioningManager.emitLog(serverId, 'daemon', `[FATAL ERROR] ${reason}`);
-          provisioningManager.emit('status', { serverId, status: STATUS.FAILED, error: reason });
-
-          // Abort and stop the broken container immediately
-          try { await container.stop({ t: 2 }); } catch (e) {}
-
-          resolve({ status: 'FAILED', reason });
-          return;
+      if (expectedModCount && expectedModCount > 10) {
+        const minExpected = Math.floor(expectedModCount * 0.5); // 50% threshold
+        if (actualModCount === null || actualModCount < minExpected) {
+          isDegraded = true;
+          reason = `Degraded boot: only ${actualModCount || 0} mods loaded, expected ~${expectedModCount}`;
+          console.warn(`[Daemon Watchdog Warning] ${reason}`);
+          provisioningManager.emitLog(serverId, 'daemon', `[WARNING] ${reason}`);
         }
       }
 
-      // 2. Parse Fabric loaded mod count
-      const modMatch = line.match(MOD_COUNT_PATTERN);
-      if (modMatch) {
-        actualModCount = parseInt(modMatch[1], 10);
-        console.log(`[Daemon Watchdog] Detected ${actualModCount} mods loading on server ${serverId}`);
-        provisioningManager.emitLog(serverId, 'daemon', `[Daemon Watchdog] Loaded ${actualModCount} mods into memory`);
+      provisioningManager.emit('status', {
+        serverId,
+        status: STATUS.RUNNING,
+        degraded: isDegraded,
+        reason,
+      });
+
+      resolve({ status: 'RUNNING', degraded: isDegraded, reason });
+    };
+
+    const fail = (reason: string, stopContainer: boolean) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+
+      console.error(`[Daemon Watchdog Fatal] ${reason}`);
+      provisioningManager.emitLog(serverId, 'daemon', `[FATAL ERROR] ${reason}`);
+      provisioningManager.emit('status', { serverId, status: STATUS.FAILED, error: reason });
+
+      if (stopContainer) {
+        container.stop({ t: 2 }).catch(() => {});
       }
 
-      // 3. Ready signal ("Done!")
-      if (READY_PATTERN.test(line)) {
-        clearTimeout(timeout);
-        cleanup();
+      resolve({ status: 'FAILED', reason });
+    };
 
-        let isDegraded = false;
-        let reason = 'Server booted cleanly';
+    const timeout = setTimeout(() => {
+      fail(
+        `Server never accepted connections within ${Math.round(BOOT_BUDGET_MS / 60000)} minutes — ` +
+          `it is still starting, stuck, or crashed. Check the console for the last error.`,
+        false
+      );
+    }, BOOT_BUDGET_MS);
 
-        if (expectedModCount && expectedModCount > 10) {
-          const minExpected = Math.floor(expectedModCount * 0.5); // 50% threshold
-          if (actualModCount === null || actualModCount < minExpected) {
-            isDegraded = true;
-            reason = `Degraded boot: only ${actualModCount || 0} mods loaded, expected ~${expectedModCount}`;
-            console.warn(`[Daemon Watchdog Warning] ${reason}`);
-            provisioningManager.emitLog(serverId, 'daemon', `[WARNING] ${reason}`);
+    // Probe the server port until it answers a real status ping. That is what actually proves a
+    // player can connect, and it is the only signal that survives a missing "Done" line.
+    (async () => {
+      const targets = await resolveProbeTargets(container);
+      if (targets.length === 0 || settled) return;
+
+      pingTimer = setInterval(async () => {
+        if (settled) return;
+        for (const t of targets) {
+          if (await tryPing(t.host, t.port, 2000)) {
+            succeed(`status ping ${t.host}:${t.port}`);
+            return;
           }
         }
 
-        provisioningManager.emit('status', {
-          serverId,
-          status: STATUS.RUNNING,
-          degraded: isDegraded,
-          reason,
-        });
+        const elapsedMs = Date.now() - startedAt;
+        if (elapsedMs % (5 * 60000) < BOOT_PING_INTERVAL_MS) {
+          provisioningManager.emitLog(
+            serverId,
+            'daemon',
+            `[Daemon Watchdog] Still booting after ${Math.round(elapsedMs / 60000)}m — not accepting connections yet.`
+          );
+        }
+      }, BOOT_PING_INTERVAL_MS);
+    })();
 
-        resolve({ status: 'RUNNING', degraded: isDegraded, reason });
-      }
-    });
+    // A container that exits before it is ready has crashed, however clean its logs looked.
+    container
+      .wait()
+      .then((res: any) => {
+        fail(`Server process exited during startup with code ${res?.StatusCode ?? 'unknown'}`, false);
+      })
+      .catch(() => {});
 
-    stream.on('error', (err) => {
-      clearTimeout(timeout);
-      cleanup();
-      resolve({ status: 'RUNNING', degraded: true, reason: err.message });
-    });
+    if (stream) {
+      stream.on('data', (chunk: Buffer) => {
+        const line = chunk.toString('utf8');
+
+        // 1. Fail Fast: Check for fatal launcher/DNS installation errors
+        for (const pattern of FATAL_PATTERNS) {
+          if (pattern.test(line)) {
+            fail(`Fabric loader install failed: ${line.trim()}`, true);
+            return;
+          }
+        }
+
+        // 2. Parse Fabric loaded mod count
+        const modMatch = line.match(MOD_COUNT_PATTERN);
+        if (modMatch) {
+          actualModCount = parseInt(modMatch[1], 10);
+          console.log(`[Daemon Watchdog] Detected ${actualModCount} mods loading on server ${serverId}`);
+          provisioningManager.emitLog(serverId, 'daemon', `[Daemon Watchdog] Loaded ${actualModCount} mods into memory`);
+        }
+
+        // 3. Ready signal ("Done!")
+        if (READY_PATTERN.test(line)) {
+          succeed('boot log');
+        }
+      });
+
+      stream.on('error', (err) => {
+        // Not a verdict — let the ping probe decide whether the server came up.
+        console.warn(`[Daemon Watchdog] Log stream for ${serverId} ended early: ${err.message}`);
+      });
+    }
   });
 }
 
@@ -730,6 +826,10 @@ export async function startServerContainer(containerId: string, serverId?: strin
     watchContainerStartup(container.id, targetServerId, expectedModCount).catch((e) => {
       console.warn(`[Daemon Watchdog] Error watching startup for server ${targetServerId}:`, e.message);
     });
+
+    // Attaches its own log stream, separate from the console websocket, so player sessions are
+    // recorded whether or not anyone has the panel open.
+    presenceService.trackContainer(targetServerId).catch(() => {});
   }
 }
 
@@ -738,7 +838,12 @@ export async function stopServerContainer(containerId: string): Promise<void> {
   try {
     const inspect = await container.inspect();
     const match = (inspect.Name || '').replace(/^\//, '').match(/^mc-server-(.+)$/);
-    if (match) await tunnelManager.removeTunnel(match[1]);
+    if (match) {
+      await tunnelManager.removeTunnel(match[1]);
+      // Closes every open session now rather than leaving players accruing playtime while the
+      // server is down.
+      presenceService.serverStopped(match[1]);
+    }
   } catch(e) {}
 
   try {
@@ -833,7 +938,10 @@ export async function killServerContainer(containerId: string): Promise<void> {
   try {
     const inspect = await container.inspect();
     const match = (inspect.Name || '').replace(/^\//, '').match(/^mc-server-(.+)$/);
-    if (match) await tunnelManager.removeTunnel(match[1]);
+    if (match) {
+      await tunnelManager.removeTunnel(match[1]);
+      presenceService.serverStopped(match[1]);
+    }
   } catch(e) {}
   await container.kill();
 }
@@ -853,6 +961,7 @@ export async function removeServerContainer(containerId: string, deleteData = fa
 
   if (serverId) {
     await tunnelManager.removeTunnel(serverId);
+    presenceService.serverStopped(serverId);
   }
 
   if (deleteData && serverId) {
@@ -867,6 +976,74 @@ export async function removeServerContainer(containerId: string, deleteData = fa
     } catch (e) {
       // ignore
     }
+  }
+}
+
+/**
+ * Rolling in-memory sample buffer, mirroring what processManager keeps for PROCESS mode so the
+ * panel's chart has something to draw before the DB's long-term ServerStatSample history fills in.
+ * Keyed by the bare server id. Deliberately not persisted — it is a warm-up buffer, not a record.
+ */
+const containerStatsHistory = new Map<string, Array<{ timestamp: string; cpuPercent: number; memoryMb: number }>>();
+const CONTAINER_HISTORY_POINTS = 60;
+
+export function getContainerStatsHistory(serverId: string) {
+  return containerStatsHistory.get(serverId.replace(/^mc-server-/, '')) || [];
+}
+
+/**
+ * One-shot resource sample for a running container.
+ *
+ * `stats({ stream: false })` returns a single snapshot that already carries the previous reading
+ * in `precpu_stats`, so the delta below needs no state of our own — but it also means Docker has
+ * to hold the request open for its sample interval (~1s), which is why callers should sample
+ * containers concurrently rather than in a loop.
+ *
+ * Returns null rather than zeroes when the container is stopped or the daemon refuses, so the
+ * panel can tell "no data" apart from "genuinely idle".
+ */
+export async function getContainerStats(
+  containerId: string
+): Promise<{ cpuPercent: number; memoryMb: number; memoryLimitMb: number | null } | null> {
+  try {
+    const container = await getContainerByIdOrName(containerId);
+    const s: any = await container.stats({ stream: false });
+
+    const cpuDelta = (s?.cpu_stats?.cpu_usage?.total_usage ?? 0) - (s?.precpu_stats?.cpu_usage?.total_usage ?? 0);
+    const systemDelta = (s?.cpu_stats?.system_cpu_usage ?? 0) - (s?.precpu_stats?.system_cpu_usage ?? 0);
+
+    // online_cpus is absent on older daemons; percpu_usage length is the documented fallback.
+    const cpuCount = s?.cpu_stats?.online_cpus || s?.cpu_stats?.cpu_usage?.percpu_usage?.length || 1;
+
+    let cpuPercent = 0;
+    if (cpuDelta > 0 && systemDelta > 0) {
+      cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100;
+    }
+
+    // `usage` counts the page cache, which for a Minecraft server is mostly world chunks read
+    // off disk — subtracting it is what `docker stats` itself reports and is the number that
+    // matches what the JVM actually holds.
+    const usage = s?.memory_stats?.usage ?? 0;
+    const cache = s?.memory_stats?.stats?.inactive_file ?? s?.memory_stats?.stats?.total_inactive_file ?? s?.memory_stats?.stats?.cache ?? 0;
+    const memoryBytes = Math.max(0, usage - cache);
+    const limitBytes = s?.memory_stats?.limit ?? 0;
+
+    const sample = {
+      cpuPercent: Math.round(cpuPercent * 10) / 10,
+      memoryMb: Math.round(memoryBytes / 1024 / 1024),
+      // An unconstrained container reports the host's total RAM; that is not a useful "limit".
+      memoryLimitMb: limitBytes > 0 && limitBytes < 1024 * 1024 * 1024 * 1024 ? Math.round(limitBytes / 1024 / 1024) : null,
+    };
+
+    const key = containerId.replace(/^mc-server-/, '');
+    const history = containerStatsHistory.get(key) || [];
+    history.push({ timestamp: new Date().toLocaleTimeString(), cpuPercent: sample.cpuPercent, memoryMb: sample.memoryMb });
+    if (history.length > CONTAINER_HISTORY_POINTS) history.splice(0, history.length - CONTAINER_HISTORY_POINTS);
+    containerStatsHistory.set(key, history);
+
+    return sample;
+  } catch (e: any) {
+    return null;
   }
 }
 

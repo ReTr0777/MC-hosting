@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -14,5 +15,6 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   }
 
   await prisma.apiKey.delete({ where: { id: params.id } });
+  await writeAudit({ userId: user.userId, action: 'API_KEY_REVOKE', details: { name: apiKey.name } });
   return NextResponse.json({ success: true });
 }

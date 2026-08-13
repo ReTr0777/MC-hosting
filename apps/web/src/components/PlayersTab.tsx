@@ -5,12 +5,57 @@ import { usePolledResource } from '@/hooks/usePolledResource';
 import { apiPost, errorMessage } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
-import { Chip, EmptyState, InlineError, PanelHeader, PlayerAvatar, SkeletonRows } from '@/components/ui';
+import { Chip, EmptyState, InlineError, PanelHeader, PlayerAvatar, SkeletonRows, StatTile } from '@/components/ui';
 
 interface Player {
   username: string;
   isOp: boolean;
   avatarUrl: string;
+  /** Seconds since this player connected. Absent on servers the presence tracker hasn't attached to. */
+  onlineSeconds?: number;
+}
+
+interface KnownPlayer {
+  id: string;
+  username: string;
+  uuid: string | null;
+  avatarUrl: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  playtimeSeconds: number;
+  sessionCount: number;
+}
+
+interface PlayerHistory {
+  players: KnownPlayer[];
+  recentSessions: Array<{ id: string; username: string; joinedAt: string; leftAt: string; seconds: number }>;
+  totals: { uniquePlayers: number; playtimeSeconds: number; sessions: number };
+}
+
+const EMPTY_HISTORY: PlayerHistory = {
+  players: [],
+  recentSessions: [],
+  totals: { uniquePlayers: 0, playtimeSeconds: 0, sessions: 0 },
+};
+
+/** "3h 12m" / "12m" / "48s" — the shortest form that still reads unambiguously. */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  if (hours < 24) return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
+function formatWhen(iso: string): string {
+  const then = new Date(iso).getTime();
+  const elapsed = Math.round((Date.now() - then) / 1000);
+  if (elapsed < 90) return 'just now';
+  if (elapsed < 86400) return `${formatDuration(elapsed)} ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 type Action = 'op' | 'deop' | 'kick' | 'ban';
@@ -27,11 +72,26 @@ export default function PlayersTab({ serverId, canManage = true }: { serverId: s
   const confirm = useConfirm();
   const [busy, setBusy] = useState<string | null>(null);
 
+  const [view, setView] = useState<'online' | 'history'>('online');
+
   const { data, loading, error, refresh } = usePolledResource<Player[]>(
     `/api/servers/${serverId}/players`,
     [],
     { intervalMs: 5000, select: (raw) => raw?.players ?? [] }
   );
+
+  // Only polled while the history view is open — it's a database read, not a liveness check, and
+  // nothing in it changes faster than the monitor tick that writes it.
+  const {
+    data: history,
+    loading: historyLoading,
+    error: historyError,
+    refresh: refreshHistory,
+  } = usePolledResource<PlayerHistory>(`/api/servers/${serverId}/players/history`, EMPTY_HISTORY, {
+    enabled: view === 'history',
+    intervalMs: 60000,
+    select: (raw) => ({ ...EMPTY_HISTORY, ...raw }),
+  });
 
   const handleAction = async (username: string, action: Action) => {
     // Kicking and banning are disruptive and were previously one misclick away.
@@ -65,16 +125,46 @@ export default function PlayersTab({ serverId, canManage = true }: { serverId: s
   return (
     <div style={{ display: 'grid', gap: '16px' }}>
       <PanelHeader
-        title="Online Players"
-        chips={<Chip tone={players.length > 0 ? 'accent' : 'default'}>{players.length} online</Chip>}
-        description="Live roster of connected players, with operator and moderation controls."
+        title="Players"
+        chips={
+          <>
+            <Chip tone={players.length > 0 ? 'accent' : 'default'}>{players.length} online</Chip>
+            {history.totals.uniquePlayers > 0 && <Chip>{history.totals.uniquePlayers} known</Chip>}
+          </>
+        }
+        description={
+          view === 'online'
+            ? 'Live roster of connected players, with operator and moderation controls.'
+            : 'Everyone who has played here, ranked by total time on the server.'
+        }
         actions={
-          <button onClick={refresh} className="cc-btn-ghost" disabled={loading}>
-            Refresh
-          </button>
+          <>
+            <button
+              onClick={() => setView(view === 'online' ? 'history' : 'online')}
+              className="cc-btn-ghost"
+            >
+              {view === 'online' ? 'Playtime' : 'Online now'}
+            </button>
+            <button
+              onClick={() => (view === 'online' ? refresh() : refreshHistory())}
+              className="cc-btn-ghost"
+              disabled={view === 'online' ? loading : historyLoading}
+            >
+              Refresh
+            </button>
+          </>
         }
       />
 
+      {view === 'history' ? (
+        <PlayerHistoryView
+          history={history}
+          loading={historyLoading}
+          error={historyError}
+          onRetry={refreshHistory}
+        />
+      ) : (
+        <>
       {error && <InlineError message={error} onRetry={refresh} />}
 
       {loading ? (
@@ -100,7 +190,9 @@ export default function PlayersTab({ serverId, canManage = true }: { serverId: s
                       className="pulse-dot"
                       style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }}
                     />
-                    Connected
+                    {player.onlineSeconds !== undefined && player.onlineSeconds > 0
+                      ? `Online for ${formatDuration(player.onlineSeconds)}`
+                      : 'Connected'}
                   </span>
                 </div>
               </div>
@@ -138,6 +230,129 @@ export default function PlayersTab({ serverId, canManage = true }: { serverId: s
               )}
             </div>
           ))}
+        </div>
+      )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Playtime leaderboard and recent visits.
+ *
+ * Split out rather than inlined because the online roster and the history answer different
+ * questions — "who can I moderate right now" versus "who actually plays here" — and interleaving
+ * them made both harder to read.
+ */
+function PlayerHistoryView({
+  history,
+  loading,
+  error,
+  onRetry,
+}: {
+  history: PlayerHistory;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const [filter, setFilter] = useState('');
+
+  const needle = filter.trim().toLowerCase();
+  const visible = needle
+    ? history.players.filter((p) => p.username.toLowerCase().includes(needle))
+    : history.players;
+
+  if (loading) return <SkeletonRows rows={4} />;
+
+  return (
+    <div style={{ display: 'grid', gap: '16px' }}>
+      {error && <InlineError message={error} onRetry={onRetry} />}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+        <StatTile label="Unique players" value={history.totals.uniquePlayers} tone="accent" />
+        <StatTile label="Total playtime" value={formatDuration(history.totals.playtimeSeconds)} />
+        <StatTile label="Sessions" value={history.totals.sessions} />
+      </div>
+
+      {history.players.length === 0 ? (
+        <EmptyState
+          title="No playtime recorded yet"
+          description="Sessions are recorded when a player disconnects, so this fills in after the first visit ends."
+        />
+      ) : (
+        <div className="cc-panel" style={{ display: 'grid', gap: '12px' }}>
+          {history.players.length > 8 && (
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Find a player…"
+              aria-label="Find a player"
+              className="cc-input"
+            />
+          )}
+
+          {visible.length === 0 ? (
+            <EmptyState title="No matches" description={`Nobody matching "${filter.trim()}" has played here.`} />
+          ) : (
+            <div style={{ display: 'grid', gap: '8px' }}>
+              {visible.map((player, index) => (
+                <div key={player.id} className="cc-row">
+                  <div className="cc-row-main">
+                    <span
+                      style={{
+                        width: 22,
+                        textAlign: 'right',
+                        fontSize: '13px',
+                        color: 'var(--text-secondary)',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {needle ? '' : index + 1}
+                    </span>
+                    <PlayerAvatar src={player.avatarUrl} name={player.username} size={36} />
+                    <div style={{ minWidth: 0 }}>
+                      <span className="cc-row-title">{player.username}</span>
+                      <span className="cc-row-sub">
+                        {player.sessionCount} {player.sessionCount === 1 ? 'visit' : 'visits'} · first seen{' '}
+                        {new Date(player.firstSeenAt).toLocaleDateString()} · last seen {formatWhen(player.lastSeenAt)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="cc-row-actions">
+                    <Chip tone={index === 0 && !needle ? 'accent' : 'default'}>
+                      {formatDuration(player.playtimeSeconds)}
+                    </Chip>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {history.recentSessions.length > 0 && (
+        <div className="cc-panel" style={{ display: 'grid', gap: '10px' }}>
+          <h3 style={{ margin: 0, fontSize: '15px' }}>Recent visits</h3>
+          <div style={{ display: 'grid', gap: '6px' }}>
+            {history.recentSessions.map((session) => (
+              <div
+                key={session.id}
+                style={{
+                  display: 'flex',
+                  gap: '10px',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  fontSize: '13px',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <strong style={{ color: 'var(--text-primary)', minWidth: '110px' }}>{session.username}</strong>
+                <span>played {formatDuration(session.seconds)}</span>
+                <span style={{ marginLeft: 'auto' }}>left {formatWhen(session.leftAt)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

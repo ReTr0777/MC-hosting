@@ -295,7 +295,7 @@ const CLIENT_ONLY_NAME_HINTS = [
  * Quilt both publish an explicit environment field, which is authoritative and needs no network.
  * Forge's mods.toml has no equivalent, so those fall through to the Modrinth lookup.
  */
-function jarDeclaresClientOnly(jarPath: string): boolean | null {
+export function jarDeclaresClientOnly(jarPath: string): boolean | null {
   try {
     const zip = new AdmZip(jarPath);
 
@@ -307,7 +307,12 @@ function jarDeclaresClientOnly(jarPath: string): boolean | null {
       if (typeof meta.environment === 'string') {
         const env = meta.environment.toLowerCase();
         if (env === 'client') return true;
-        if (env === 'server' || env === '*') return false;
+        if (env === 'server') return false;
+        // '*' is Fabric's default and means the author never declared a side, not that the mod
+        // was verified to run on one. Mining Speed Tooltips ships '*' and calls the client-only
+        // ItemTooltipCallback from its main entrypoint, killing the server after every mod has
+        // already loaded. Treating '*' as proof of server support also stops the jar from ever
+        // reaching the Modrinth lookup, which does know better — so it stays undecided.
       }
     }
 
@@ -318,7 +323,7 @@ function jarDeclaresClientOnly(jarPath: string): boolean | null {
       if (typeof env === 'string') {
         const lower = env.toLowerCase();
         if (lower === 'client') return true;
-        if (lower === 'dedicated_server' || lower === '*') return false;
+        if (lower === 'dedicated_server') return false;
       }
     }
   } catch (e) {
@@ -331,9 +336,310 @@ function sha1OfFile(filePath: string): string {
   return crypto.createHash('sha1').update(fs.readFileSync(filePath)).digest('hex').toLowerCase();
 }
 
+/** The mod ids a jar supplies, and the ids it hard-depends on. */
+interface JarModIdentity {
+  ids: string[];
+  depends: string[];
+  /**
+   * Advisory dependencies (`recommends`/`suggests`, Quilt's `optional: true`). A missing one never
+   * stops a boot, so it must never drive quarantine — but it is exactly the signal that explains a
+   * feature silently not working, so the health report surfaces it separately.
+   */
+  soft: string[];
+}
+
+/**
+ * Ids that are always satisfied without a jar in mods/ — supplied by the game, the JVM or the
+ * loader itself. A dependency on one of these is never evidence of a missing mod.
+ */
+const LOADER_PROVIDED_IDS = new Set([
+  'minecraft', 'java', 'fabricloader', 'fabric-loader', 'mixinextras',
+  'quilt_loader', 'quilt_base', 'quilted_fabric_api', 'quilt_networking',
+]);
+
+/**
+ * Reads the mod ids a jar provides and the ids it cannot load without.
+ *
+ * Only hard dependencies count — `recommends` and `suggests` are advisory and a missing one
+ * does not stop the server booting, so treating them as hard would quarantine far more than
+ * necessary.
+ */
+function readJarModIdentity(jarPath: string): JarModIdentity | null {
+  try {
+    return readModIdentityFromZip(new AdmZip(jarPath));
+  } catch (e) {
+    // Unreadable or non-standard jar — it simply takes no part in the dependency closure.
+    return null;
+  }
+}
+
+/**
+ * Ids contributed by a jar's bundled (nested) jars. Fabric API is the reason this matters: it
+ * ships its modules as jars inside META-INF/jars/, and mods depend on those module ids
+ * (`fabric-item-api-v1` and friends) rather than on `fabric-api` itself. Without looking inside,
+ * every Fabric API dependant looks unsatisfied.
+ */
+function collectNestedJarIds(zip: AdmZip, depth = 0): string[] {
+  if (depth > 2) return [];
+  const ids: string[] = [];
+
+  for (const entry of zip.getEntries()) {
+    if (!/^META-INF\/jars\/.+\.jar$/i.test(entry.entryName)) continue;
+    try {
+      const nested = new AdmZip(entry.getData());
+      const identity = readModIdentityFromZip(nested);
+      if (identity) ids.push(...identity.ids);
+      ids.push(...collectNestedJarIds(nested, depth + 1));
+    } catch (e) {
+      // A nested jar we can't open contributes nothing.
+    }
+  }
+
+  return ids;
+}
+
+function readModIdentityFromZip(zip: AdmZip): JarModIdentity | null {
+  try {
+    const fabricEntry = zip.getEntry('fabric.mod.json');
+    if (fabricEntry) {
+      const raw = zip.readAsText(fabricEntry).replace(/^\s*\/\/.*$/gm, '');
+      const meta = JSON.parse(raw);
+      const ids: string[] = [];
+      if (typeof meta.id === 'string') ids.push(meta.id);
+      if (Array.isArray(meta.provides)) {
+        for (const p of meta.provides) if (typeof p === 'string') ids.push(p);
+      }
+      const depends = meta.depends && typeof meta.depends === 'object' ? Object.keys(meta.depends) : [];
+      const soft = [
+        ...(meta.recommends && typeof meta.recommends === 'object' ? Object.keys(meta.recommends) : []),
+        ...(meta.suggests && typeof meta.suggests === 'object' ? Object.keys(meta.suggests) : []),
+      ];
+      return { ids, depends, soft };
+    }
+
+    const quiltEntry = zip.getEntry('quilt.mod.json');
+    if (quiltEntry) {
+      const meta = JSON.parse(zip.readAsText(quiltEntry));
+      const loader = meta?.quilt_loader ?? {};
+      const ids: string[] = [];
+      if (typeof loader.id === 'string') ids.push(loader.id);
+      if (Array.isArray(loader.provides)) {
+        for (const p of loader.provides) {
+          if (typeof p === 'string') ids.push(p);
+          else if (p && typeof p.id === 'string') ids.push(p.id);
+        }
+      }
+      // Quilt's depends is an array of either bare ids or objects; `optional: true` entries are
+      // advisory, matching Fabric's recommends.
+      const depends: string[] = [];
+      const soft: string[] = [];
+      if (Array.isArray(loader.depends)) {
+        for (const d of loader.depends) {
+          if (typeof d === 'string') depends.push(d);
+          else if (d && typeof d.id === 'string') (d.optional === true ? soft : depends).push(d.id);
+        }
+      }
+      return { ids, depends, soft };
+    }
+  } catch (e) {
+    // Malformed metadata — the jar takes no part in the dependency closure.
+  }
+  return null;
+}
+
+/**
+ * Extends a quarantine set with every jar whose hard dependencies are not present in mods/.
+ *
+ * Fabric aborts the entire boot when any mod has an unsatisfiable hard dependency rather than
+ * skipping the offender, so a single stranded jar takes the server down. Better MC produced two
+ * separate instances of this: Cull Less Leaves (`environment: "*"`, needs Sodium) survived the
+ * client-only checks, and Forge Config Screens needed Mod Menu.
+ *
+ * Resolution is against the ids actually present, not against the ids this build removed,
+ * because a dependency can go missing several ways that never touch mods/ at all — skipped as
+ * client-only in the manifest, filtered by the download denylist (Mod Menu's case), or simply
+ * failed to download. Tracking only our own removals catches one of those and misses the rest.
+ */
+export interface OrphanedMod {
+  fileName: string;
+  /** The dependency id that nothing in mods/ provides. */
+  missing: string;
+}
+
+export function cascadeOrphanedDependents(
+  modsDir: string,
+  jars: string[],
+  clientOnly: Set<string>
+): OrphanedMod[] {
+  const { identities, nestedIds } = readModGraph(modsDir, jars);
+
+  const providedBySurvivors = () => {
+    const provided = new Set(LOADER_PROVIDED_IDS);
+    for (const jar of jars) {
+      if (clientOnly.has(jar)) continue;
+      for (const id of identities.get(jar)?.ids ?? []) provided.add(id);
+      for (const id of nestedIds.get(jar) ?? []) provided.add(id);
+    }
+    return provided;
+  };
+
+  const orphaned: OrphanedMod[] = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const provided = providedBySurvivors();
+
+    for (const jar of jars) {
+      if (clientOnly.has(jar)) continue;
+      const identity = identities.get(jar);
+      if (!identity) continue;
+
+      const missing = identity.depends.find((d) => !provided.has(d));
+      if (!missing) continue;
+
+      clientOnly.add(jar);
+      orphaned.push({ fileName: jar, missing });
+      changed = true;
+    }
+  }
+
+  return orphaned;
+}
+
+/** Reads every jar's declared identity once, so the fixpoint loop below costs no extra I/O. */
+function readModGraph(modsDir: string, jars: string[]) {
+  const identities = new Map<string, JarModIdentity>();
+  const nestedIds = new Map<string, string[]>();
+
+  for (const jar of jars) {
+    const jarPath = path.join(modsDir, jar);
+    const identity = readJarModIdentity(jarPath);
+    if (!identity) continue;
+    identities.set(jar, identity);
+    try {
+      nestedIds.set(jar, collectNestedJarIds(new AdmZip(jarPath)));
+    } catch (e) {
+      nestedIds.set(jar, []);
+    }
+  }
+
+  return { identities, nestedIds };
+}
+
+/** Why a jar was taken out of mods/. Ordered strongest-evidence-first, matching the scan passes. */
+export type QuarantineReason =
+  | 'denylist'
+  | 'declared-client'
+  | 'modrinth-client'
+  | 'filename-hint'
+  | 'missing-dependency';
+
+export interface QuarantinedMod {
+  fileName: string;
+  reason: QuarantineReason;
+  /** One line the panel can show verbatim. */
+  detail: string;
+  /** Set only for 'missing-dependency' — the id that could not be resolved. */
+  missingDependency?: string;
+}
+
+/** A dependency id nothing in mods/ supplies, and the surviving mods that asked for it. */
+export interface UnresolvedDependency {
+  id: string;
+  /** Hard dependencies abort the boot; soft ones only break the feature that needed them. */
+  hard: boolean;
+  requiredBy: string[];
+}
+
+export interface PackHealthReport {
+  generatedAt: string;
+  scanned: number;
+  quarantined: QuarantinedMod[];
+  unresolved: UnresolvedDependency[];
+  /**
+   * Jars neither the metadata nor the Modrinth hash lookup could classify. They are kept — see the
+   * Pass 3 note — but the panel lists them because an unverifiable mod is where surprises live.
+   */
+  unidentified: string[];
+}
+
 export interface ClientModScanResult {
   moved: string[];
   scanned: number;
+  report: PackHealthReport;
+}
+
+/** Written into the server directory so the panel can show the last scan without re-running it. */
+export const PACK_HEALTH_FILE = '.pack-health.json';
+
+export function readPackHealth(serverDir: string): PackHealthReport | null {
+  try {
+    const raw = fs.readFileSync(path.join(serverDir, PACK_HEALTH_FILE), 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.quarantined)) return null;
+    return parsed as PackHealthReport;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function writePackHealth(serverDir: string, report: PackHealthReport): void {
+  try {
+    fs.writeFileSync(path.join(serverDir, PACK_HEALTH_FILE), JSON.stringify(report, null, 2));
+  } catch (e: any) {
+    console.warn(`[mrpack] Couldn't write pack health report: ${e.message}`);
+  }
+}
+
+/**
+ * Recomputes the dependency picture from whatever is in mods/ right now.
+ *
+ * The scan-time report goes stale the moment someone installs a mod or restores a quarantined one,
+ * so the panel calls this on open rather than trusting the file. Quarantine reasons can't be
+ * recovered this way — they come from the stored report — but the unresolved-dependency list is
+ * the part that actually changes, and it is the part that explains a broken feature.
+ */
+export function analyzeInstalledMods(serverDir: string): {
+  scanned: number;
+  unresolved: UnresolvedDependency[];
+} {
+  const modsDir = path.join(serverDir, 'mods');
+  if (!fs.existsSync(modsDir)) return { scanned: 0, unresolved: [] };
+
+  const jars = fs.readdirSync(modsDir).filter((f) => f.toLowerCase().endsWith('.jar'));
+  const { identities, nestedIds } = readModGraph(modsDir, jars);
+
+  const provided = new Set(LOADER_PROVIDED_IDS);
+  for (const jar of jars) {
+    for (const id of identities.get(jar)?.ids ?? []) provided.add(id);
+    for (const id of nestedIds.get(jar) ?? []) provided.add(id);
+  }
+
+  const byId = new Map<string, UnresolvedDependency>();
+  const note = (id: string, hard: boolean, jar: string) => {
+    if (provided.has(id)) return;
+    const existing = byId.get(id);
+    if (existing) {
+      // A hard requirement anywhere outranks a soft one: it is the more serious verdict.
+      if (hard) existing.hard = true;
+      if (!existing.requiredBy.includes(jar)) existing.requiredBy.push(jar);
+      return;
+    }
+    byId.set(id, { id, hard, requiredBy: [jar] });
+  };
+
+  for (const jar of jars) {
+    const identity = identities.get(jar);
+    if (!identity) continue;
+    for (const id of identity.depends) note(id, true, jar);
+    for (const id of identity.soft) note(id, false, jar);
+  }
+
+  const unresolved = Array.from(byId.values()).sort(
+    (a, b) => Number(b.hard) - Number(a.hard) || b.requiredBy.length - a.requiredBy.length
+  );
+
+  return { scanned: jars.length, unresolved };
 }
 
 /**
@@ -347,26 +653,58 @@ export interface ClientModScanResult {
  * filename match for the well-known offenders that have neither.
  */
 export async function quarantineClientOnlyMods(serverId: string, serverDir: string): Promise<ClientModScanResult> {
+  const emptyReport = (scanned: number): PackHealthReport => ({
+    generatedAt: new Date().toISOString(),
+    scanned,
+    quarantined: [],
+    unresolved: [],
+    unidentified: [],
+  });
+
   const modsDir = path.join(serverDir, 'mods');
-  if (!fs.existsSync(modsDir)) return { moved: [], scanned: 0 };
+  if (!fs.existsSync(modsDir)) return { moved: [], scanned: 0, report: emptyReport(0) };
 
   const jars = fs.readdirSync(modsDir).filter((f) => f.toLowerCase().endsWith('.jar'));
-  if (jars.length === 0) return { moved: [], scanned: 0 };
+  if (jars.length === 0) return { moved: [], scanned: 0, report: emptyReport(0) };
 
   const clientOnly = new Set<string>();
+  // Why each jar was flagged, recorded as it happens. A verdict is never overwritten, so the
+  // reason reflects the first (strongest) pass that caught the jar.
+  const reasons = new Map<string, QuarantinedMod>();
+  const flag = (jar: string, reason: QuarantineReason, detail: string, missingDependency?: string) => {
+    clientOnly.add(jar);
+    if (!reasons.has(jar)) reasons.set(jar, { fileName: jar, reason, detail, missingDependency });
+  };
   // Jars something authoritative has confirmed run server-side. The filename pass must not
   // second-guess these — a hint like 'sodium' would otherwise strip a legitimately server-safe
   // mod whose name merely contains it.
   const confirmedServerSafe = new Set<string>();
   const undecided: string[] = [];
 
+  // Pass 0 — the hard denylist, which no later pass may overturn.
+  //
+  // The manifest download filter applies this same list, but mods bundled into overrides/mods/
+  // bypass downloading entirely and land in mods/ unchecked. These jars also declare themselves
+  // server-compatible, so every metadata-driven check clears them: Missing Mods Checker opens a
+  // Swing window as it loads, and a dedicated server has no display, so it dies on
+  // HeadlessException before it can finish booting.
+  for (const jar of jars) {
+    const lower = jar.toLowerCase();
+    const hit = DENYLIST_PATH_SUBSTRINGS.find((s) => lower.includes(s));
+    if (hit) flag(jar, 'denylist', `Matches the known client-only list ('${hit}') — it crashes or hangs a dedicated server`);
+  }
+
   // Pass 1 — the jar's own metadata.
   for (const jar of jars) {
+    if (clientOnly.has(jar)) continue;
     const verdict = jarDeclaresClientOnly(path.join(modsDir, jar));
-    if (verdict === true) clientOnly.add(jar);
+    if (verdict === true) flag(jar, 'declared-client', 'The mod declares itself client-only in its own metadata');
     else if (verdict === false) confirmedServerSafe.add(jar);
     else undecided.push(jar);
   }
+
+  // Jars no authoritative source could identify — reported, but never quarantined on that basis.
+  const unidentified = new Set(undecided);
 
   // Pass 2 — ask Modrinth what the remaining jars actually are, by hash.
   if (undecided.length > 0) {
@@ -387,8 +725,12 @@ export async function quarantineClientOnlyMods(serverId: string, serverDir: stri
           const project = projects.get((version as any).project_id);
           const jar = hashToJar.get(hash);
           if (!jar || !project) continue;
-          if (project.server_side === 'unsupported') clientOnly.add(jar);
-          else confirmedServerSafe.add(jar);
+          unidentified.delete(jar);
+          if (project.server_side === 'unsupported') {
+            flag(jar, 'modrinth-client', `Modrinth lists ${project.title || jar} as client-side only`);
+          } else {
+            confirmedServerSafe.add(jar);
+          }
         }
       }
     } catch (err: any) {
@@ -397,36 +739,81 @@ export async function quarantineClientOnlyMods(serverId: string, serverDir: stri
   }
 
   // Pass 3 — filename hints, only for jars neither of the reliable checks could classify.
+  //
+  // Nothing cleverer belongs here. Inspecting entrypoint classes for references to client-only
+  // packages looks like it would generalise, but a mod that is side-aware registers its client
+  // handlers from the same `main` entrypoint behind an environment guard — FTB Quests does
+  // exactly this, and it is not on Modrinth, so a bytecode scan disabled it and left players
+  // unable to open the quest book on a server that otherwise booted fine. A mod kept by mistake
+  // costs one crash with a named cause; a mod removed by mistake is a silent, much harder bug.
   for (const jar of jars) {
     if (clientOnly.has(jar) || confirmedServerSafe.has(jar)) continue;
     const lower = jar.toLowerCase();
-    if (CLIENT_ONLY_NAME_HINTS.some((hint) => lower.includes(hint))) clientOnly.add(jar);
-  }
-
-  if (clientOnly.size === 0) {
-    log(serverId, `[mrpack] Scanned ${jars.length} mod(s) — all are server-compatible`);
-    return { moved: [], scanned: jars.length };
-  }
-
-  const quarantineDir = path.join(serverDir, CLIENT_MODS_DIR);
-  fs.mkdirSync(quarantineDir, { recursive: true });
-
-  const moved: string[] = [];
-  for (const jar of clientOnly) {
-    try {
-      fs.renameSync(path.join(modsDir, jar), path.join(quarantineDir, jar));
-      moved.push(jar);
-    } catch (e: any) {
-      console.warn(`[mrpack] Couldn't quarantine '${jar}': ${e.message}`);
+    const hint = CLIENT_ONLY_NAME_HINTS.find((h) => lower.includes(h));
+    if (hint) {
+      unidentified.delete(jar);
+      flag(jar, 'filename-hint', `Nothing could identify this jar, but its filename matches the client-only mod '${hint}'`);
     }
   }
 
-  log(
-    serverId,
-    `[mrpack] Moved ${moved.length} client-only mod(s) out of mods/ into ${CLIENT_MODS_DIR}/ so the server can boot: ${moved.slice(0, 8).join(', ')}${moved.length > 8 ? `, +${moved.length - 8} more` : ''}`
-  );
+  // Pass 4 — jars whose hard dependencies aren't in mods/ at all. This runs even when nothing
+  // was flagged client-only: a dependency can be absent because the manifest marked it
+  // client-unsupported, the download denylist filtered it, or its download simply failed.
+  const orphaned = cascadeOrphanedDependents(modsDir, jars, clientOnly);
+  for (const o of orphaned) {
+    unidentified.delete(o.fileName);
+    flag(
+      o.fileName,
+      'missing-dependency',
+      `Requires '${o.missing}', which is not installed — Fabric aborts the whole boot rather than skip it`,
+      o.missing
+    );
+  }
+  if (orphaned.length > 0) {
+    const summary = orphaned.map((o) => `${o.fileName} (needs '${o.missing}')`);
+    log(
+      serverId,
+      `[mrpack] Also disabling ${orphaned.length} mod(s) with missing hard dependencies: ` +
+        `${summary.slice(0, 8).join(', ')}${summary.length > 8 ? `, +${summary.length - 8} more` : ''}`
+    );
+  }
 
-  return { moved, scanned: jars.length };
+  const moved: string[] = [];
+  if (clientOnly.size > 0) {
+    const quarantineDir = path.join(serverDir, CLIENT_MODS_DIR);
+    fs.mkdirSync(quarantineDir, { recursive: true });
+
+    for (const jar of clientOnly) {
+      try {
+        fs.renameSync(path.join(modsDir, jar), path.join(quarantineDir, jar));
+        moved.push(jar);
+      } catch (e: any) {
+        console.warn(`[mrpack] Couldn't quarantine '${jar}': ${e.message}`);
+      }
+    }
+
+    log(
+      serverId,
+      `[mrpack] Moved ${moved.length} client-only mod(s) out of mods/ into ${CLIENT_MODS_DIR}/ so the server can boot: ${moved.slice(0, 8).join(', ')}${moved.length > 8 ? `, +${moved.length - 8} more` : ''}`
+    );
+  } else {
+    log(serverId, `[mrpack] Scanned ${jars.length} mod(s) — all are server-compatible`);
+  }
+
+  // Computed after the moves so the unresolved list reflects what will actually load. Mods that
+  // were themselves quarantined no longer count as "requiring" anything.
+  const { unresolved } = analyzeInstalledMods(serverDir);
+
+  const report: PackHealthReport = {
+    generatedAt: new Date().toISOString(),
+    scanned: jars.length,
+    quarantined: Array.from(reasons.values()).filter((q) => moved.includes(q.fileName)),
+    unresolved,
+    unidentified: Array.from(unidentified).filter((jar) => !moved.includes(jar)),
+  };
+  writePackHealth(serverDir, report);
+
+  return { moved, scanned: jars.length, report };
 }
 
 /** Maps the pack's `dependencies` block onto a loader and its version. */
@@ -505,11 +892,15 @@ export async function materializeMrpack(serverId: string, serverDir: string, pac
     log(serverId, `[mrpack] WARNING: ${dl.failed.length} file(s) could not be downloaded: ${dl.failed.slice(0, 5).join(', ')}${dl.failed.length > 5 ? ', ...' : ''}`);
   }
 
-  // 3. Strip mods that can't run on a dedicated server. This is what makes client-side modpacks
-  //    (where most of mods/ is rendering/UI mods bundled into overrides) deployable at all.
+  // 3. Repair the malformed lang files some packs ship, which crash the resource loader.
+  sanitizeModJarsAndLangFiles(path.join(serverDir, 'mods'));
+
+  // 4. Strip mods that can't run on a dedicated server, then anything left depending on them.
+  //    This is what makes client-side modpacks (where most of mods/ is rendering/UI mods
+  //    bundled into overrides) deployable at all.
   const clientScan = await quarantineClientOnlyMods(serverId, serverDir);
 
-  // 4. Install the loader so the directory becomes launchable.
+  // 5. Install the loader so the directory becomes launchable.
   let launchTarget: string;
   if (loader === 'forge' || loader === 'neoforge') {
     launchTarget = await installForgeFamilyServer(serverId, serverDir, loader, mcVersion, loaderVersion!);
@@ -521,9 +912,8 @@ export async function materializeMrpack(serverId: string, serverDir: string, pac
     launchTarget = await installVanillaServer(serverId, serverDir, mcVersion);
   }
 
-  // 5. Housekeeping the rest of the pipeline expects.
+  // 6. Housekeeping the rest of the pipeline expects.
   fs.writeFileSync(path.join(serverDir, 'eula.txt'), 'eula=true\n');
-  sanitizeModJarsAndLangFiles(path.join(serverDir, 'mods'));
 
   log(
     serverId,

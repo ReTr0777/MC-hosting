@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient, BanAction, BanSnapshot } from '@/lib/daemon-client';
+import { writeAudit } from '@/lib/audit';
 
 async function resolveServer(id: string) {
   return prisma.server.findUnique({
@@ -56,6 +57,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         body: JSON.stringify({ action, username, reason }),
       }
     );
+
+    await writeAudit({
+      userId: user.userId,
+      action: action === 'unban' ? 'BAN_REMOVE' : 'BAN_ADD',
+      details: { serverId: server.id, serverName: server.name, username, reason },
+    });
 
     return NextResponse.json(data);
   } catch (err: any) {

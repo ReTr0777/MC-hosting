@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 function generateRandomCode(length: number = 10) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -46,6 +47,8 @@ export async function POST(req: NextRequest) {
       createdBy: user.userId,
     }
   });
+
+  await writeAudit({ userId: user.userId, action: 'INVITE_CREATE', details: { inviteId: invite.id, maxUses: invite.maxUses } });
 
   return NextResponse.json(invite);
 }

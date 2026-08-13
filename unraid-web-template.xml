@@ -28,6 +28,8 @@
   <!-- Environment Variables -->
   <Config Name="Database Connection String" Target="DATABASE_URL" Default="postgresql://mcuser:mcpassword@192.168.50.220:5432/mcmanager?schema=public" Description="PostgreSQL Database Connection URI" Type="Variable" Display="always" Required="true" Mask="false">postgresql://mcuser:mcpassword@192.168.50.220:5432/mcmanager?schema=public</Config>
 
+  <Config Name="Public Panel URL" Target="APP_URL" Default="" Description="The address users reach this panel on, e.g. https://retr0net.nl or http://192.168.50.220:3000. Used to build the links in verification and password-reset emails. Leave blank to derive it from the request, which works for direct access and behind a proxy that sets X-Forwarded-Host." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
   <Config Name="JWT Secret Token" Target="JWT_SECRET" Default="change-me-secret-jwt-key" Description="Secret key used for signing user session JWT tokens" Type="Variable" Display="always" Required="true" Mask="true">change-me-secret-jwt-key</Config>
 
   <Config Name="Web Panel Data Directory" Target="/app/data" Default="/mnt/user/appdata/craftcontrol-webpanel" Description="Host folder mounted into the web panel container for persistent data or custom files" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/craftcontrol-webpanel</Config>

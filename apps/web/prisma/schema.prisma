@@ -216,8 +216,51 @@ model Server {
   schedules         ServerSchedule[]
   mapShares         MapShare[]
   statSamples       ServerStatSample[]
+  players           ServerPlayer[]
+  playerSessions    PlayerSession[]
 
   @@map("servers")
+}
+
+/// A Minecraft account seen on one server, with its running totals.
+///
+/// Scoped per server rather than globally: the same username on two servers is two different
+/// players as far as playtime and first-join are concerned, and an offline-mode server's names
+/// aren't guaranteed to be the same accounts as an online-mode one's.
+model ServerPlayer {
+  id             String    @id @default(uuid())
+  serverId       String
+  server         Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  username       String
+  /// Mojang UUID, read from the server's own login line. Null on offline-mode servers.
+  uuid           String?
+  firstSeenAt    DateTime  @default(now())
+  lastSeenAt     DateTime  @default(now())
+  /// Total across all completed sessions. The session currently open is added on read.
+  playtimeSeconds Int      @default(0)
+  sessionCount   Int       @default(0)
+
+  sessions       PlayerSession[]
+
+  @@unique([serverId, username])
+  @@index([serverId, lastSeenAt])
+  @@map("server_players")
+}
+
+/// One completed visit. Open sessions live in the daemon and are never written here.
+model PlayerSession {
+  id        String       @id @default(uuid())
+  playerId  String
+  player    ServerPlayer @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  serverId  String
+  server    Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime
+  leftAt    DateTime
+  seconds   Int
+
+  @@index([playerId, joinedAt])
+  @@index([serverId, joinedAt])
+  @@map("player_sessions")
 }
 
 /// One CPU/RAM/player-count reading per running server per monitor tick, for trend graphs.

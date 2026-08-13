@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function DELETE(
   req: NextRequest,
@@ -37,6 +38,8 @@ export async function DELETE(
     await prisma.node.delete({
       where: { id: nodeId },
     });
+
+    await writeAudit({ userId: user.userId, action: 'NODE_DELETE', details: { nodeId, name: node.name } });
 
     return NextResponse.json({ message: 'Node deleted successfully' });
   } catch (err: any) {
@@ -80,6 +83,8 @@ export async function PUT(
         totalCpu: totalCpu !== undefined ? totalCpu : existingNode.totalCpu,
       }
     });
+
+    await writeAudit({ userId: user.userId, action: 'NODE_UPDATE', details: { nodeId, name: updatedNode.name } });
 
     return NextResponse.json({ message: 'Node updated successfully', node: updatedNode });
   } catch (err: any) {

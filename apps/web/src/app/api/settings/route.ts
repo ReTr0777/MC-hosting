@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { encryptSecret, maskSecret, tryDecryptSecret } from '@/lib/crypto';
+import { writeAudit } from '@/lib/audit';
+import { AI_DEFAULT_BASE_URL, AI_DEFAULT_MODEL } from '@/lib/ai-analyzer';
+import { PUBLIC_URL_SETTING_KEY, validatePublicUrl } from '@/lib/public-url';
 
 export async function GET(request: NextRequest) {
   const user = await getUserFromRequest(request);
@@ -34,6 +37,7 @@ export async function GET(request: NextRequest) {
     });
 
     const smtpPassResult = tryDecryptSecret(settingsMap['SMTP_PASS'] || '');
+    const aiKeyResult = tryDecryptSecret(settingsMap['AI_API_KEY'] || '');
 
     return NextResponse.json({
       settings: {
@@ -53,6 +57,15 @@ export async function GET(request: NextRequest) {
         maskedSmtpPass: maskSecret(smtpPassResult.value),
         smtpFrom: settingsMap['SMTP_FROM'] || '',
         smtpSecure: settingsMap['SMTP_SECURE'] === 'true',
+        publicAppUrl: settingsMap[PUBLIC_URL_SETTING_KEY] || '',
+        // An environment variable outranks the stored value, so the form has to say when
+        // editing the field will have no effect.
+        publicAppUrlFromEnv: (process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || '').trim(),
+        aiAnalysisEnabled: settingsMap['AI_ANALYSIS_ENABLED'] === 'true',
+        aiBaseUrl: settingsMap['AI_BASE_URL'] || AI_DEFAULT_BASE_URL,
+        aiModel: settingsMap['AI_MODEL'] || AI_DEFAULT_MODEL,
+        aiApiKey: aiKeyResult.value,
+        maskedAiApiKey: maskSecret(aiKeyResult.value),
       },
       logs: cloudflareLogs,
     });
@@ -69,7 +82,12 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { cloudflareApiToken, cloudflareZoneId, defaultDomain, smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure } = body;
+    const {
+      cloudflareApiToken, cloudflareZoneId, defaultDomain,
+      smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure,
+      aiAnalysisEnabled, aiBaseUrl, aiModel, aiApiKey,
+      publicAppUrl,
+    } = body;
 
     const upsertSetting = async (key: string, value: string) => {
       await prisma.systemSetting.upsert({
@@ -96,6 +114,40 @@ export async function POST(request: NextRequest) {
     }
     if (smtpFrom !== undefined) await upsertSetting('SMTP_FROM', smtpFrom.trim());
     if (smtpSecure !== undefined) await upsertSetting('SMTP_SECURE', String(!!smtpSecure));
+
+    if (publicAppUrl !== undefined) {
+      const checked = validatePublicUrl(String(publicAppUrl));
+      if (!checked.ok) {
+        return NextResponse.json({ error: checked.error }, { status: 400 });
+      }
+      await upsertSetting(PUBLIC_URL_SETTING_KEY, checked.value);
+    }
+
+    if (aiAnalysisEnabled !== undefined) await upsertSetting('AI_ANALYSIS_ENABLED', String(!!aiAnalysisEnabled));
+    if (aiBaseUrl !== undefined) await upsertSetting('AI_BASE_URL', aiBaseUrl.trim() || AI_DEFAULT_BASE_URL);
+    if (aiModel !== undefined) await upsertSetting('AI_MODEL', aiModel.trim() || AI_DEFAULT_MODEL);
+    if (aiApiKey !== undefined) {
+      const cleanKey = aiApiKey.trim();
+      await upsertSetting('AI_API_KEY', cleanKey ? encryptSecret(cleanKey) : '');
+    }
+
+    const changedKeys = [
+      cloudflareApiToken !== undefined && 'CLOUDFLARE_API_TOKEN',
+      cloudflareZoneId !== undefined && 'CLOUDFLARE_ZONE_ID',
+      defaultDomain !== undefined && 'DEFAULT_DOMAIN',
+      smtpHost !== undefined && 'SMTP_HOST',
+      smtpPort !== undefined && 'SMTP_PORT',
+      smtpUser !== undefined && 'SMTP_USER',
+      smtpPass !== undefined && 'SMTP_PASS',
+      smtpFrom !== undefined && 'SMTP_FROM',
+      smtpSecure !== undefined && 'SMTP_SECURE',
+      publicAppUrl !== undefined && PUBLIC_URL_SETTING_KEY,
+      aiAnalysisEnabled !== undefined && 'AI_ANALYSIS_ENABLED',
+      aiBaseUrl !== undefined && 'AI_BASE_URL',
+      aiModel !== undefined && 'AI_MODEL',
+      aiApiKey !== undefined && 'AI_API_KEY',
+    ].filter(Boolean);
+    await writeAudit({ userId: user.userId, action: 'SETTINGS_UPDATE', details: { keys: changedKeys } });
 
     return NextResponse.json({ success: true, message: 'Global system settings updated & encrypted at rest!' });
   } catch (err: any) {

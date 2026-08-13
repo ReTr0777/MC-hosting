@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
 
 export async function DELETE(req: NextRequest, { params }: { params: { id: string; permissionId: string } }) {
   const user = await getUserFromRequest(req);
@@ -25,6 +26,11 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   try {
     await prisma.serverPermission.delete({
       where: { id: params.permissionId },
+    });
+    await writeAudit({
+      userId: user.userId,
+      action: 'PERMISSION_REVOKE',
+      details: { serverId: params.id, permissionId: params.permissionId },
     });
     return NextResponse.json({ success: true, message: 'Permission revoked' });
   } catch (err: any) {

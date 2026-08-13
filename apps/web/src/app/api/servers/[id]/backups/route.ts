@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { dispatchNotification } from '@/lib/notifications';
+import { writeAudit } from '@/lib/audit';
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(request);
@@ -58,6 +59,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         method: 'POST',
         body: JSON.stringify({ name: body.name }),
       });
+      await writeAudit({ userId: user.userId, action: 'BACKUP_RESTORE', details: { serverId: server.id, serverName: server.name, name: body.name } });
       return NextResponse.json(data);
     }
 
@@ -65,6 +67,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       const data = await daemonClient.request<{ success: boolean }>(`/servers/${targetContainerId}/backups/${body.name}`, {
         method: 'DELETE',
       });
+      await writeAudit({ userId: user.userId, action: 'BACKUP_DELETE', details: { serverId: server.id, serverName: server.name, name: body.name } });
       return NextResponse.json(data);
     }
 
@@ -81,6 +84,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         body: `Backup "${data.backup?.name || body.name || 'unnamed'}" completed successfully.`,
         fields: [{ name: 'Node', value: server.node.name }],
       });
+
+      await writeAudit({ userId: user.userId, action: 'BACKUP_CREATE', details: { serverId: server.id, serverName: server.name, name: data.backup?.name || body.name } });
 
       return NextResponse.json(data);
     } catch (backupErr: any) {

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
 import { ServerType } from '@mc-manager/shared';
+import { writeAudit } from '@/lib/audit';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -98,11 +99,21 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         console.warn(`[Web API] Failed to register server ${server.id} with Velocity: ${velErr.message}`);
       }
 
+      // STARTING, not RUNNING: all that happened here is that the daemon accepted the command.
+      // A modpack can spend many minutes installing and loading before it opens its port, and
+      // claiming RUNNING now is what leaves players staring at "Can't connect to server" while
+      // the panel insists the server is up. The daemon's boot watchdog and the monitor tick
+      // promote this to RUNNING once the server actually answers a ping.
       await prisma.server.update({
         where: { id: server.id },
-        data: { containerId: targetContainerId, status: 'RUNNING' },
+        data: { containerId: targetContainerId, status: 'STARTING' },
       });
-      return NextResponse.json({ message: 'Server start/restart command sent', status: 'RUNNING' });
+      await writeAudit({
+        userId: user.userId,
+        action: action === 'restart' ? 'SERVER_RESTART' : 'SERVER_START',
+        details: { serverId: server.id, serverName: server.name },
+      });
+      return NextResponse.json({ message: 'Server start/restart command sent', status: 'STARTING' });
     }
 
     if (action === 'stop') {
@@ -126,6 +137,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         where: { id: server.id },
         data: { containerId: targetContainerId, status: 'STOPPING' },
       });
+      await writeAudit({ userId: user.userId, action: 'SERVER_STOP', details: { serverId: server.id, serverName: server.name } });
       return NextResponse.json({ message: 'Server stop command sent', status: 'STOPPING' });
     }
 
@@ -150,6 +162,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         where: { id: server.id },
         data: { containerId: targetContainerId, status: 'OFFLINE' },
       });
+      await writeAudit({ userId: user.userId, action: 'SERVER_KILL', details: { serverId: server.id, serverName: server.name } });
       return NextResponse.json({ message: 'Server force killed', status: 'OFFLINE' });
     }
 
@@ -164,6 +177,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       } catch (e) {
         // Record was already deleted
       }
+      await writeAudit({ userId: user.userId, action: 'SERVER_DELETE', details: { serverId: server.id, serverName: server.name } });
       return NextResponse.json({ message: 'Server instance deleted' });
     }
 

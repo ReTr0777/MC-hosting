@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import TwoFactorSection from '@/components/TwoFactorSection';
+import ThemeSelector from '@/components/ThemeSelector';
 import { useConfirm } from '@/context/ConfirmContext';
 import { useToast } from '@/context/ToastContext';
 import { useClipboard } from '@/hooks/useClipboard';
@@ -205,6 +206,9 @@ export default function AccountPage() {
             </div>
           )}
         </section>
+
+        {/* Appearance */}
+        <ThemeSelector />
 
         {/* API keys */}
         <section className="cc-panel" style={{ display: 'grid', gap: '18px' }}>

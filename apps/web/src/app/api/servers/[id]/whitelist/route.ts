@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient, WhitelistAction, WhitelistSnapshot } from '@/lib/daemon-client';
+import { writeAudit } from '@/lib/audit';
 
 async function resolveServer(id: string) {
   return prisma.server.findUnique({
@@ -56,6 +57,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         body: JSON.stringify({ action, username }),
       }
     );
+
+    if (action === 'add' || action === 'remove') {
+      await writeAudit({
+        userId: user.userId,
+        action: action === 'remove' ? 'WHITELIST_REMOVE' : 'WHITELIST_ADD',
+        details: { serverId: server.id, serverName: server.name, username },
+      });
+    }
 
     return NextResponse.json(data);
   } catch (err: any) {

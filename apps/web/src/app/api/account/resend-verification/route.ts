@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { generateToken } from '@/lib/tokens';
 import { sendVerificationEmail } from '@/lib/email';
+import { getPublicOrigin } from '@/lib/public-url';
 
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  const verifyUrl = `${req.nextUrl.origin}/verify-email?token=${raw}`;
+  const verifyUrl = `${await getPublicOrigin(req)}/verify-email?token=${raw}`;
   const sent = await sendVerificationEmail(user.email, verifyUrl);
 
   if (!sent) {

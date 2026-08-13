@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/daemon-client';
+import { analyzeCrashLog } from '@/lib/crash-analyzer';
 
 export const dynamic = 'force-dynamic';
 
@@ -135,7 +136,14 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         `/servers/${targetContainerId}/logs/tail?lines=80`
       );
       crashLog = tail.lines || [];
-      crashHint = detectCrashCause(crashLog);
+      // Same rule set the Crash Analysis modal uses, so the two never disagree about a log.
+      const analysis = analyzeCrashLog(crashLog, {
+        memoryMb: server.memoryMb,
+        mcVersion: server.mcVersion,
+        serverType: server.serverType,
+        status: server.status,
+      });
+      crashHint = analysis && analysis.category !== 'clean-shutdown' ? analysis.rootCause : null;
     } catch {
       // Log tail is best-effort
     }
@@ -150,45 +158,4 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     crashLog,
     crashHint,
   });
-}
-
-/** Turns common startup failures into a plain-language cause. */
-function detectCrashCause(lines: string[]): string | null {
-  const text = lines.join('\n');
-
-  // Fabric names the unmet dependency explicitly — quote it back rather than guessing
-  const hardDep = text.match(/HARD_DEP_NO_CANDIDATE\s+(\S+)[^{]*\{depends\s+([\w-]+)/i);
-  if (hardDep) {
-    const [, mod, missing] = hardDep;
-    const isFabricApi = /^fabric-api(-base)?$/i.test(missing);
-    return (
-      `'${mod}' needs '${missing}', which is not installed, so the whole server refuses to start. ` +
-      (isFabricApi
-        ? 'That module ships inside Fabric API — install "Fabric API" from the Mod Browser tab, or reinstall BlueMap so it pulls the dependency in automatically.'
-        : `Install '${missing}' from the Mod Browser tab, then start the server again.`)
-    );
-  }
-
-  if (/fabric-?api|Fabric API/i.test(text) && /(requires|missing|not installed)/i.test(text)) {
-    return 'BlueMap on Fabric requires the Fabric API mod, which is not installed. Install "Fabric API" from the Mod Browser tab, then start the server again.';
-  }
-  if (/Incompatible mods found|Mod resolution failed/i.test(text)) {
-    return 'Fabric could not resolve the installed mod set. The console lines below name the offending mod and what it needs — the usual cause is a mod built for a different Minecraft version.';
-  }
-  if (/requires minecraft|Incompatible mod set|unsupported.*version/i.test(text)) {
-    return 'A mod failed version resolution — most likely a build that does not match this Minecraft version. Uninstall it from the World Map or Mod Browser tab and check the console for the exact mismatch.';
-  }
-  if (/java\.lang\.OutOfMemoryError|Out of memory/i.test(text)) {
-    return 'The server ran out of memory. Raise the memory limit before retrying.';
-  }
-  if (/Address already in use|BindException/i.test(text)) {
-    return 'A port is already in use — likely BlueMap\'s map port clashing with something else on the node.';
-  }
-  if (/You need to agree to the EULA/i.test(text)) {
-    return 'The Minecraft EULA has not been accepted for this server.';
-  }
-  if (/Unsupported class file major version|UnsupportedClassVersionError/i.test(text)) {
-    return 'Java version mismatch — this server or mod needs a different Java runtime than the node provides.';
-  }
-  return null;
 }

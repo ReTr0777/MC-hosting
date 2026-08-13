@@ -74,6 +74,12 @@ export default function SettingsPage() {
   const [smtpPass, setSmtpPass] = useState('');
   const [smtpFrom, setSmtpFrom] = useState('');
   const [smtpSecure, setSmtpSecure] = useState(false);
+  const [publicAppUrl, setPublicAppUrl] = useState('');
+  const [publicAppUrlFromEnv, setPublicAppUrlFromEnv] = useState('');
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [aiBaseUrl, setAiBaseUrl] = useState('');
+  const [aiModel, setAiModel] = useState('');
+  const [aiApiKey, setAiApiKey] = useState('');
   const [testingEmail, setTestingEmail] = useState(false);
 
   const isAdmin = user?.globalRole === 'GLOBAL_ADMIN';
@@ -91,6 +97,12 @@ export default function SettingsPage() {
       setSmtpPass(s.smtpPass || '');
       setSmtpFrom(s.smtpFrom || '');
       setSmtpSecure(Boolean(s.smtpSecure));
+      setPublicAppUrl(s.publicAppUrl || '');
+      setPublicAppUrlFromEnv(s.publicAppUrlFromEnv || '');
+      setAiEnabled(Boolean(s.aiAnalysisEnabled));
+      setAiBaseUrl(s.aiBaseUrl || '');
+      setAiModel(s.aiModel || '');
+      setAiApiKey(s.aiApiKey || '');
       setLogs(data?.logs || []);
       setLoadError('');
     } catch (err) {
@@ -111,6 +123,8 @@ export default function SettingsPage() {
         cloudflareZoneId: zoneIdInput,
         defaultDomain: defaultDomainInput,
         smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure,
+        aiAnalysisEnabled: aiEnabled, aiBaseUrl, aiModel, aiApiKey,
+        publicAppUrl,
       });
       toast.success('Settings saved');
       await fetchSettings();
@@ -226,6 +240,38 @@ export default function SettingsPage() {
 
           <section className="cc-panel">
             <PanelHeader
+              title="Panel address"
+              description="The address people reach this panel on. Verification and password-reset emails build their links from it, so a wrong value here produces links that cannot be opened."
+            />
+
+            <div>
+              <label className="cc-label" htmlFor="public-url">Public panel URL</label>
+              <input
+                id="public-url"
+                value={publicAppUrl}
+                onChange={(e) => setPublicAppUrl(e.target.value)}
+                placeholder="https://panel.example.com"
+                disabled={!!publicAppUrlFromEnv}
+                className="cc-input"
+                style={{ fontFamily: 'var(--font-mono)', opacity: publicAppUrlFromEnv ? 0.6 : 1 }}
+              />
+              {publicAppUrlFromEnv ? (
+                <p className="cc-help">
+                  Set by the <code>APP_URL</code> environment variable to <strong>{publicAppUrlFromEnv}</strong>, which
+                  takes precedence over this field. Clear that variable to edit it here.
+                </p>
+              ) : (
+                <p className="cc-help">
+                  Leave blank to work it out from each request, which is right when the panel is only reached at one
+                  address. Set it when the panel answers on several — a LAN IP and a domain, say — so emails always
+                  point at the one you want.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="cc-panel">
+            <PanelHeader
               title="Outbound email (SMTP)"
               description="Used for password reset links and email verification. Leave the host blank to disable outbound email entirely."
               actions={
@@ -262,6 +308,45 @@ export default function SettingsPage() {
               <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} style={{ width: 16, height: 16, accentColor: 'var(--accent)' }} />
               <span>Use implicit TLS (port 465). Leave unchecked for STARTTLS on port 587.</span>
             </label>
+          </section>
+
+          <section className="cc-panel">
+            <PanelHeader
+              title="AI crash analysis"
+              description={
+                'Optional. The crash analyser recognises the common Minecraft failures on its own, offline and instantly. ' +
+                'Connect a model here and anything it cannot classify is sent to that model for an explanation instead.'
+              }
+            />
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', fontSize: '0.8125rem', color: 'var(--text-primary)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={aiEnabled} onChange={(e) => setAiEnabled(e.target.checked)} style={{ width: 16, height: 16, accentColor: 'var(--accent)' }} />
+              <span>Send unrecognised crash logs to the configured model</span>
+            </label>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+              <div style={{ gridColumn: 'span 2', minWidth: 0 }}>
+                <label className="cc-label" htmlFor="ai-base-url">API base URL</label>
+                <input id="ai-base-url" value={aiBaseUrl} onChange={(e) => setAiBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+                <p className="cc-help">
+                  Any OpenAI-compatible endpoint. Use <code>http://localhost:11434/v1</code> for Ollama, or your OpenRouter,
+                  LM Studio or vLLM address — logs then never leave your network.
+                </p>
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="ai-model">Model</label>
+                <input id="ai-model" value={aiModel} onChange={(e) => setAiModel(e.target.value)} placeholder="gpt-4o-mini" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="ai-key">API key</label>
+                <SecretInput id="ai-key" value={aiApiKey} onChange={setAiApiKey} placeholder="Not needed for a local model" />
+              </div>
+            </div>
+
+            <Notice tone="warning">
+              Enabling this sends the tail of a crashed server's log to the endpoint above. Minecraft logs routinely contain
+              player names, IP addresses and file paths — only point this at a provider you are willing to share that with.
+            </Notice>
           </section>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
