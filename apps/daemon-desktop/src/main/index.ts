@@ -189,6 +189,26 @@ function registerIpc(): void {
 
   ipcMain.handle('config:regenerate-key', () => store.regenerateApiKey());
 
+  ipcMain.handle('config:import', async () => {
+    const picked = await dialog.showOpenDialog({
+      title: 'Import node config',
+      buttonLabel: 'Import',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Node config', extensions: ['json'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return { imported: false };
+
+    const applied = store.importFile(picked.filePaths[0]);
+    log.write('config', `imported config for node "${applied.nodeName ?? 'unnamed'}"`);
+    // The daemon reads config.json once at startup, so the new key only takes
+    // effect on a restart. Doing it here means "Import" is the whole job.
+    await daemon.restart();
+    return { imported: true, ...applied };
+  });
+
   ipcMain.handle('daemon:status', () => daemon.getStatus());
   ipcMain.handle('daemon:logs', () => daemon.getLogs());
   ipcMain.handle('daemon:clear-logs', () => daemon.clearLogs());

@@ -803,6 +803,40 @@ export default function DashboardPage() {
     }
   };
 
+  /**
+   * Downloads a node's settings for the desktop node app to import.
+   *
+   * The file carries the daemon's bearer token, so it is fetched rather than built
+   * client-side (the browser never holds the key otherwise) and the user is told
+   * plainly what they have just saved.
+   */
+  const handleExportNodeConfig = async (node: NodeItem) => {
+    try {
+      const res = await fetch(`/api/nodes/${node.id}/config`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Export failed');
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${node.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'node'}-node-config.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      toast.success(
+        'Config exported',
+        `Import it in the MC Hosting Node app on ${node.name}. It contains the daemon key — share it privately.`
+      );
+    } catch (err: any) {
+      toast.error('Could not export the config', err.message);
+    }
+  };
+
   const openEditNodeModal = (node: NodeItem) => {
     setEditingNodeId(node.id);
     setNodeName(node.name);
@@ -1345,6 +1379,15 @@ export default function DashboardPage() {
                           onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
                         >
                           <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 8a4 4 0 014-4h6a4 4 0 014 4v8a4 4 0 01-4 4H9a4 4 0 01-4-4V8zm4-1v1m6-1v1M8 12h8m-8 4h5" /></svg>
+                        </button>
+                        <button
+                          onClick={() => handleExportNodeConfig(node)}
+                          title="Export config for the desktop node app"
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
+                          onMouseOver={e => (e.currentTarget.style.color = '#fbbf24')}
+                          onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                        >
+                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" /></svg>
                         </button>
                         <button
                           onClick={() => handleDeleteNode(node)}

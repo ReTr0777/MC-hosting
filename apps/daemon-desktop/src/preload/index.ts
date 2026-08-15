@@ -10,6 +10,8 @@ const api = {
   readConfig: (): Promise<NodeConfig> => ipcRenderer.invoke('config:read'),
   writeConfig: (patch: Partial<NodeConfig>): Promise<NodeConfig> => ipcRenderer.invoke('config:write', patch),
   regenerateApiKey: (): Promise<string> => ipcRenderer.invoke('config:regenerate-key'),
+  importConfig: (): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }> =>
+    ipcRenderer.invoke('config:import'),
 
   getStatus: (): Promise<DaemonStatus> => ipcRenderer.invoke('daemon:status'),
   getLogs: (): Promise<LogLine[]> => ipcRenderer.invoke('daemon:logs'),

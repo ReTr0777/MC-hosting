@@ -76,8 +76,15 @@
       <!-- Connection -->
       <section class="panel" id="tab-connection">
         <div class="card">
-          <div class="card-head"><h2>Panel connection</h2></div>
-          <p class="muted">Add this node in the web panel using the address and key below.</p>
+          <div class="card-head">
+            <h2>Panel connection</h2>
+            <button id="btn-import" class="btn small primary">Import config from panel…</button>
+          </div>
+          <p class="muted">
+            Fastest setup: in the panel, open Nodes and use the download icon on this node,
+            then import that file here — it fills in the key below for you. Otherwise copy
+            the address and key across by hand.
+          </p>
 
           <label class="field">
             <span>Node address</span>

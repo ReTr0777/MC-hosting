@@ -93,6 +93,84 @@ npm run build       # shared -> daemon -> web
 Tests live next to the code they cover, as `*.test.ts`, and run on the Node test
 runner via `tsx`.
 
+## Setting up a new node
+
+A node is any Windows machine that will actually run game servers. The panel talks
+to it over HTTP, so the two need to agree on an address and a shared key. Exporting
+the config from the panel is the quickest way to make them agree — it carries the
+key across so nobody retypes it.
+
+**Before you start, on the node machine:**
+
+- Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and let
+  it finish starting. Every game server is a container; the node cannot host
+  anything without it.
+- Find the machine's LAN address (`ipconfig` → IPv4 Address, e.g. `192.168.1.50`).
+- Make sure the panel can reach port `3500` on it. On the same LAN this usually
+  just works; across networks you will need a port forward or the FRP tunnel.
+
+### 1. Create the node in the panel
+
+Dashboard → **Nodes** → **Add Node**, as a global admin:
+
+| Field | What to put |
+| --- | --- |
+| Name | Anything recognisable, e.g. `Spare PC` |
+| Host | The node machine's LAN address |
+| Port | `3500` unless it is already taken on that machine |
+| API key | Invent a long random string — the node adopts it in step 3 |
+
+It will save as **offline**. That is expected: nothing is running there yet.
+
+### 2. Export its config
+
+On the new node's card, click the **download icon** (⤓). This saves
+`<node-name>-node-config.json`.
+
+> This file contains the daemon key in plaintext. Send it privately — anyone holding
+> it can control that node's servers. The export is admin-only and recorded in the
+> audit log.
+
+### 3. Install the app on the node machine
+
+Download the latest **MC Hosting Node Setup** from
+[Releases](https://github.com/ReTr0777/MC-hosting/releases) and run it. Windows
+SmartScreen will warn because the build is unsigned — *More info* → *Run anyway*.
+
+The app starts the node immediately, so it may report a port clash or a missing
+Docker on first launch. Both are shown on the Overview tab.
+
+### 4. Import the config
+
+In the app: **Connection** → **Import config from panel…** → pick the file you
+exported.
+
+The app writes the key, port and enabled games, then restarts the agent. Within a
+few seconds the node should show **Running**, and the panel's node card should flip
+to online on its next refresh.
+
+### 5. Check it over
+
+- **Overview** — Docker should read *Running*, node state *Running*.
+- Tick **start automatically when I sign in** so the node survives a reboot.
+- Closing the window leaves the node online in the tray; only **Quit** from the tray
+  menu takes it offline.
+
+### If it does not come online
+
+| Symptom | Cause |
+| --- | --- |
+| App says *Port 3500 is already in use* | Something else holds the port — often a daemon already running in Docker. Change it on the Connection tab, and change it on the node in the panel to match. |
+| App is *Running*, panel says offline | The panel cannot reach the machine. Check the Host value in the panel and the Windows firewall on port 3500. |
+| Panel says unauthorised | Key mismatch. Re-export from the panel and import again. |
+| Docker reads *Not installed* / *Not running* | Install or start Docker Desktop, then **Check again**. |
+
+The log behind **Logs → Open log file** (`%APPDATA%\MC Hosting Node\logs\node.log`)
+records startup, the daemon's own output, and update checks.
+
+Doing it the other way round also works: install the app first, then copy the
+address and key off the **Connection** tab into the panel's Add Node form by hand.
+
 ## Windows node installer
 
 `apps/daemon-desktop` packages the daemon as a Windows application, so a machine can

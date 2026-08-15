@@ -43,6 +43,7 @@ interface NodeApi {
   readConfig(): Promise<NodeConfig>;
   writeConfig(patch: Partial<NodeConfig>): Promise<NodeConfig>;
   regenerateApiKey(): Promise<string>;
+  importConfig(): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }>;
   getStatus(): Promise<DaemonStatus>;
   getLogs(): Promise<LogLine[]>;
   clearLogs(): Promise<void>;
@@ -263,6 +264,23 @@ function wire(): void {
     const hidden = input.type === 'password';
     input.type = hidden ? 'text' : 'password';
     $('btn-reveal').textContent = hidden ? 'Hide' : 'Show';
+  });
+
+  $('btn-import').addEventListener('click', async () => {
+    try {
+      const result = await api.importConfig();
+      if (!result.imported) return; // User closed the file picker.
+      config = await api.readConfig();
+      renderConfig();
+      toast(
+        result.nodeName
+          ? `Imported settings for "${result.nodeName}". Node restarting.`
+          : 'Config imported. Node restarting.'
+      );
+    } catch (err) {
+      // The main process throws a sentence meant for the user; show it verbatim.
+      toast((err as Error).message.replace(/^Error invoking remote method '[^']+':\s*Error:\s*/, ''));
+    }
   });
 
   $('btn-regen').addEventListener('click', async () => {

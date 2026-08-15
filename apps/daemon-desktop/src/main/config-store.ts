@@ -79,6 +79,62 @@ export class ConfigStore {
     fs.writeFileSync(this.configPath, JSON.stringify(merged, null, 2));
   }
 
+  /**
+   * Applies a config file exported by the web panel.
+   *
+   * Validated field by field rather than merged wholesale: the file arrives from
+   * outside the app, and a malformed or hand-edited one must fail with something an
+   * operator can act on instead of quietly writing nonsense into config.json.
+   */
+  importFile(filePath: string): { nodeName: string | null; panelUrl: string | null } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch {
+      throw new Error('That file is not valid JSON. Export a fresh copy from the panel.');
+    }
+
+    const doc = parsed as Record<string, any>;
+    if (doc?.format !== 'mc-hosting-node-config') {
+      throw new Error('That is not a node config file. Export one from the panel: Nodes → the download icon.');
+    }
+    if (typeof doc.version !== 'number' || doc.version > 1) {
+      throw new Error(`This config was made by a newer panel (format v${doc.version}). Update this app first.`);
+    }
+
+    const incoming = doc.node ?? {};
+    const patch: Record<string, unknown> = {};
+
+    if (typeof incoming.apiKey !== 'string' || incoming.apiKey.length < 8) {
+      throw new Error('The config has no usable daemon key in it.');
+    }
+    patch.apiKey = incoming.apiKey;
+
+    if (typeof incoming.port === 'number' && incoming.port > 0 && incoming.port < 65536) {
+      patch.port = incoming.port;
+    }
+
+    if (Array.isArray(incoming.enabledGames)) {
+      const games = incoming.enabledGames.filter((g: unknown) => typeof g === 'string');
+      // An empty list would hide the node from the panel's picker entirely, so keep
+      // whatever is already configured rather than accepting nothing.
+      if (games.length > 0) patch.enabledGames = games;
+    }
+
+    // Optional: present only when the exporting panel knows the tunnel settings.
+    const tunnel = doc.tunnel ?? {};
+    if (typeof tunnel.serverAddr === 'string') patch.frpServerAddr = tunnel.serverAddr;
+    if (typeof tunnel.serverPort === 'number') patch.frpServerPort = tunnel.serverPort;
+    if (typeof tunnel.token === 'string') patch.frpToken = tunnel.token;
+
+    this.write(patch);
+
+    return {
+      nodeName: typeof doc.panel?.nodeName === 'string' ? doc.panel.nodeName : null,
+      panelUrl: typeof doc.panel?.url === 'string' ? doc.panel.url : null,
+    };
+  }
+
   regenerateApiKey(): string {
     const apiKey = crypto.randomBytes(32).toString('hex');
     this.write({ apiKey });
