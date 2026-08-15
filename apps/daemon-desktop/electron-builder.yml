@@ -49,7 +49,11 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: MC Hosting Node
-  # The node keeps running in the tray, so the uninstaller must close it first.
+  # Removes the auto-start registry value NSIS does not know about.
+  include: nsis/installer.nsh
+  # Never true here: the app's data directory holds config.json *and* every world
+  # this node hosts (dataDir is <userData>/data/servers). Wiping it on uninstall
+  # would delete the servers along with the app.
   deleteAppDataOnUninstall: false
 
 # Nothing here is published automatically; releases are attached by hand.
