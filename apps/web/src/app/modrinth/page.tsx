@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { useUIPrefs } from '@/context/UIPrefsContext';
-import { AdvancedBadge } from '@/components/AdvancedModeToggle';
+import { AdvancedBadge } from '@/components/common/AdvancedModeToggle';
 import { apiRequest, errorMessage } from '@/lib/api';
 import {
   Chip, EmptyState, InlineError, LoadingLine, Modal, Notice, PanelHeader, SkeletonRows,

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { cronError, nextRun } from '@/lib/cron';
-import { SCHEDULE_ACTIONS } from '@/lib/scheduler';
+import { cronError, nextRun } from '@/lib/servers/cron';
+import { SCHEDULE_ACTIONS } from '@/lib/servers/scheduler';
 import { writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';

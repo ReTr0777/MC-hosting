@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { Game, DEFAULT_ENABLED_GAMES, parseGameList } from '@mc-manager/shared';
 
 export interface DaemonConfig {
   port: number;
@@ -19,6 +20,8 @@ export interface DaemonConfig {
   s3SecretAccessKey?: string;
   s3Prefix?: string;
   s3RetainLocal?: boolean;
+  /** Games this node will host. See DEFAULT_ENABLED_GAMES for why it is never empty. */
+  enabledGames?: Game[];
 }
 
 const dataBaseDir = process.env.DAEMON_DATA_DIR ? path.dirname(process.env.DAEMON_DATA_DIR) : path.join(process.cwd(), 'data');
@@ -32,6 +35,7 @@ const defaultConfig: DaemonConfig = {
   frpServerPort: parseInt(process.env.FRP_SERVER_PORT || '7000', 10),
   frpToken: process.env.FRP_TOKEN || '',
   s3RetainLocal: true,
+  enabledGames: [...DEFAULT_ENABLED_GAMES],
 };
 
 let loadedConfig: DaemonConfig = { ...defaultConfig };
@@ -55,6 +59,10 @@ export function loadConfig(): DaemonConfig {
     }
   }
 
+  // config.json may predate this setting, or have been hand-edited. Either way the
+  // node must still advertise something runnable, so fall back rather than trust it.
+  loadedConfig.enabledGames = parseGameList(loadedConfig.enabledGames) ?? [...DEFAULT_ENABLED_GAMES];
+
   // Ensure a setup password exists
   if (!loadedConfig.setupPassword) {
     loadedConfig.setupPassword = crypto.randomBytes(8).toString('hex');
@@ -75,7 +83,12 @@ export function loadConfig(): DaemonConfig {
 
 export function saveConfig(newConfig: Partial<DaemonConfig>) {
   loadedConfig = { ...loadedConfig, ...newConfig };
-  
+
+  // Never let a save leave the node advertising an empty or invalid list — that would
+  // make it invisible to the panel's node picker with no obvious way to recover.
+  loadedConfig.enabledGames = parseGameList(loadedConfig.enabledGames) ?? [...DEFAULT_ENABLED_GAMES];
+
+
   if (!fs.existsSync(dataBaseDir)) {
     fs.mkdirSync(dataBaseDir, { recursive: true });
   }

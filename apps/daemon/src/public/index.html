@@ -98,6 +98,16 @@
         </div>
 
         <div class="space-y-4 pt-4">
+          <h3 class="text-lg font-semibold text-amber-400 border-b border-slate-800 pb-2">Games Hosted On This Node</h3>
+          <div id="gamesContainer" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+          <p id="gamesWarning" class="text-xs text-amber-400/90 hidden"></p>
+          <p class="text-xs text-slate-500">
+            The web panel will only offer this node when creating a server for a game ticked here.
+            Servers that already exist keep running either way — unticking a game only blocks new ones.
+          </p>
+        </div>
+
+        <div class="space-y-4 pt-4">
           <h3 class="text-lg font-semibold text-slate-300 border-b border-slate-800 pb-2">Security</h3>
           <div>
             <label class="block text-xs font-semibold uppercase text-slate-400 mb-1.5">Change Setup Password (Optional)</label>
@@ -203,6 +213,7 @@
           document.getElementById('frpAddrInput').value = config.frpServerAddr || '';
           document.getElementById('frpPortInput').value = config.frpServerPort || '7000';
           document.getElementById('frpTokenInput').value = config.frpToken || '';
+          renderGames(config.availableGames || [], config.enabledGames || []);
 
           if (config.deviceIps) {
             document.getElementById('detectedIpsText').textContent = config.deviceIps.join(', ');
@@ -223,14 +234,65 @@
       }
     });
 
+    // The daemon is the source of truth for which games exist, so the list is rendered
+    // from whatever /config reports rather than hardcoded here.
+    function renderGames(available, enabled) {
+      const container = document.getElementById('gamesContainer');
+      container.innerHTML = '';
+      available.forEach((game) => {
+        const label = document.createElement('label');
+        label.className = 'flex items-center gap-3 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/60 transition';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = game.id;
+        box.checked = enabled.includes(game.id);
+        box.className = 'game-checkbox w-4 h-4 accent-amber-500';
+        box.addEventListener('change', updateGamesWarning);
+        const text = document.createElement('span');
+        text.className = 'text-sm font-medium text-white';
+        text.textContent = game.label;
+        label.appendChild(box);
+        label.appendChild(text);
+        container.appendChild(label);
+      });
+      updateGamesWarning();
+    }
+
+    function selectedGames() {
+      return Array.from(document.querySelectorAll('.game-checkbox'))
+        .filter((b) => b.checked)
+        .map((b) => b.value);
+    }
+
+    // Warn before the save rather than only rejecting afterwards — the daemon refuses an
+    // empty list, and finding that out on submit is a worse experience than being told now.
+    function updateGamesWarning() {
+      const warning = document.getElementById('gamesWarning');
+      if (selectedGames().length === 0) {
+        warning.textContent = 'Pick at least one game — a node hosting nothing cannot be selected in the panel.';
+        warning.classList.remove('hidden');
+      } else {
+        warning.classList.add('hidden');
+      }
+    }
+
     configForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      
+
+      const games = selectedGames();
+      if (games.length === 0) {
+        updateGamesWarning();
+        saveMsg.textContent = '✕ Select at least one game before saving.';
+        saveMsg.className = 'text-sm font-medium text-red-400';
+        return;
+      }
+
       const payload = {
         apiKey: document.getElementById('apiKeyInput').value,
         frpServerAddr: document.getElementById('frpAddrInput').value,
         frpServerPort: document.getElementById('frpPortInput').value,
         frpToken: document.getElementById('frpTokenInput').value,
+        enabledGames: games,
       };
 
       const newPwd = document.getElementById('newPasswordInput').value;

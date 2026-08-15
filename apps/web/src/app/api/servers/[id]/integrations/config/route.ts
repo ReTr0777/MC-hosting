@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
-import { YAML_CONFIGS } from '@/lib/integration-configs';
-import { getYamlValue, setYamlValues } from '@/lib/yaml-patch';
+import { DaemonClient } from '@/lib/services/daemon-client';
+import { YAML_CONFIGS } from '@/lib/integrations/configs';
+import { getYamlValue, setYamlValues } from '@/lib/utils/yaml-patch';
 
 async function getDaemonClient(serverId: string) {
   const server = await prisma.server.findUnique({ where: { id: serverId }, include: { node: true } });

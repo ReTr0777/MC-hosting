@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
-import { analyzeCrashLog, unknownAnalysis, type AnalysisContext } from '@/lib/crash-analyzer';
-import { analyzeWithAi, isAiUsable, loadAiConfig } from '@/lib/ai-analyzer';
+import { DaemonClient } from '@/lib/services/daemon-client';
+import { analyzeCrashLog, unknownAnalysis, type AnalysisContext } from '@/lib/diagnostics/crash-analyzer';
+import { analyzeWithAi, isAiUsable, loadAiConfig } from '@/lib/diagnostics/ai-analyzer';
 
 export const dynamic = 'force-dynamic';
 

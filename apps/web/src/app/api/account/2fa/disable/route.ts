@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest, verifyPassword } from '@/lib/auth';
-import { decryptSecret } from '@/lib/crypto';
-import { verifyTotpCode, matchBackupCode } from '@/lib/totp';
+import { decryptSecret } from '@/lib/auth/crypto';
+import { verifyTotpCode, matchBackupCode } from '@/lib/auth/totp';
 
 export async function POST(req: NextRequest) {
   const authUser = await getUserFromRequest(req);

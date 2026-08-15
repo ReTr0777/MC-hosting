@@ -21,11 +21,12 @@ import {
   ensureDockerImage,
   getContainerStats,
   getContainerStatsHistory,
-} from '../services/docker';
-import { provisioningManager } from '../services/provisioning';
-import { processManager } from '../services/process';
-import { backupManager } from '../services/backup';
-import { CreateServerContainerDto, ExecutionMode } from '@mc-manager/shared';
+} from '../services/runtime/docker';
+import { provisioningManager } from '../services/content/provisioning';
+import { processManager } from '../services/runtime/process';
+import { backupManager, gameOfServerDir } from '../services/backup/backup';
+import { CreateServerContainerDto, ExecutionMode, Game, GAME_CAPABILITIES, isGame } from '@mc-manager/shared';
+import { getGame, isNonMinecraftGame } from '../games';
 import { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
 import { synthesizeForgeRunScript } from '../utils/forgeLaunchScript';
@@ -33,7 +34,7 @@ import {
   searchModrinth,
   getModrinthProjectVersions,
   downloadModrinthFile,
-} from '../services/modrinth';
+} from '../services/content/modrinth';
 import {
   findMrpackRoot,
   materializeMrpack,
@@ -42,15 +43,15 @@ import {
   analyzeInstalledMods,
   CLIENT_MODS_DIR,
   PACK_HEALTH_FILE,
-} from '../services/mrpack';
-import { provisionModrinthPack } from '../services/modrinth-provision';
+} from '../services/content/mrpack';
+import { provisionModrinthPack } from '../services/content/modrinth-provision';
 import { schedulerService } from '../services/scheduler';
-import { sendServerCommand } from '../services/console';
-import { tryPing } from '../services/mc-ping';
-import { presenceService } from '../services/presence';
+import { sendServerCommand } from '../services/runtime/console';
+import { tryPing } from '../services/presence/mc-ping';
+import { presenceService } from '../services/presence/presence';
 import { snapshot, listRevisions, readRevision, isVersionable, forgetHistory, HISTORY_DIR } from '../services/file-history';
-import { sleep as sleepServer, wake as wakeServer, cancelSleep, isSleeping, sleepInfo, listSleeping } from '../services/sleeper';
-import { startTarget, stopTarget, serverPortFor, bareServerId } from '../services/lifecycle';
+import { sleep as sleepServer, wake as wakeServer, cancelSleep, isSleeping, sleepInfo, listSleeping } from '../services/presence/sleeper';
+import { startTarget, stopTarget, serverPortFor, bareServerId } from '../services/runtime/lifecycle';
 import {
   platformForServerType,
   layoutForPlatform,
@@ -60,7 +61,7 @@ import {
   findInstalledJar,
   requiredDependencies,
   dependencyInstalled,
-} from '../services/bluemap';
+} from '../services/network/bluemap';
 
 const router = Router();
 const config = loadConfig();
@@ -125,7 +126,22 @@ router.get('/statuses', async (req: Request, res: Response) => {
       let playerNames: string[] | null = null;
       let pingOk = false;
 
-      if (running && !sleeping) {
+      // `tryPing` speaks the Minecraft Server List Ping, so it can never succeed
+      // against another game. Left unguarded, a perfectly healthy Terraria server
+      // reports pingOk=false forever and the panel pins it at STARTING.
+      const otherGame = getGame(gameOfServerDir(path.join(config.dataDir, id)));
+
+      if (running && !sleeping && otherGame) {
+        // Readiness comes from the game module's own ready line instead, which is
+        // what `startGameProcess` already tracks.
+        const mp = processManager.getProcess(id);
+        pingOk = mp?.status === 'RUNNING';
+        if (pingOk) {
+          const names = [...(mp?.onlinePlayers ?? [])];
+          players = names.length;
+          playerNames = names;
+        }
+      } else if (running && !sleeping) {
         const port = serverPortFor(id);
         if (port) {
           const ping = await tryPing('127.0.0.1', port, 2000);
@@ -185,7 +201,35 @@ router.post('/create', async (req: Request, res: Response) => {
     const dto: CreateServerContainerDto = req.body;
     console.log('[Daemon API] Received server creation request:', JSON.stringify(dto));
 
-    if (!dto.serverId || !dto.serverType || !dto.serverPort) {
+    // `create` is also reached as a fallback when a *start* fails, and several
+    // callers build that DTO from Minecraft columns alone. Letting such a DTO
+    // through unchanged would erase `game` from the saved metadata and silently
+    // convert an existing server into a Minecraft one — which is exactly what
+    // happened once, leaving a Minecraft server running in a Terraria world's
+    // directory. A DTO that says nothing about the game cannot change it.
+    //
+    // Recovered here, before anything reads `dto.game`.
+    if (dto.serverId) {
+      const previousMeta = path.join(config.dataDir, dto.serverId, 'craftcontrol-meta.json');
+      if (dto.game === undefined && fs.existsSync(previousMeta)) {
+        try {
+          const previous = JSON.parse(fs.readFileSync(previousMeta, 'utf8'));
+          if (previous.game !== undefined) {
+            dto.game = previous.game;
+            console.log(`[Daemon API] Preserved game '${previous.game}' for '${dto.serverId}' — the request omitted it.`);
+          }
+          if (dto.gameConfig === undefined && previous.gameConfig !== undefined) {
+            dto.gameConfig = previous.gameConfig;
+          }
+        } catch { /* unreadable metadata is no worse than none */ }
+      }
+    }
+
+    // `serverType` is a Minecraft loader and means nothing for another game, so
+    // only Minecraft is required to supply one. For Minecraft this condition is
+    // behaviourally identical to what it replaced.
+    const isOtherGame = isNonMinecraftGame(dto.game);
+    if (!dto.serverId || !dto.serverPort || (!isOtherGame && !dto.serverType)) {
       return res.status(400).json({ error: 'Missing required parameters: serverId, serverType, serverPort' });
     }
 
@@ -198,10 +242,32 @@ router.post('/create', async (req: Request, res: Response) => {
       fs.mkdirSync(serverDir, { recursive: true });
     }
     fs.writeFileSync(path.join(serverDir, 'craftcontrol-meta.json'), JSON.stringify(dto, null, 2));
-    fs.writeFileSync(path.join(serverDir, 'eula.txt'), 'eula=true\n');
+    // Minecraft's EULA. Written only for Minecraft — Terraria has no such gate,
+    // and a stray eula.txt in its directory would just be confusing clutter.
+    if (!isOtherGame) {
+      fs.writeFileSync(path.join(serverDir, 'eula.txt'), 'eula=true\n');
+    }
 
     // Pre-download server jar in background non-blocking so starting later is instant
     provisioningManager.run(dto.serverId, async () => {
+      // Touch point 3 of 3 (plan.md §2). Minecraft never enters this branch, and
+      // everything below it is the original body. Without this, creating a
+      // Terraria server would download a Minecraft jar into its directory.
+      if (isOtherGame) {
+        const definition = getGame(dto.game);
+        if (!definition) {
+          throw new Error(`This node has no support installed for ${dto.game}.`);
+        }
+        await definition.ensureBinary(serverDir, {
+          serverId: dto.serverId,
+          serverPort: dto.serverPort,
+          memoryMb: dto.memoryMb || definition.defaults.memoryMb,
+          cpuLimit: dto.cpuLimit || definition.defaults.cpuLimit,
+          gameConfig: dto.gameConfig,
+        });
+        return;
+      }
+
       // A Modrinth deploy has to be built before anything else looks at the directory:
       // the pack decides the loader, the Minecraft version and the launch target, and
       // ensureServerJar would otherwise provision a bare server and ignore the pack.
@@ -1520,12 +1586,28 @@ router.post('/:serverId/players/action', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Missing username or action' });
   }
 
-  let cmd = '';
-  if (action === 'op') cmd = `op ${username}`;
-  else if (action === 'deop') cmd = `deop ${username}`;
-  else if (action === 'kick') cmd = `kick ${username} ${reason || 'Kicked by administrator'}`;
-  else if (action === 'ban') cmd = `ban ${username} ${reason || 'Banned by administrator'}`;
-  else return res.status(400).json({ error: `Unsupported player action '${action}'` });
+  const definition = getGame(gameOfServerDir(path.join(config.dataDir, targetId)));
+
+  let cmd: string | null = null;
+  if (definition) {
+    // Another game spells these differently, or does not have them at all.
+    if (!['op', 'deop', 'kick', 'ban'].includes(action)) {
+      return res.status(400).json({ error: `Unsupported player action '${action}'` });
+    }
+    cmd = definition.playerCommand(action, username, reason);
+    if (!cmd) {
+      return res.status(400).json({
+        error: `${definition.label} servers do not support the '${action}' action.`,
+      });
+    }
+  } else {
+    // Minecraft, unchanged.
+    if (action === 'op') cmd = `op ${username}`;
+    else if (action === 'deop') cmd = `deop ${username}`;
+    else if (action === 'kick') cmd = `kick ${username} ${reason || 'Kicked by administrator'}`;
+    else if (action === 'ban') cmd = `ban ${username} ${reason || 'Banned by administrator'}`;
+    else return res.status(400).json({ error: `Unsupported player action '${action}'` });
+  }
 
   const success = processManager.writeStdin(targetId, cmd);
   res.json({ success, message: `Dispatched command: ${cmd}` });
@@ -1926,6 +2008,230 @@ router.post('/:serverId/properties', (req: Request, res: Response) => {
   }
 });
 
+/* --------------------------------------------------------------------------
+ * Game-agnostic config file editing.
+ *
+ * `serverconfig.txt` is the same `key=value`-with-`#`-comments shape as
+ * `server.properties`, so the two routes below are a **copy** of the pair above,
+ * parameterised on filename — copied rather than refactored in place, per
+ * plan.md §2. The Minecraft `/properties` routes are what the panel uses today
+ * and are left exactly as they were.
+ * ------------------------------------------------------------------------ */
+
+/** Which config file a server's game exposes, resolved from its saved metadata. */
+function configFileFor(targetId: string): string | null {
+  const metaPath = path.join(config.dataDir, targetId, 'craftcontrol-meta.json');
+  let game: unknown = Game.MINECRAFT;
+  if (fs.existsSync(metaPath)) {
+    try {
+      game = JSON.parse(fs.readFileSync(metaPath, 'utf8')).game ?? Game.MINECRAFT;
+    } catch { /* a corrupt meta file means Minecraft, same as everywhere else */ }
+  }
+  const resolved = isGame(game) ? game : Game.MINECRAFT;
+  return GAME_CAPABILITIES[resolved].configFile;
+}
+
+function readKeyValueConfig(targetId: string, fileName: string): Record<string, string> {
+  const filePath = getSafeServerPath(targetId, fileName);
+  if (!filePath || !fs.existsSync(filePath)) return {};
+
+  const properties: Record<string, string> = {};
+  for (const line of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+    if (line.trim().startsWith('#') || !line.includes('=')) continue;
+    const idx = line.indexOf('=');
+    properties[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
+  }
+  return properties;
+}
+
+/** Merges key/value pairs into the file, preserving comments and ordering. */
+function applyKeyValueConfig(targetId: string, fileName: string, properties: Record<string, any>): void {
+  const filePath = getSafeServerPath(targetId, fileName);
+  if (!filePath) throw new Error('Access denied: Invalid server path');
+
+  let lines: string[] = [];
+  if (fs.existsSync(filePath)) {
+    lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+  }
+
+  const updatedKeys = new Set<string>();
+  const newLines = lines.map((line) => {
+    if (line.trim().startsWith('#') || !line.includes('=')) return line;
+    const idx = line.indexOf('=');
+    const key = line.substring(0, idx).trim();
+    if (key in properties) {
+      updatedKeys.add(key);
+      return `${key}=${properties[key]}`;
+    }
+    return line;
+  });
+
+  for (const [k, v] of Object.entries(properties)) {
+    if (!updatedKeys.has(k)) newLines.push(`${k}=${v}`);
+  }
+
+  fs.writeFileSync(filePath, newLines.join('\n'), 'utf8');
+}
+
+// GET /api/v1/servers/:serverId/gameconfig
+router.get('/:serverId/gameconfig', (req: Request, res: Response) => {
+  const targetId = req.params.serverId.replace('process-', '');
+  const fileName = configFileFor(targetId);
+
+  if (!fileName) {
+    return res.status(404).json({ error: 'This game has no editable config file' });
+  }
+
+  try {
+    res.json({ file: fileName, properties: readKeyValueConfig(targetId, fileName) });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to read ${fileName}`, details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/gameconfig
+router.post('/:serverId/gameconfig', (req: Request, res: Response) => {
+  const targetId = req.params.serverId.replace('process-', '');
+  const { properties } = req.body;
+  const fileName = configFileFor(targetId);
+
+  if (!fileName) {
+    return res.status(404).json({ error: 'This game has no editable config file' });
+  }
+  if (!properties || typeof properties !== 'object') {
+    return res.status(400).json({ error: 'Invalid properties payload' });
+  }
+
+  try {
+    snapshot(path.join(config.dataDir, targetId), fileName);
+    applyKeyValueConfig(targetId, fileName, properties);
+    res.json({ success: true, file: fileName, message: `Updated ${fileName} successfully` });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to update ${fileName}`, details: err.message });
+  }
+});
+
+/* --------------------------------------------------------------------------
+ * Flat-file ban lists.
+ *
+ * Minecraft keeps bans in structured `banned-players.json` / `banned-ips.json`
+ * and has its own routes above. Terraria keeps a plain `banlist.txt`, so these
+ * routes read and rewrite it by line rather than pretending it has a schema.
+ *
+ * Deliberately conservative about the format: the file is shown as Terraria
+ * actually wrote it. Entries are grouped as a `//comment` line plus the
+ * identifier line(s) that follow it, which is the shape Terraria's own banlist
+ * uses — but an entry it does not recognise is still listed and still
+ * removable, so an unexpected shape degrades to "you can see and delete it"
+ * rather than to a blank page.
+ * ------------------------------------------------------------------------ */
+
+interface BanEntry {
+  /** Display name from the preceding `//` comment, when there is one. */
+  name: string | null;
+  /** The line(s) Terraria matches against — an ip, a uuid, or something else. */
+  identifiers: string[];
+  /** Indexes into the raw line array, so removal can rewrite the file exactly. */
+  lines: number[];
+}
+
+function banFileFor(targetId: string): string | null {
+  const metaPath = path.join(config.dataDir, targetId, 'craftcontrol-meta.json');
+  let game: unknown = Game.MINECRAFT;
+  if (fs.existsSync(metaPath)) {
+    try {
+      game = JSON.parse(fs.readFileSync(metaPath, 'utf8')).game ?? Game.MINECRAFT;
+    } catch { /* a corrupt meta file means Minecraft, same as everywhere else */ }
+  }
+  return GAME_CAPABILITIES[isGame(game) ? game : Game.MINECRAFT].banFile;
+}
+
+function parseBanFile(lines: string[]): BanEntry[] {
+  const entries: BanEntry[] = [];
+  let current: BanEntry | null = null;
+
+  lines.forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line) return;
+
+    if (line.startsWith('//')) {
+      // A comment starts a new entry and names it.
+      current = { name: line.slice(2).trim() || null, identifiers: [], lines: [index] };
+      entries.push(current);
+      return;
+    }
+
+    if (current) {
+      current.identifiers.push(line);
+      current.lines.push(index);
+    } else {
+      // An identifier with no preceding comment is still a ban.
+      entries.push({ name: null, identifiers: [line], lines: [index] });
+    }
+  });
+
+  return entries.filter((e) => e.identifiers.length > 0);
+}
+
+// GET /api/v1/servers/:serverId/banlist
+router.get('/:serverId/banlist', (req: Request, res: Response) => {
+  const targetId = req.params.serverId.replace('process-', '');
+  const fileName = banFileFor(targetId);
+  if (!fileName) return res.status(404).json({ error: 'This game has no flat-file ban list' });
+
+  const filePath = getSafeServerPath(targetId, fileName);
+  if (!filePath || !fs.existsSync(filePath)) {
+    return res.json({ file: fileName, entries: [], raw: '' });
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    res.json({ file: fileName, entries: parseBanFile(raw.split(/\r?\n/)), raw });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to read ${fileName}`, details: err.message });
+  }
+});
+
+// POST /api/v1/servers/:serverId/banlist  { unban: <identifier> }
+router.post('/:serverId/banlist', (req: Request, res: Response) => {
+  const targetId = req.params.serverId.replace('process-', '');
+  const { unban } = req.body;
+  const fileName = banFileFor(targetId);
+
+  if (!fileName) return res.status(404).json({ error: 'This game has no flat-file ban list' });
+  if (!unban || typeof unban !== 'string') {
+    return res.status(400).json({ error: 'Missing identifier to unban' });
+  }
+
+  const filePath = getSafeServerPath(targetId, fileName);
+  if (!filePath || !fs.existsSync(filePath)) {
+    return res.status(404).json({ error: `${fileName} does not exist` });
+  }
+
+  try {
+    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+    const entry = parseBanFile(lines).find((e) => e.identifiers.includes(unban));
+    if (!entry) return res.status(404).json({ error: `No ban matching '${unban}'` });
+
+    // Undoing a ban edits a file the running server also owns, so keep a history
+    // entry the same way the config editor does.
+    snapshot(path.join(config.dataDir, targetId), fileName);
+
+    const drop = new Set(entry.lines);
+    const kept = lines.filter((_, i) => !drop.has(i));
+    fs.writeFileSync(filePath, kept.join('\n'), 'utf8');
+
+    res.json({
+      success: true,
+      message:
+        `Removed ${entry.name ?? unban} from ${fileName}. ` +
+        `Terraria reads this file at startup, so restart for it to take effect.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to update ${fileName}`, details: err.message });
+  }
+});
+
 // GET /api/v1/servers/:serverId/stats
 router.get('/:serverId/stats', async (req: Request, res: Response) => {
   const { serverId } = req.params;
@@ -2068,7 +2374,10 @@ router.post('/:serverId/backups', async (req: Request, res: Response) => {
       }
     } else {
       if (processManager.isRunning(targetId)) {
-        processManager.writeStdin(targetId, 'save-all');
+        // `save-all` is Minecraft's; Terraria's is `save`. Falling back to the
+        // Minecraft literal keeps this byte-identical for Minecraft servers.
+        const definition = getGame(gameOfServerDir(path.join(config.dataDir, targetId)));
+        processManager.writeStdin(targetId, definition?.saveCommand ?? 'save-all');
       }
     }
 
@@ -3225,7 +3534,7 @@ router.post('/:serverId/mods/install', async (req: Request, res: Response) => {
     // Sync to container if running in Docker mode
     const containerName = `mc-server-${serverId}`;
     try {
-      const { syncServerDirToContainer } = require('../services/docker');
+      const { syncServerDirToContainer } = require('../services/runtime/docker');
       await syncServerDirToContainer(containerName, serverId);
     } catch (syncErr: any) {
       // ignore container sync if process mode
@@ -3303,7 +3612,7 @@ router.delete('/:serverId/mods/:fileName', async (req: Request, res: Response) =
     // Sync to container if running in Docker mode
     const containerName = `mc-server-${serverId}`;
     try {
-      const { syncServerDirToContainer } = require('../services/docker');
+      const { syncServerDirToContainer } = require('../services/runtime/docker');
       await syncServerDirToContainer(containerName, serverId);
     } catch (syncErr: any) {
       // ignore container sync if process mode

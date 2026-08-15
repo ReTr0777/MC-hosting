@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { NOTIFICATION_EVENT_TYPES } from '@/lib/notifications';
+import { NOTIFICATION_EVENT_TYPES } from '@/lib/services/notifications';
 
 export const dynamic = 'force-dynamic';
 

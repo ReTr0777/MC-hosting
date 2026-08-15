@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { hashSharePassword } from '@/lib/map-share';
+import { hashSharePassword } from '@/lib/servers/map-share';
 
 export const dynamic = 'force-dynamic';
 

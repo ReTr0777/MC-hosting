@@ -3,11 +3,13 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { usePasswordConfirmation } from '@/hooks/usePasswordConfirmation';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const { password, confirmPassword, setPassword, setConfirmPassword, error: passwordError, isValid: passwordValid } =
+    usePasswordConfirmation();
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -25,6 +27,14 @@ export default function RegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    // The submit button is already disabled in this case; this guards against a form submitted
+    // by pressing Enter in a text field, which bypasses it.
+    if (!passwordValid) {
+      setError(passwordError || 'Please confirm your password');
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -102,11 +112,32 @@ export default function RegisterPage() {
             <input
               type="password"
               required
+              minLength={8}
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition"
             />
+            <p className="mt-1.5 text-xs text-slate-500">At least 8 characters.</p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+              Confirm Password
+            </label>
+            <input
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="••••••••"
+              aria-invalid={!!passwordError}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition"
+            />
+            {passwordError && <p className="mt-1.5 text-xs text-red-400">{passwordError}</p>}
           </div>
 
           <div>
@@ -124,7 +155,7 @@ export default function RegisterPage() {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || !passwordValid}
             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold rounded-xl py-3 shadow-lg shadow-emerald-600/20 transition duration-200 mt-2"
           >
             {submitting ? 'Creating Account...' : 'Register Account'}

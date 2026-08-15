@@ -3,32 +3,36 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { Game, GAME_CAPABILITIES, GAME_LABELS, GameCapabilities, isGame } from '@mc-manager/shared';
 import { useAuth } from '@/context/AuthContext';
 import { useUIPrefs } from '@/context/UIPrefsContext';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
-import AdvancedModeToggle, { AdvancedBadge, AdvancedOnly } from '@/components/AdvancedModeToggle';
-import { ConsoleViewer } from '@/components/ConsoleViewer';
-import { FileExplorer } from '@/components/FileExplorer';
-import { ServerPermissionsModal } from '@/components/ServerPermissionsModal';
-import AnalyticsWidget from '@/components/AnalyticsWidget';
-import PlayersTab from '@/components/PlayersTab';
-import WhitelistTab from '@/components/WhitelistTab';
-import BanListTab from '@/components/BanListTab';
-import MapTab from '@/components/MapTab';
-import SleepTab from '@/components/SleepTab';
-import PropertiesTab from '@/components/PropertiesTab';
-import BackupsTab from '@/components/BackupsTab';
-import SubdomainTab from '@/components/SubdomainTab';
-import UpdateCenterTab from '@/components/UpdateCenterTab';
-import { SchedulesTab } from '@/components/SchedulesTab';
-import ModBrowserTab from '@/components/ModBrowserTab';
-import PackHealthTab from '@/components/PackHealthTab';
-import IntegrationsTab from '@/components/IntegrationsTab';
-import BroadcastBar from '@/components/BroadcastBar';
-import ResourceHistoryChart from '@/components/ResourceHistoryChart';
-import ExportImportCard from '@/components/ExportImportCard';
-import CrashAnalysisModal from '@/components/CrashAnalysisModal';
+import AdvancedModeToggle, { AdvancedBadge, AdvancedOnly } from '@/components/common/AdvancedModeToggle';
+import { ConsoleViewer } from '@/components/servers/ConsoleViewer';
+import { FileExplorer } from '@/components/servers/FileExplorer';
+import { ServerPermissionsModal } from '@/components/servers/ServerPermissionsModal';
+import AnalyticsWidget from '@/components/servers/AnalyticsWidget';
+import PlayersTab from '@/components/servers/PlayersTab';
+import WhitelistTab from '@/components/servers/WhitelistTab';
+import BanListTab from '@/components/servers/BanListTab';
+import FlatBanListTab from '@/components/servers/FlatBanListTab';
+import MapTab from '@/components/servers/MapTab';
+import SleepTab from '@/components/servers/SleepTab';
+import PropertiesTab from '@/components/servers/PropertiesTab';
+import TerrariaSettingsTab from '@/components/servers/TerrariaSettingsTab';
+import BackupsTab from '@/components/servers/BackupsTab';
+import SubdomainTab from '@/components/servers/SubdomainTab';
+import UpdateCenterTab from '@/components/servers/UpdateCenterTab';
+import { SchedulesTab } from '@/components/servers/SchedulesTab';
+import ModBrowserTab from '@/components/servers/ModBrowserTab';
+import PackHealthTab from '@/components/servers/PackHealthTab';
+import IntegrationsTab from '@/components/servers/IntegrationsTab';
+import ResourcesTab from '@/components/servers/ResourcesTab';
+import BroadcastBar from '@/components/servers/BroadcastBar';
+import ResourceHistoryChart from '@/components/servers/ResourceHistoryChart';
+import ExportImportCard from '@/components/servers/ExportImportCard';
+import CrashAnalysisModal from '@/components/servers/CrashAnalysisModal';
 
 interface ServerDetail {
   id: string;
@@ -37,6 +41,9 @@ interface ServerDetail {
   nodeId: string;
   containerId?: string;
   status: string;
+  /** Absent on a response from an older panel build; absent means Minecraft. */
+  game?: string;
+  gameConfig?: Record<string, unknown> | null;
   serverType: string;
   mcVersion: string;
   serverPort: number;
@@ -44,6 +51,8 @@ interface ServerDetail {
   cpuLimit: number;
   modpackSlug?: string;
   eulaAccepted: boolean;
+  suspendedAt?: string | null;
+  suspendedReason?: string | null;
   node: {
     name: string;
     host: string;
@@ -67,27 +76,72 @@ function StatusBadge({ status }: { status: string }) {
  * Tabs carry a plain-language `hint` shown under the tab bar, and an `advanced` flag. Anything
  * marked advanced is an expert-level or rarely-touched surface — hidden until the user opts in,
  * so the everyday job of running a server isn't buried under thirteen equal-looking tabs.
+ *
+ * Three optional fields make a tab game-aware, and all three are **additive**: a tab with none
+ * of them behaves exactly as it did before any of this existed.
+ *
+ *  - `requires`   — the capability flag that must be true for this tab to appear at all.
+ *  - `labelByGame` / `hintByGame` — per-game copy overrides. When a game has no override the
+ *    tab falls through to `label`/`hint`, which is why every Minecraft string below is
+ *    untouched and cannot drift.
  */
 const TABS = [
   { key: 'console', label: 'Console', advanced: false, hint: 'Live server output, connection details and performance at a glance.' },
-  { key: 'players', label: 'Players', advanced: false, hint: 'See who is online, and op, kick or message them.' },
-  { key: 'whitelist', label: 'Whitelist', advanced: false, hint: 'Control exactly which accounts are allowed to join.' },
-  { key: 'bans', label: 'Bans', advanced: false, hint: 'Review and lift bans on players and IP addresses.' },
-  { key: 'mods', label: 'Mods', advanced: false, hint: 'Search Modrinth and install or remove mods for this server.' },
-  { key: 'integrations', label: 'Integrations', advanced: false, hint: 'Dedicated setup for popular mods and plugins like Simple Voice Chat, Geyser, and LuckPerms.' },
-  { key: 'backups', label: 'Backups', advanced: false, hint: 'Take a snapshot before risky changes, and restore one if something breaks.' },
-  { key: 'properties', label: 'Settings', advanced: false, hint: 'Game rules from server.properties — difficulty, MOTD, view distance and more.' },
-  { key: 'map', label: 'World Map', advanced: false, hint: 'Browse a live rendered map of your world in the browser.' },
+  {
+    key: 'players', label: 'Players', advanced: false, hint: 'See who is online, and op, kick or message them.',
+    requires: 'players',
+    // Terraria has no op system and identifies players by name only — no UUID analogue.
+    hintByGame: { TERRARIA: 'See who is currently connected to your world.' },
+  },
+  { key: 'whitelist', label: 'Whitelist', advanced: false, hint: 'Control exactly which accounts are allowed to join.', requires: 'whitelist' },
+  {
+    key: 'bans', label: 'Bans', advanced: false, hint: 'Review and lift bans on players and IP addresses.',
+    requires: 'bans',
+    hintByGame: { TERRARIA: 'Review and lift bans. Terraria reads its ban list when the server starts.' },
+  },
+  { key: 'mods', label: 'Mods', advanced: false, hint: 'Search Modrinth and install or remove mods for this server.', requires: 'mods' },
+  { key: 'integrations', label: 'Integrations', advanced: false, hint: 'Dedicated setup for popular mods and plugins like Simple Voice Chat, Geyser, and LuckPerms.', requires: 'mods' },
+  {
+    key: 'backups', label: 'Backups', advanced: false, hint: 'Take a snapshot before risky changes, and restore one if something breaks.',
+    labelByGame: { TERRARIA: 'World Backups' },
+    hintByGame: { TERRARIA: 'Take a snapshot of your world before risky changes, and restore one if something breaks.' },
+  },
+  {
+    key: 'properties', label: 'Settings', advanced: false, hint: 'Game rules from server.properties — difficulty, MOTD, view distance and more.',
+    requires: 'configFile',
+    labelByGame: { TERRARIA: 'World Settings' },
+    hintByGame: { TERRARIA: 'Game rules from serverconfig.txt — difficulty, max players, password and more.' },
+  },
+  { key: 'resources', label: 'Resources', advanced: false, hint: 'Change how much RAM and CPU this server may use, within your quota.' },
+  { key: 'map', label: 'World Map', advanced: false, hint: 'Browse a live rendered map of your world in the browser.', requires: 'worldMap' },
 
-  { key: 'pack-health', label: 'Pack Health', advanced: true, hint: 'Which mods the installer disabled and why, plus any dependency a mod needs but the pack never shipped.' },
-  { key: 'update', label: 'Update Centre', advanced: true, hint: 'Change the Minecraft or mod-loader version. Back up first — version jumps can break worlds.' },
+  { key: 'pack-health', label: 'Pack Health', advanced: true, hint: 'Which mods the installer disabled and why, plus any dependency a mod needs but the pack never shipped.', requires: 'packHealth' },
+  { key: 'update', label: 'Update Centre', advanced: true, hint: 'Change the Minecraft or mod-loader version. Back up first — version jumps can break worlds.', requires: 'updateEngine' },
   { key: 'schedules', label: 'Schedules', advanced: true, hint: 'Run restarts, backups and commands automatically on a timetable.' },
-  { key: 'sleep', label: 'Sleep & Wake', advanced: true, hint: 'Idle the server to free resources and wake it automatically when a player connects.' },
-  { key: 'domain', label: 'Domain', advanced: true, hint: 'Point a custom domain or subdomain at this server instead of an IP and port.' },
+  { key: 'sleep', label: 'Sleep & Wake', advanced: true, hint: 'Idle the server to free resources and wake it automatically when a player connects.', requires: 'sleepWake' },
+  { key: 'domain', label: 'Domain', advanced: true, hint: 'Point a custom domain or subdomain at this server instead of an IP and port.', requires: 'subdomain' },
   { key: 'files', label: 'Files', advanced: true, hint: 'Direct access to the server directory. Editing the wrong file here can stop the server booting.' },
 ] as const;
 
 type TabKey = typeof TABS[number]['key'];
+type TabDef = typeof TABS[number];
+
+/**
+ * A tab with no `requires` is game-neutral and always shows. Otherwise the capability
+ * decides — `configFile` is a filename rather than a boolean, so truthiness is the test.
+ */
+function tabIsSupported(tab: TabDef, caps: GameCapabilities): boolean {
+  const requires = (tab as { requires?: keyof GameCapabilities }).requires;
+  return !requires || Boolean(caps[requires]);
+}
+
+function tabLabel(tab: TabDef, game: Game): string {
+  return (tab as { labelByGame?: Partial<Record<Game, string>> }).labelByGame?.[game] ?? tab.label;
+}
+
+function tabHint(tab: TabDef, game: Game): string {
+  return (tab as { hintByGame?: Partial<Record<Game, string>> }).hintByGame?.[game] ?? tab.hint;
+}
 
 export default function ServerConsolePage() {
   const params = useParams();
@@ -134,10 +188,30 @@ export default function ServerConsolePage() {
     }
   }, [advanced, activeTab]);
 
+  // Absent means Minecraft, so a server row written before the column existed — or fetched
+  // from an older API — keeps every tab it has today.
+  const serverGame: Game = isGame(server?.game) ? server.game : Game.MINECRAFT;
+  const capabilities = GAME_CAPABILITIES[serverGame];
+
+  // Capability filtering runs first and is not overridable: a tab the game cannot support has
+  // nothing behind it, so unlike `advanced` it must not be reachable by direct link either.
+  const supportedTabs = TABS.filter((t) => tabIsSupported(t, capabilities));
+
   // A tab reached by direct link stays reachable even in simple mode, rather than vanishing mid-visit.
-  const visibleTabs = TABS.filter((t) => !t.advanced || advanced || t.key === activeTab);
-  const currentTab = TABS.find((t) => t.key === activeTab);
-  const hiddenCount = TABS.filter((t) => t.advanced).length;
+  const visibleTabs = supportedTabs.filter((t) => !t.advanced || advanced || t.key === activeTab);
+  const currentTab = supportedTabs.find((t) => t.key === activeTab);
+  const hiddenCount = supportedTabs.filter((t) => t.advanced).length;
+  const hiddenToolNames = supportedTabs
+    .filter((t) => t.advanced)
+    .map((t) => tabLabel(t, serverGame).toLowerCase())
+    .join(', ');
+
+  // `?tab=mods` on a Terraria server points at a tab that cannot exist. Fall back to Console
+  // rather than rendering a tab bar with nothing selected and an empty body.
+  useEffect(() => {
+    if (!server) return;
+    if (!supportedTabs.some((t) => t.key === activeTab)) setActiveTab('console');
+  }, [server, activeTab, supportedTabs]);
 
   const canManage = user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN';
   const canDeleteServer = user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER';
@@ -237,6 +311,42 @@ export default function ServerConsolePage() {
     if (serverId) fetchServerDetails();
   }, [serverId]);
 
+  // A server's status is settled by the monitor tick well after the action call returns,
+  // so a start left the badge stuck on STARTING until the page was reloaded. Poll for it
+  // here the way the dashboard list does, merging only the fields the node owns so an
+  // in-flight rename or icon upload isn't overwritten by a stale read.
+  useEffect(() => {
+    if (!serverId) return;
+
+    let cancelled = false;
+
+    const pollStatus = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await fetch(`/api/servers/${serverId}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled || !data.server) return;
+        setServer((prev) =>
+          prev
+            ? { ...prev, status: data.server.status, containerId: data.server.containerId }
+            : data.server
+        );
+      } catch {
+        // A dropped poll is not worth surfacing — the next tick retries.
+      }
+    };
+
+    const id = setInterval(pollStatus, 5000);
+    document.addEventListener('visibilitychange', pollStatus);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', pollStatus);
+    };
+  }, [serverId]);
+
   useEffect(() => {
     if (server?.status === 'ERROR' && !crashAutoOffered.current) {
       crashAutoOffered.current = true;
@@ -291,6 +401,43 @@ export default function ServerConsolePage() {
       }
     } catch {
       toast.error('Migration could not start', 'The panel could not reach the server node.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  /**
+   * Suspending is the reversible alternative to deleting: nothing is removed, the server just
+   * cannot be started until an admin lifts it. Global admins only.
+   */
+  const handleSuspension = async (suspend: boolean) => {
+    let reason = '';
+    if (suspend) {
+      const ok = await confirm({
+        title: `Suspend ${server?.name}?`,
+        message:
+          'The server is stopped if it is running and cannot be started again until the suspension is lifted. ' +
+          'Its world, files and backups are left exactly as they are.',
+        confirmLabel: 'Suspend server',
+        danger: true,
+      });
+      if (!ok) return;
+      reason = window.prompt('Reason shown to the owner (optional):') || '';
+    }
+
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/servers/${serverId}/suspend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suspended: suspend, reason }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      toast.success(suspend ? 'Server suspended' : 'Suspension lifted', data.message);
+      await fetchServerDetails();
+    } catch (err: any) {
+      toast.error('Could not change the suspension', err?.message);
     } finally {
       setActionLoading(false);
     }
@@ -491,6 +638,16 @@ export default function ServerConsolePage() {
 
         {/* Right: primary power controls. Destructive extras live in advanced mode only. */}
         <div className="cc-actions-row" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {user?.globalRole === 'GLOBAL_ADMIN' && advanced && !server.suspendedAt && (
+            <button
+              onClick={() => handleSuspension(true)}
+              disabled={actionLoading}
+              title="Stop this server and block it from starting, without deleting anything"
+              className="cc-btn-ghost"
+            >
+              Suspend
+            </button>
+          )}
           {canDeleteServer && advanced && (
             <button
               onClick={handleDeleteServer}
@@ -534,7 +691,8 @@ export default function ServerConsolePage() {
           ) : (
             <button
               onClick={() => handleAction('start')}
-              disabled={actionLoading}
+              disabled={actionLoading || !!server.suspendedAt}
+              title={server.suspendedAt ? 'This server is suspended and cannot be started' : undefined}
               className="cc-btn-primary"
               style={{ padding: '6px 18px' }}
             >
@@ -543,6 +701,28 @@ export default function ServerConsolePage() {
           )}
         </div>
       </header>
+
+      {/* A suspended server still shows every tab — the point of a suspension is that nothing is
+          lost — but the reason has to be impossible to miss, and only an admin can lift it. */}
+      {server.suspendedAt && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
+            background: 'rgba(248,81,73,0.10)', borderBottom: '1px solid rgba(248,81,73,0.25)',
+            padding: '10px 16px', color: 'var(--danger)', fontSize: '0.8125rem', fontWeight: 600,
+          }}
+        >
+          <span>
+            This server is suspended and cannot be started.
+            {server.suspendedReason ? ` Reason: ${server.suspendedReason}` : ''}
+          </span>
+          {user?.globalRole === 'GLOBAL_ADMIN' && (
+            <button onClick={() => handleSuspension(false)} className="cc-btn-ghost" disabled={actionLoading}>
+              Lift suspension
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Tab Navigation ── */}
       <div className="cc-tab-nav no-scrollbar" style={{
@@ -564,10 +744,10 @@ export default function ServerConsolePage() {
                 {firstAdvanced && <span className="cc-tab-group-label">· advanced ·</span>}
                 <button
                   onClick={() => setActiveTab(tab.key)}
-                  title={tab.hint}
+                  title={tabHint(tab, serverGame)}
                   className={`cc-tab${activeTab === tab.key ? ' cc-tab-active' : ''}`}
                 >
-                  {tab.label}
+                  {tabLabel(tab, serverGame)}
                 </button>
               </React.Fragment>
             );
@@ -597,7 +777,7 @@ export default function ServerConsolePage() {
       {currentTab && (
         <div style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)', padding: '10px 24px' }}>
           <div style={{ maxWidth: '1280px', margin: '0 auto', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{currentTab.hint}</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{tabHint(currentTab, serverGame)}</span>
             {currentTab.advanced && <AdvancedBadge />}
           </div>
         </div>
@@ -629,7 +809,13 @@ export default function ServerConsolePage() {
                 </div>
                 <div>
                   <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700, marginBottom: '4px' }}>Version</div>
-                  <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>{server.serverType} {server.mcVersion}</div>
+                  {/* serverType and mcVersion are Minecraft-only columns; on another game's
+                      row they hold defaults that would read as a real engine and version. */}
+                  <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>
+                    {serverGame === Game.MINECRAFT
+                      ? <>{server.serverType} {server.mcVersion}</>
+                      : GAME_LABELS[serverGame]}
+                  </div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700, marginBottom: '4px' }}>Memory</div>
@@ -721,6 +907,11 @@ export default function ServerConsolePage() {
                 daemonHost={server.node.host}
                 daemonPort={server.node.port}
                 apiKey={server.node.apiKey}
+                commandHint={
+                  serverGame === Game.TERRARIA
+                    ? "Type command (e.g. say hello, playing, exit)..."
+                    : undefined
+                }
               />
             </div>
 
@@ -787,14 +978,24 @@ export default function ServerConsolePage() {
           </div>
         )}
 
-        {activeTab === 'players' && <PlayersTab serverId={server.id} canManage={canManage} />}
+        {activeTab === 'players' && <PlayersTab serverId={server.id} canManage={canManage} game={serverGame} />}
         {activeTab === 'whitelist' && (
           <div className="animate-fadeIn"><WhitelistTab serverId={server.id} canManage={canManage} /></div>
         )}
         {activeTab === 'bans' && (
-          <div className="animate-fadeIn"><BanListTab serverId={server.id} canManage={canManage} /></div>
+          <div className="animate-fadeIn">
+            {/* A flat-file ban list gets the line editor; Minecraft keeps its structured one. */}
+            {capabilities.banFile
+              ? <FlatBanListTab serverId={server.id} canManage={canManage} />
+              : <BanListTab serverId={server.id} canManage={canManage} />}
+          </div>
         )}
-        {activeTab === 'properties' && <PropertiesTab serverId={server.id} canManage={canManage} />}
+        {activeTab === 'properties' && (
+          serverGame === Game.TERRARIA
+            ? <TerrariaSettingsTab serverId={server.id} canManage={canManage} />
+            : <PropertiesTab serverId={server.id} canManage={canManage} />
+        )}
+        {activeTab === 'resources' && <ResourcesTab serverId={server.id} onResized={fetchServerDetails} />}
         {activeTab === 'pack-health' && (
           <div className="animate-fadeIn"><PackHealthTab serverId={server.id} canManage={canManage} /></div>
         )}
@@ -851,7 +1052,14 @@ export default function ServerConsolePage() {
             carries its own inline hint, so it would read as a duplicate there. */}
         {!advanced && activeTab !== 'console' && (
           <div className="cc-adv-hint" style={{ marginTop: '4px' }}>
-            <span>{hiddenCount} more tools — updates, schedules, sleep, custom domains and file access — are hidden to keep things simple.</span>
+            {/* Minecraft keeps its hand-written phrasing verbatim; any other game gets the list
+                derived from the tabs it actually has, since naming Minecraft-only tools there
+                would be describing features the server does not have. */}
+            {serverGame === Game.MINECRAFT ? (
+              <span>{hiddenCount} more tools — updates, schedules, sleep, custom domains and file access — are hidden to keep things simple.</span>
+            ) : (
+              <span>{hiddenCount} more tools — {hiddenToolNames} — are hidden to keep things simple.</span>
+            )}
           </div>
         )}
 
@@ -860,6 +1068,8 @@ export default function ServerConsolePage() {
           serverName={server.name}
           isOpen={showPermissionsModal}
           onClose={() => setShowPermissionsModal(false)}
+          canTransfer={userRole === 'OWNER' || userRole === 'GLOBAL_ADMIN'}
+          onTransferred={fetchServerDetails}
         />
 
         {showCrashAnalysis && (

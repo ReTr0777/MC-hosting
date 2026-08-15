@@ -2,8 +2,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import TwoFactorSection from '@/components/TwoFactorSection';
-import ThemeSelector from '@/components/ThemeSelector';
+import TwoFactorSection from '@/components/account/TwoFactorSection';
+import ThemeSelector from '@/components/account/ThemeSelector';
 import { useConfirm } from '@/context/ConfirmContext';
 import { useToast } from '@/context/ToastContext';
 import { useClipboard } from '@/hooks/useClipboard';

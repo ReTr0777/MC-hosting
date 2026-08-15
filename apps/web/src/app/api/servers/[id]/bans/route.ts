@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient, BanAction, BanSnapshot } from '@/lib/daemon-client';
+import { DaemonClient, BanAction, BanSnapshot } from '@/lib/services/daemon-client';
 import { writeAudit } from '@/lib/audit';
 
 async function resolveServer(id: string) {

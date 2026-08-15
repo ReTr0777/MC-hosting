@@ -2,10 +2,10 @@ import path from 'path';
 import fs from 'fs';
 import { PrismaClient } from '@prisma/client';
 import { ExecutionMode } from '@mc-manager/shared';
-import { backupManager } from './backup';
-import { sendServerCommand } from './console';
-import { stopServerContainer, startServerContainer } from './docker';
-import { processManager } from './process';
+import { backupManager } from './backup/backup';
+import { sendServerCommand } from './runtime/console';
+import { stopServerContainer, startServerContainer } from './runtime/docker';
+import { processManager } from './runtime/process';
 import { loadConfig } from '../config';
 
 // DATABASE_URL is optional for the daemon — schedules can also be triggered via

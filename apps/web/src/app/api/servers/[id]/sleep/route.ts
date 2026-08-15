@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { getSleepStatus, requestSleep, cancelSleep } from '@/lib/sleep';
+import { getSleepStatus, requestSleep, cancelSleep } from '@/lib/servers/sleep';
 
 export const dynamic = 'force-dynamic';
 

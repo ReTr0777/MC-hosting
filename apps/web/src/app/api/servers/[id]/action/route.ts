@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
+import { DaemonClient } from '@/lib/services/daemon-client';
 import { ServerType } from '@mc-manager/shared';
 import { writeAudit } from '@/lib/audit';
+import { serverStartBlock } from '@/lib/servers/suspension';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -55,10 +56,23 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const targetContainerId = server.containerId || `process-${server.id}`;
 
+  // A suspended server (or one whose owner is suspended) may still be stopped, killed and
+  // deleted — only bringing it back up is blocked.
+  if (action === 'start' || action === 'restart') {
+    const block = await serverStartBlock(server.id);
+    if (block) {
+      return NextResponse.json({ error: block }, { status: 403 });
+    }
+  }
+
   try {
     if (action === 'start' || action === 'restart') {
       const serverMeta = {
         serverId: server.id,
+        // Carried so a start — or the create fallback below — cannot erase which
+        // game this server is. See the guard in the daemon's create route.
+        game: (server as any).game || undefined,
+        gameConfig: (server as any).gameConfig || undefined,
         serverType: server.serverType as ServerType,
         mcVersion: server.mcVersion,
         modpackSlug: server.modpackSlug || undefined,
@@ -92,7 +106,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       // Register with Velocity Proxy
       try {
         const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-        const velocity = new (require('@/lib/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
+        const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
         velocity.setBaseUrl(velocityUrl);
         await velocity.registerServer(server.id, server.node.host, server.serverPort);
       } catch (velErr: any) {
@@ -126,7 +140,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       // Unregister from Velocity Proxy
       try {
         const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-        const velocity = new (require('@/lib/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
+        const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
         velocity.setBaseUrl(velocityUrl);
         await velocity.unregisterServer(server.id);
       } catch (velErr: any) {
@@ -151,7 +165,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       // Unregister from Velocity Proxy
       try {
         const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-        const velocity = new (require('@/lib/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
+        const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
         velocity.setBaseUrl(velocityUrl);
         await velocity.unregisterServer(server.id);
       } catch (velErr: any) {

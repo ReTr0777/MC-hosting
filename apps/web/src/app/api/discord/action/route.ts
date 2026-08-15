@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { verifyBotSecret } from '@/lib/discord-bot-auth';
-import { runServerAction, LifecycleAction } from '@/lib/server-actions';
+import { verifyBotSecret } from '@/lib/auth/discord-bot-auth';
+import { runServerAction, LifecycleAction } from '@/lib/servers/actions';
 
 const ACTIONS: LifecycleAction[] = ['start', 'stop', 'restart'];
 

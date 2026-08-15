@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { searchCurseForgeModpacks } from '@/lib/curseforge';
+import { searchCurseForgeModpacks } from '@/lib/services/curseforge';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);

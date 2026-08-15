@@ -3,14 +3,15 @@
 import React, { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { usePasswordConfirmation } from '@/hooks/usePasswordConfirmation';
 
 function ResetPasswordForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const token = searchParams.get('token') || '';
 
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const { password, confirmPassword, setPassword, setConfirmPassword, error: passwordError, isValid: passwordValid } =
+    usePasswordConfirmation();
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -20,8 +21,8 @@ function ResetPasswordForm() {
     setError('');
     setMessage(null);
 
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
+    if (!passwordValid) {
+      setError(passwordError || 'Please confirm your new password');
       return;
     }
 
@@ -96,13 +97,16 @@ function ResetPasswordForm() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="••••••••"
+              autoComplete="new-password"
+              aria-invalid={!!passwordError}
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition"
             />
+            {passwordError && <p className="mt-1.5 text-xs text-red-400">{passwordError}</p>}
           </div>
 
           <button
             type="submit"
-            disabled={submitting || !token}
+            disabled={submitting || !token || !passwordValid}
             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold rounded-xl py-3 shadow-lg shadow-emerald-600/20 transition duration-200"
           >
             {submitting ? 'Resetting...' : 'Reset password'}

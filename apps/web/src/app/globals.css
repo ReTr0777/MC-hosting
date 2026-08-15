@@ -810,10 +810,15 @@ body {
   100% { background-position: 400px 0; }
 }
 
-/* Fade in */
+/* Fade in.
+   The `to` frame deliberately omits `transform`: because this animation is
+   filled forwards, naming translateY(0) there would leave a permanent transform
+   on the element, and any transform — even an identity one — makes that element
+   the containing block for `position: fixed` descendants. That is what used to
+   trap modals inside whichever tab panel opened them. */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  to { opacity: 1; }
 }
 .animate-fadeIn {
   animation: fadeIn 0.25s ease forwards;

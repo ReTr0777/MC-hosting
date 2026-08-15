@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
-import { DaemonClient } from '@/lib/daemon-client';
+import { DaemonClient } from '@/lib/services/daemon-client';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
     const user = await getUserFromRequest(req);

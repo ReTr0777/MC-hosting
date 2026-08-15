@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { runSchedule } from '@/lib/scheduler';
+import { runSchedule } from '@/lib/servers/scheduler';
 
 export const dynamic = 'force-dynamic';
 

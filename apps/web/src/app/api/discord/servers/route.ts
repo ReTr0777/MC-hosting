@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { verifyBotSecret } from '@/lib/discord-bot-auth';
+import { verifyBotSecret } from '@/lib/auth/discord-bot-auth';
 
 /** Lists servers the linked Discord user can see, with current status — backs /status. */
 export async function GET(req: NextRequest) {

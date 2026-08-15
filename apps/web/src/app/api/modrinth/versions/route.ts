@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getModrinthVersions } from '@/lib/modrinth';
-import { getCurseForgeVersions } from '@/lib/curseforge';
+import { getModrinthVersions } from '@/lib/services/modrinth';
+import { getCurseForgeVersions } from '@/lib/services/curseforge';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);

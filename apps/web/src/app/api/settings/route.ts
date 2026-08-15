@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { encryptSecret, maskSecret, tryDecryptSecret } from '@/lib/crypto';
+import { encryptSecret, maskSecret, tryDecryptSecret } from '@/lib/auth/crypto';
 import { writeAudit } from '@/lib/audit';
-import { AI_DEFAULT_BASE_URL, AI_DEFAULT_MODEL } from '@/lib/ai-analyzer';
-import { PUBLIC_URL_SETTING_KEY, validatePublicUrl } from '@/lib/public-url';
+import { AI_DEFAULT_BASE_URL, AI_DEFAULT_MODEL } from '@/lib/diagnostics/ai-analyzer';
+import { PUBLIC_URL_SETTING_KEY, validatePublicUrl } from '@/lib/utils/public-url';
 
 export async function GET(request: NextRequest) {
   const user = await getUserFromRequest(request);

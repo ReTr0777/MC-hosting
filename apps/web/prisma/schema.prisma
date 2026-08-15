@@ -47,6 +47,19 @@ enum ExecutionMode {
   PROCESS
 }
 
+/// Which game a server runs. Its own axis rather than more `ServerType` members:
+/// `ServerType` answers "which Minecraft flavour", and every value in it is
+/// meaningless for anything that is not Minecraft.
+///
+/// Mirrored in `packages/shared/src/enums.ts`. `Node.enabledGames` deliberately
+/// stays `String[]` rather than `Game[]` — it is written from what a daemon
+/// reports over HTTP, and a daemon newer than the panel must not be able to
+/// fail the write with an unknown enum value.
+enum Game {
+  MINECRAFT
+  TERRARIA
+}
+
 model User {
   id              String             @id @default(uuid())
   email           String             @unique
@@ -60,12 +73,30 @@ model User {
   maxServers      Int?
   maxMemoryMb     Int?
   maxCpu          Float?
+  // Per-server ceilings: the largest single server this user may create. Independent of the
+  // totals above — a user can have 24 GB total but no single server larger than 8 GB.
+  maxServerMemoryMb Int?
+  maxServerCpu      Float?
   // TOTP 2FA. totpSecret is encrypted at rest with the same scheme as other secrets
   // (see lib/crypto.ts) and is set as soon as setup begins, but totpEnabled only flips
   // true once the user proves they can generate a valid code — see /api/account/2fa/enable.
   totpSecret      String?
   totpEnabled     Boolean            @default(false)
   totpBackupCodes String[]           @default([]) // bcrypt-hashed, single use
+  // Appearance, stored per account so a theme chosen on one device follows the user to
+  // the next. localStorage is still written on every change and is what the pre-paint
+  // script in layout.tsx reads — it cannot await a request — so these columns are the
+  // sync layer, not the fast path.
+  //
+  // `customThemes` holds whole parsed theme files, which may carry embedded `data:` images.
+  // Both the file (64 KB) and each image (512 KB) are already capped by parseThemeFile,
+  // and the API caps the total again before it reaches this column.
+  themeKey        String?
+  customThemes    Json?
+  // Suspension. A suspended user keeps every server and file, but cannot sign in and their
+  // existing sessions stop working — see lib/suspension.ts. null = active.
+  suspendedAt     DateTime?
+  suspendedReason String?
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
@@ -145,6 +176,19 @@ model Node {
   totalMemory     Int      // MB
   totalCpu        Int      // Cores / Percentage
   offloadPriority Int      @default(0) // Higher value = higher offload priority (e.g. Secondary PC = 10, Main Server = 1)
+  // How far the sum of the servers' *allocated* RAM/CPU may exceed totalMemory/totalCpu.
+  // 1.0 = never oversubscribe; 1.5 = allow 150% allocated. Minecraft servers rarely touch
+  // their full -Xmx at once, so mild overcommit is normal — see lib/node-capacity.ts.
+  overcommitRatio Float    @default(1.0)
+  // CPU gets its own, far looser ratio because cpuLimit is a *ceiling* (Docker NanoCpus), not a
+  // reservation: an idle server holds none of it, and PROCESS-mode servers are not capped at all.
+  // Budgeting cores the way RAM is budgeted refuses servers a node is nowhere near saturating.
+  cpuOvercommitRatio Float @default(4.0)
+
+  // Games this node advertises, synced from the daemon on each ping. Defaults to
+  // Minecraft-only so every existing node keeps behaving exactly as it does today,
+  // and so a daemon too old to report the field never reads as "hosts nothing".
+  enabledGames    String[] @default(["MINECRAFT"])
 
   // Live hardware stats (updated on each ping)
   liveCpuUsage    Float?   // Current CPU load percentage (0-100)
@@ -176,8 +220,18 @@ model Server {
   containerId       String?            // Docker container ID on daemon node
   executionMode     ExecutionMode      @default(PROCESS)
   status            ServerStatus       @default(OFFLINE)
-  
+
+  // Which game this runs. Defaults to MINECRAFT so every existing row is correct
+  // without a backfill, and so any writer that doesn't set it still means Minecraft.
+  game              Game               @default(MINECRAFT)
+  // Per-game settings whose shape is decided by `game` — see TerrariaConfig in
+  // packages/shared. Null for Minecraft, which uses serverType/mcVersion instead.
+  gameConfig        Json?
+
   // Game Configuration
+  // serverType and mcVersion are Minecraft-only and are ignored when game != MINECRAFT.
+  // Renaming them to gameVersion/variant would touch every Minecraft call site for no
+  // functional gain, so they keep their names — see plan.md §5.
   serverType        ServerType         @default(FABRIC)
   mcVersion         String             @default("1.20.1")
   serverPort        Int                @default(25565)
@@ -202,6 +256,17 @@ model Server {
   sleepEmptySince   DateTime?          // First tick that saw zero players; cleared when someone joins
   lastSleptAt       DateTime?
   lastWokeAt        DateTime?
+
+  // Suspension. A suspended server cannot be started, woken or scheduled, but keeps its
+  // world and files. Independent of the owner's suspension — either one blocks a start.
+  suspendedAt       DateTime?
+  suspendedReason   String?
+
+  // Backup retention. null on a field means that rule doesn't apply. All three are evaluated
+  // together and the union of what they condemn is deleted — see lib/backup-retention.ts.
+  backupRetentionCount Int?           // Keep at most N backups
+  backupRetentionDays  Int?           // Delete backups older than N days
+  backupMaxTotalMb     Int?           // Delete oldest until the set fits in N MB
 
   // Crash auto-restart
   autoRestartEnabled   Boolean         @default(false)

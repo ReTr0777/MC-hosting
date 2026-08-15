@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   buildThemeCss,
   parseThemeFile,
@@ -8,7 +8,7 @@ import {
   THEME_TOKENS,
   type CustomTheme,
   type ParseResult,
-} from '@/lib/theme-tokens';
+} from '@/lib/theme/theme-tokens';
 
 /**
  * Theme selection.
@@ -231,6 +231,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<string>(DEFAULT_THEME);
   const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
   const [ready, setReady] = useState(false);
+  /** Guards the first upload: nothing is pushed before the account has been read. */
+  const accountLoaded = useRef(false);
 
   useEffect(() => {
     const custom = readCustomThemes();
@@ -250,6 +252,78 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     setThemeState(initial);
     applyToDom(initial, custom);
     setReady(true);
+
+    // Then reconcile with the account, which is what makes a theme chosen on one
+    // device show up on the next.
+    let cancelled = false;
+    (async () => {
+      let account: { themeKey: string | null; customThemes: CustomTheme[] | null } | null = null;
+      try {
+        const res = await fetch('/api/account/theme');
+        if (res.ok) account = await res.json();
+      } catch {
+        // Signed out or offline: local storage is still authoritative for this session.
+      }
+      if (cancelled) return;
+
+      // Both fields null means the account has never saved an appearance. Adopt whatever
+      // this browser already had rather than resetting a user who themed before this
+      // existed — this is the one-time migration off localStorage.
+      if (!account || (account.themeKey === null && account.customThemes === null)) {
+        accountLoaded.current = true;
+        if (account) syncToAccount(initial, custom);
+        return;
+      }
+
+      // Otherwise the account wins, so that deleting a theme on one device does not have
+      // it reappear from another. localStorage becomes a cache of that answer.
+      const serverThemes = Array.isArray(account.customThemes) ? account.customThemes : [];
+      const serverKey =
+        account.themeKey &&
+        (isBuiltInTheme(account.themeKey) ||
+          serverThemes.some((t) => customThemeKey(t.id) === account.themeKey))
+          ? account.themeKey
+          : DEFAULT_THEME;
+
+      accountLoaded.current = true;
+
+      const sameThemes = JSON.stringify(serverThemes) === JSON.stringify(custom);
+      if (sameThemes && serverKey === initial) return;
+
+      setCustomThemes(serverThemes);
+      setThemeState(serverKey);
+      applyToDom(serverKey, serverThemes);
+      persistResolved(serverKey, serverThemes);
+      try {
+        window.localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(serverThemes));
+        window.localStorage.setItem(THEME_STORAGE_KEY, serverKey);
+      } catch {
+        // Only costs the pre-paint fast path on the next load.
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // Runs once on mount; the helpers it calls are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Pushes the current appearance to the account, so the next device picks it up.
+   *
+   * Deliberately fire-and-forget: localStorage has already been written by the time
+   * this runs, so a failed sync costs cross-device carry-over and nothing else. It is
+   * skipped entirely until the account has been read once, or the very first render
+   * would upload the default theme over whatever the account already had.
+   */
+  const syncToAccount = useCallback((themeKey: string, pool: CustomTheme[]) => {
+    if (!accountLoaded.current) return;
+    fetch('/api/account/theme', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ themeKey, customThemes: pool }),
+    }).catch(() => {
+      /* Offline, signed out, or storage full — the local selection still stands. */
+    });
   }, []);
 
   /** Persists the resolved tokens so the pre-paint boot script can apply them without a parser. */
@@ -278,6 +352,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       setThemeState(next);
       applyToDom(next, customThemes);
       persistResolved(next, customThemes);
+      syncToAccount(next, customThemes);
       try {
         window.localStorage.setItem(THEME_STORAGE_KEY, next);
       } catch {
@@ -313,6 +388,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       setThemeState(key);
       applyToDom(key, next);
       persistResolved(key, next);
+      syncToAccount(key, next);
       try {
         window.localStorage.setItem(THEME_STORAGE_KEY, key);
       } catch {
@@ -328,6 +404,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     (id: string) => {
       const next = customThemes.filter((t) => t.id !== id);
       setCustomThemes(next);
+      // Synced even when the deleted theme was not the active one, or it would come
+      // back the next time another device pushed its copy.
+      syncToAccount(theme === customThemeKey(id) ? DEFAULT_THEME : theme, next);
       try {
         window.localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(next));
       } catch {

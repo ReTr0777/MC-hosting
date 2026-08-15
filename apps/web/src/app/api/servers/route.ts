@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
-import { ServerType, ExecutionMode } from '@mc-manager/shared';
+import { DaemonClient } from '@/lib/services/daemon-client';
+import { ServerType, ExecutionMode, Game, GAME_LABELS, isGame, parseTerrariaConfig } from '@mc-manager/shared';
 import { writeAudit } from '@/lib/audit';
+import { quotaSnapshot, quotaViolation } from '@/lib/servers/quota';
+import { computeCapacity, capacityViolation, nodeCapacity } from '@/lib/servers/node-capacity';
 
 export async function GET(req: NextRequest) {
   try {
@@ -117,6 +119,8 @@ export async function POST(req: NextRequest) {
       name,
       description,
       nodeId,
+      game,
+      gameConfig,
       serverType = 'FABRIC',
       executionMode = 'PROCESS',
       mcVersion = '26.2',
@@ -134,10 +138,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Server name is required and must be a string' }, { status: 400 });
     }
 
-    if (!eulaAccepted) {
+    // Absent means Minecraft, so every existing caller — the wizard, the Discord bot,
+    // any direct API user — keeps working unchanged.
+    const targetGame: Game = isGame(game) ? game : Game.MINECRAFT;
+
+    // The EULA is Mojang's. Requiring it of a Terraria server would be asking the
+    // user to agree to a licence that has nothing to do with what they are creating.
+    // For Minecraft this is exactly the check that was here before.
+    if (targetGame === Game.MINECRAFT && !eulaAccepted) {
       console.error('[Web API /servers POST] ❌ EULA not accepted');
       return NextResponse.json({ error: 'EULA must be accepted before creating a server' }, { status: 400 });
     }
+
+    // Validated here rather than trusted from the client: the wizard is not a
+    // security boundary, and an incomplete Terraria config leaves the server
+    // hanging at an interactive prompt with no output to diagnose it from.
+    const targetGameConfig = targetGame === Game.TERRARIA ? parseTerrariaConfig(gameConfig) : null;
 
     const reqMemoryMb = parseInt(memoryMb, 10);
     if (isNaN(reqMemoryMb) || reqMemoryMb < 512) {
@@ -147,34 +163,17 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Web API /servers POST] ✓ All parameters validated`);
 
-    // Enforce per-user resource quotas (GLOBAL_ADMIN is exempt). Quotas only count servers
-    // this user OWNS — shared access to someone else's server doesn't count against them.
-    if (user.globalRole !== 'GLOBAL_ADMIN') {
-      const requester = await prisma.user.findUnique({
-        where: { id: user.userId },
-        select: { maxServers: true, maxMemoryMb: true, maxCpu: true },
+    // Enforce per-user resource quotas (GLOBAL_ADMIN is exempt, which quotaSnapshot handles).
+    // The same check runs when a server is resized — see lib/quota.ts.
+    {
+      const snapshot = await quotaSnapshot(user.userId);
+      const violation = quotaViolation(snapshot, {
+        memoryMb: reqMemoryMb,
+        cpuLimit: parseFloat(cpuLimit) || 1.0,
+        countsAsNew: true,
       });
-
-      if (requester && (requester.maxServers != null || requester.maxMemoryMb != null || requester.maxCpu != null)) {
-        const ownedServers = await prisma.server.findMany({
-          where: { permissions: { some: { userId: user.userId, role: 'OWNER' } } },
-          select: { memoryMb: true, cpuLimit: true },
-        });
-
-        const reqCpuLimit = parseFloat(cpuLimit) || 1.0;
-        const projectedCount = ownedServers.length + 1;
-        const projectedMemory = ownedServers.reduce((sum: number, s: any) => sum + s.memoryMb, 0) + reqMemoryMb;
-        const projectedCpu = ownedServers.reduce((sum: number, s: any) => sum + s.cpuLimit, 0) + reqCpuLimit;
-
-        if (requester.maxServers != null && projectedCount > requester.maxServers) {
-          return NextResponse.json({ error: `Server quota exceeded: you can own at most ${requester.maxServers} server(s).` }, { status: 403 });
-        }
-        if (requester.maxMemoryMb != null && projectedMemory > requester.maxMemoryMb) {
-          return NextResponse.json({ error: `Memory quota exceeded: your servers may use at most ${requester.maxMemoryMb} MB total (requested total: ${projectedMemory} MB).` }, { status: 403 });
-        }
-        if (requester.maxCpu != null && projectedCpu > requester.maxCpu) {
-          return NextResponse.json({ error: `CPU quota exceeded: your servers may use at most ${requester.maxCpu} core(s) total (requested total: ${projectedCpu}).` }, { status: 403 });
-        }
+      if (violation) {
+        return NextResponse.json({ error: violation }, { status: 403 });
       }
     }
 
@@ -184,16 +183,16 @@ export async function POST(req: NextRequest) {
     if (!targetNodeId || targetNodeId === 'AUTO') {
       console.log(`[Web API /servers POST] Starting smart node scheduler...`);
       try {
-        const onlineNodes = await prisma.node.findMany({
+        const allOnlineNodes = await prisma.node.findMany({
           where: { isOnline: true },
           include: {
             servers: {
-              select: { memoryMb: true, status: true },
+              select: { id: true, memoryMb: true, cpuLimit: true, status: true },
             },
           },
         });
 
-        if (onlineNodes.length === 0) {
+        if (allOnlineNodes.length === 0) {
           console.error('[Web API /servers POST] ❌ No online nodes found');
           return NextResponse.json(
             { error: 'Smart Scheduler Error: No online daemon worker nodes are registered or reachable.' },
@@ -201,29 +200,53 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // Calculate capacity per node and filter eligible nodes (only active RUNNING/STARTING servers consume active node RAM)
+        // Capability filter runs *before* capacity ranking: a node with all the room in
+        // the world is still the wrong answer if it does not host this game.
+        const onlineNodes = allOnlineNodes.filter((node: any) => node.enabledGames?.includes(targetGame));
+
+        if (onlineNodes.length === 0) {
+          return NextResponse.json(
+            {
+              error:
+                `No online node is configured to host ${GAME_LABELS[targetGame]}. ` +
+                'Enable it in the node\'s daemon setup page, then try again.',
+            },
+            { status: 503 }
+          );
+        }
+
+        // Capacity is measured against *allocated* RAM, not just what happens to be running.
+        // Scheduling by active RAM lets a node accept far more servers than it can ever run at
+        // once — everything fits right up until the day they all start. See lib/node-capacity.ts.
         const nodeCapacities = onlineNodes.map((node: any) => {
-          const activeServers = node.servers.filter((s: any) => s.status === 'RUNNING' || s.status === 'STARTING' || s.status === 'RESTARTING');
-          const usedMemoryMb = activeServers.reduce((sum: number, s: any) => sum + s.memoryMb, 0);
-          const nodeTotalRam = node.totalMemory && node.totalMemory > 0 ? node.totalMemory : 65536;
-          const availableMemoryMb = Math.max(0, nodeTotalRam - usedMemoryMb);
+          const capacity = computeCapacity(node, node.servers);
           return {
             node,
-            usedMemoryMb,
-            availableMemoryMb,
+            capacity,
+            // A node registered without a usable total has no ceiling to schedule against.
+            availableMemoryMb: capacity.freeMemoryMb ?? Number.MAX_SAFE_INTEGER,
             offloadPriority: node.offloadPriority,
           };
         });
 
-        const eligibleNodes = nodeCapacities.filter((item: any) => item.availableMemoryMb >= reqMemoryMb);
+        const eligibleNodes = nodeCapacities.filter(
+          (item: any) => !capacityViolation(item.capacity, { memoryMb: reqMemoryMb, cpuLimit: parseFloat(cpuLimit) || 1.0 })
+        );
 
         let selectedNodeItem: any;
         if (eligibleNodes.length === 0) {
-          // Fallback to highest available node if tight on RAM instead of hard erroring
-          nodeCapacities.sort((a: any, b: any) => b.availableMemoryMb - a.availableMemoryMb);
-          selectedNodeItem = nodeCapacities[0];
-          targetNodeId = selectedNodeItem.node.id;
-          console.warn(`[Web API /servers POST] ⚠ No eligible nodes, using fallback: ${selectedNodeItem.node.name} (${selectedNodeItem.availableMemoryMb}MB available)`);
+          // No fallback any more: placing the server anyway is exactly the overcommit this is
+          // meant to prevent. Raising a node's overcommitRatio is the deliberate way to say yes.
+          const roomiest = [...nodeCapacities].sort((a: any, b: any) => b.availableMemoryMb - a.availableMemoryMb)[0];
+          return NextResponse.json(
+            {
+              error:
+                `No node has room for a ${reqMemoryMb} MB / ${parseFloat(cpuLimit) || 1.0} core server. ` +
+                `The roomiest is "${roomiest.node.name}" with ${roomiest.capacity.freeMemoryMb ?? 0} MB free. ` +
+                'Free up space, add a node, or raise a node\'s overcommit ratio.',
+            },
+            { status: 507 }
+          );
         } else {
           // Sort by offloadPriority (descending - highest offload priority first), then by available memory
           eligibleNodes.sort((a: any, b: any) => {
@@ -259,6 +282,26 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Target node not found' }, { status: 404 });
       }
       console.log(`[Web API /servers POST] ✓ Found node: ${node.name}`);
+
+      // The create wizard's dropdown already hides nodes that cannot host this game, but a
+      // dropdown is not a security boundary — the Discord bot and any direct API caller
+      // reach this route too.
+      if (!node.enabledGames?.includes(targetGame)) {
+        return NextResponse.json(
+          { error: `Node "${node.name}" is not configured to host ${GAME_LABELS[targetGame]}.` },
+          { status: 400 }
+        );
+      }
+
+      // Also checked for an explicitly chosen node, which never went through the scheduler above.
+      const capacity = await nodeCapacity(node.id);
+      const overCapacity = capacity && capacityViolation(capacity, {
+        memoryMb: reqMemoryMb,
+        cpuLimit: parseFloat(cpuLimit) || 1.0,
+      });
+      if (overCapacity) {
+        return NextResponse.json({ error: overCapacity }, { status: 507 });
+      }
     } catch (nodeErr: any) {
       console.error('[Web API /servers POST] ❌ ERROR fetching node');
       console.error('[Web API /servers POST] Node error:', nodeErr.message);
@@ -289,6 +332,8 @@ export async function POST(req: NextRequest) {
           name,
           description,
           nodeId: node.id,
+          game: targetGame as any,
+          gameConfig: targetGameConfig as any,
           serverType: serverType as any,
           executionMode: executionMode as any,
           mcVersion,
@@ -324,6 +369,8 @@ export async function POST(req: NextRequest) {
     try {
       const containerResult = await daemonClient.createServer({
         serverId: server.id,
+        game: server.game as Game,
+        gameConfig: (server.gameConfig as any) || undefined,
         serverType: server.serverType as ServerType,
         executionMode: server.executionMode as ExecutionMode,
         mcVersion: server.mcVersion,

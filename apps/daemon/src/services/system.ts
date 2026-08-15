@@ -1,6 +1,7 @@
 import si from 'systeminformation';
 import Docker from 'dockerode';
-import { DaemonHealthDto } from '@mc-manager/shared';
+import { DaemonHealthDto, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
+import { getConfig } from '../config';
 
 const docker = new Docker();
 
@@ -97,5 +98,8 @@ export async function getSystemHealth(): Promise<DaemonHealthDto> {
       hostname: osInfo.hostname,
     },
     networkInterfaces,
+    // Piggybacks on the existing 5s ping so the panel's node picker stays current
+    // without a second round trip. See api/nodes/[id]/ping/route.ts.
+    enabledGames: getConfig().enabledGames ?? [...DEFAULT_ENABLED_GAMES],
   };
 }

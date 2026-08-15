@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { verifyPreAuthToken, signJwtToken, COOKIE_NAME } from '@/lib/auth';
-import { decryptSecret } from '@/lib/crypto';
-import { verifyTotpCode, matchBackupCode } from '@/lib/totp';
+import { decryptSecret } from '@/lib/auth/crypto';
+import { verifyTotpCode, matchBackupCode } from '@/lib/auth/totp';
+import { userSuspensionMessage } from '@/lib/servers/suspension';
 
 export async function POST(req: NextRequest) {
   try {
@@ -39,6 +40,12 @@ export async function POST(req: NextRequest) {
 
     if (!ok) {
       return NextResponse.json({ error: 'Invalid authentication code' }, { status: 401 });
+    }
+
+    // A suspension applied between the password step and this one must still stop the session.
+    const suspended = userSuspensionMessage(user);
+    if (suspended) {
+      return NextResponse.json({ error: suspended }, { status: 403 });
     }
 
     const token = await signJwtToken({

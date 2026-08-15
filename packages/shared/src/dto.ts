@@ -1,8 +1,25 @@
-import { ServerType, ExecutionMode } from './enums';
+import { ServerType, ExecutionMode, Game } from './enums';
+import { TerrariaConfig } from './games';
 
 export interface CreateServerContainerDto {
   serverId: string;
+  /**
+   * Which game this server runs.
+   *
+   * Optional on purpose. Every caller that predates this field — including the
+   * Discord bot's `runServerAction` and the daemon's own saved
+   * `craftcontrol-meta.json` files — keeps compiling and keeps meaning
+   * Minecraft, and the daemon's dispatch treats absent as `MINECRAFT`.
+   */
+  game?: Game;
+  /**
+   * Game-specific settings. Shape is decided by `game`; ignored for Minecraft,
+   * which keeps using `serverType` / `mcVersion`.
+   */
+  gameConfig?: TerrariaConfig;
+  /** Minecraft-only. Ignored when `game` is anything else. */
   serverType: ServerType;
+  /** Minecraft-only. Ignored when `game` is anything else. */
   mcVersion: string;
   modpackSlug?: string;
   modId?: number;
@@ -54,6 +71,14 @@ export interface DaemonHealthDto {
     rx_sec: number;
     tx_sec: number;
   }[];
+  /**
+   * Games this node is configured to host.
+   *
+   * Optional on purpose: a daemon older than this field omits it entirely, and
+   * the panel must read that as "no opinion, leave the stored list alone"
+   * rather than as "this node hosts nothing".
+   */
+  enabledGames?: Game[];
 }
 
 export interface WsAuthPayload {

@@ -1,17 +1,21 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import {
+  Game, GAME_LABELS, ALL_GAMES, DEFAULT_ENABLED_GAMES, isGame,
+  TerrariaConfig, DEFAULT_TERRARIA_CONFIG, TERRARIA_MAX_PLAYERS, TERRARIA_SECRET_SEEDS, TERRARIA_WORLD_EVILS,
+} from '@mc-manager/shared';
 import { useAuth } from '@/context/AuthContext';
 import { useUIPrefs } from '@/context/UIPrefsContext';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
-import AdvancedModeToggle, { AdvancedBadge } from '@/components/AdvancedModeToggle';
-import { uploadFileInChunks } from '@/lib/chunked-upload';
-import GlobalSearch from '@/components/GlobalSearch';
-import DiscordLinkButton from '@/components/DiscordLinkButton';
-import NodeBackupStorageModal from '@/components/NodeBackupStorageModal';
-import QuotaUsageBadge from '@/components/QuotaUsageBadge';
+import AdvancedModeToggle, { AdvancedBadge } from '@/components/common/AdvancedModeToggle';
+import { uploadFileInChunks } from '@/lib/utils/chunked-upload';
+import GlobalSearch from '@/components/common/GlobalSearch';
+import DiscordLinkButton from '@/components/account/DiscordLinkButton';
+import NodeBackupStorageModal from '@/components/admin/NodeBackupStorageModal';
+import QuotaUsageBadge from '@/components/account/QuotaUsageBadge';
 
 interface NodeItem {
   id: string;
@@ -32,7 +36,36 @@ interface NodeItem {
   liveOsDistro: string | null;
   liveCpuTemp: number | null;
   liveLastSeenAt: string | null;
+  overcommitRatio: number;
+  cpuOvercommitRatio: number | null;
+  /** Games the node's daemon advertises. Absent on a node that has never pinged. */
+  enabledGames?: string[];
+  /** Allocation totals from /api/nodes — see lib/node-capacity.ts. Null on an unknown node. */
+  capacity: {
+    allocatedMemoryMb: number;
+    allocatedCpu: number;
+    activeMemoryMb: number;
+    memoryBudgetMb: number | null;
+    cpuBudget: number | null;
+    freeMemoryMb: number | null;
+    freeCpu: number | null;
+    overcommitRatio: number;
+    cpuOvercommitRatio: number;
+    serverCount: number;
+  } | null;
   _count: { servers: number };
+}
+
+/** How much of a node's allocation budget is spoken for, 0–100+. */
+function allocPct(node: NodeItem): number {
+  const budget = node.capacity?.memoryBudgetMb;
+  if (!budget) return 0;
+  return Math.round((node.capacity!.allocatedMemoryMb / budget) * 100);
+}
+
+function allocColor(node: NodeItem): string {
+  const pct = allocPct(node);
+  return pct >= 100 ? '#f87171' : pct > 80 ? '#fb923c' : '#34d399';
 }
 
 interface ServerItem {
@@ -40,6 +73,9 @@ interface ServerItem {
   name: string;
   description: string;
   status: string;
+  /** Absent on a row written before the column existed; absent means Minecraft. */
+  game?: string | null;
+  gameConfig?: Record<string, unknown> | null;
   serverType: string;
   executionMode?: string;
   mcVersion: string;
@@ -47,6 +83,28 @@ interface ServerItem {
   memoryMb: number;
   modpackSlug?: string;
   node: { name: string; isOnline: boolean };
+}
+
+interface QuotaLimits {
+  maxServers: number | null;
+  maxMemoryMb: number | null;
+  maxCpu: number | null;
+  maxServerMemoryMb: number | null;
+  maxServerCpu: number | null;
+  usedServers: number;
+  usedMemoryMb: number;
+  usedCpu: number;
+}
+
+/**
+ * The tightest ceiling that applies to one new server: the explicit per-server limit, or
+ * whatever is left of the total allowance. undefined when neither limit is set.
+ */
+function smallestCap(perServer: number | null | undefined, total: number | null | undefined, used: number | undefined): number | undefined {
+  const caps: number[] = [];
+  if (perServer != null) caps.push(perServer);
+  if (total != null) caps.push(Math.max(0, total - (used ?? 0)));
+  return caps.length ? Math.min(...caps) : undefined;
 }
 
 interface ModpackHit {
@@ -136,9 +194,290 @@ const SERVER_TYPES: Array<{ id: string; name: string; desc: string; icon: string
   { id: 'CUSTOM_ZIP', name: 'Upload a pack', desc: 'Bring your own .zip / .rar serverpack, or a Modrinth .mrpack — mods and loader are installed for you.', icon: 'ZIP', color: '#f59e0b' },
 ];
 
-function ServerCardIcon({ serverId, serverType, serverTypeMeta }: { serverId: string; serverType: string; serverTypeMeta: any }) {
+/**
+ * Per-game identity: a short monogram and a colour.
+ *
+ * The colours are hardcoded hex, following the `serverTypeMeta` precedent below —
+ * these are identity marks rather than theme colours, so they stay put under every
+ * palette. Both are chosen to stay legible against `--bg` and `--surface` in light
+ * and dark. Introducing a `--terraria-accent` custom property instead would be
+ * unsettable by a user's theme file, since THEME_TOKENS is a closed allowlist.
+ */
+const GAME_META: Record<Game, { short: string; color: string; blurb: string }> = {
+  [Game.MINECRAFT]: { short: 'MC', color: '#4ade80', blurb: 'Survival, creative and modded worlds.' },
+  [Game.TERRARIA]: { short: 'TR', color: '#38bdf8', blurb: '2D sandbox adventure. Runs light.' },
+};
+
+/** Absent means Minecraft — a row written before the column existed keeps its old identity. */
+function gameOf(server: { game?: string | null }): Game {
+  return isGame(server.game) ? server.game : Game.MINECRAFT;
+}
+
+/**
+ * Which game a server runs, as a small identity chip.
+ *
+ * Built from the existing `cc-*` sizing conventions and a hardcoded identity hex,
+ * not a new CSS custom property — `THEME_TOKENS` is a closed allowlist, so a
+ * `--terraria-accent` would be silently dropped by `parseThemeFile` and would look
+ * identical under every theme a user wrote.
+ */
+function GameBadge({ game }: { game: Game }) {
+  const meta = GAME_META[game];
+  return (
+    <span
+      title={`${GAME_LABELS[game]} server`}
+      style={{
+        flexShrink: 0,
+        fontSize: '0.55rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em',
+        color: meta.color,
+        background: `${meta.color}18`,
+        border: `1px solid ${meta.color}40`,
+        borderRadius: '4px', padding: '1px 5px',
+      }}
+    >
+      {GAME_LABELS[game]}
+    </span>
+  );
+}
+
+const TERRARIA_WORLD_SIZES: Array<{ value: 1 | 2 | 3; label: string; help: string }> = [
+  { value: 1, label: 'Small', help: 'Fastest to generate, cosiest to explore.' },
+  { value: 2, label: 'Medium', help: 'The usual choice for a few friends.' },
+  { value: 3, label: 'Large', help: 'Lots of room. Takes longest to generate.' },
+];
+
+const TERRARIA_DIFFICULTIES: Array<{ value: 0 | 1 | 2 | 3; label: string; help: string }> = [
+  { value: 0, label: 'Classic', help: 'The standard game.' },
+  { value: 1, label: 'Expert', help: 'Tougher enemies, better loot.' },
+  { value: 2, label: 'Master', help: 'Harder still.' },
+  { value: 3, label: 'Journey', help: 'Creative mode.' },
+];
+
+/** Terraria's half of wizard step 1, in place of the Minecraft engine cards. */
+function TerrariaWizardStep({
+  config,
+  onChange,
+}: {
+  config: TerrariaConfig;
+  onChange: <K extends keyof TerrariaConfig>(key: K, value: TerrariaConfig[K]) => void;
+}) {
+  const [showSecret, setShowSecret] = useState(false);
+  const secretCount = (config.secretSeeds ?? []).length;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div>
+        <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 1 of 3 — Your world</label>
+        <p className="cc-section-sub">
+          These are baked into the world when it is first generated, so choose the size and
+          difficulty now — they cannot be changed afterwards.
+        </p>
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>World name</label>
+        <input
+          type="text"
+          value={config.worldName}
+          onChange={(e) => onChange('worldName', e.target.value)}
+          placeholder="World"
+          className="cc-input"
+        />
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>World size</label>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+          {TERRARIA_WORLD_SIZES.map((s) => (
+            <div
+              key={s.value}
+              onClick={() => onChange('autocreate', s.value)}
+              style={{
+                padding: '12px', borderRadius: '8px', cursor: 'pointer',
+                background: config.autocreate === s.value ? 'var(--accent-dim)' : 'var(--bg)',
+                border: `1px solid ${config.autocreate === s.value ? 'var(--accent)' : 'var(--border-2)'}`,
+              }}
+            >
+              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>{s.label}</div>
+              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.4 }}>{s.help}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Difficulty</label>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+          {TERRARIA_DIFFICULTIES.map((d) => (
+            <div
+              key={d.value}
+              onClick={() => onChange('difficulty', d.value)}
+              title={d.help}
+              style={{
+                padding: '10px 12px', borderRadius: '8px', cursor: 'pointer',
+                background: config.difficulty === d.value ? 'var(--accent-dim)' : 'var(--bg)',
+                border: `1px solid ${config.difficulty === d.value ? 'var(--accent)' : 'var(--border-2)'}`,
+              }}
+            >
+              <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>{d.label}</div>
+              <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.35 }}>{d.help}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>World evil</label>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+          {TERRARIA_WORLD_EVILS.map((e) => (
+            <div
+              key={e.id}
+              onClick={() => onChange('evil', e.id)}
+              style={{
+                padding: '12px', borderRadius: '8px', cursor: 'pointer',
+                background: (config.evil ?? 'RANDOM') === e.id ? 'var(--accent-dim)' : 'var(--bg)',
+                border: `1px solid ${(config.evil ?? 'RANDOM') === e.id ? 'var(--accent)' : 'var(--border-2)'}`,
+              }}
+            >
+              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>{e.label}</div>
+              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.4 }}>{e.help}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>World seed <span style={{ fontWeight: 400 }}>(optional)</span></label>
+        <input
+          type="text"
+          value={config.seed ?? ''}
+          onChange={(e) => onChange('seed', e.target.value || undefined)}
+          placeholder="Leave empty for a random world"
+          className="cc-input"
+        />
+        <p className="cc-section-sub">Two worlds made with the same seed, size and difficulty are identical.</p>
+      </div>
+
+      {/* Secret seeds are 8 switches that most people will never touch, so they start
+          folded away rather than doubling the length of the step. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowSecret((v) => !v)}
+          style={{ fontSize: '0.72rem', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, padding: 0 }}
+        >
+          {showSecret ? 'Hide special world types' : 'Special world types'}
+          {secretCount > 0 && ` (${secretCount} on)`}
+        </button>
+        {showSecret && (
+          <div style={{ marginTop: '10px' }}>
+            <p className="cc-section-sub" style={{ marginTop: 0 }}>
+              Terraria&rsquo;s secret worlds. These change how the world is generated and cannot be
+              turned on or off later.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '8px' }}>
+              {TERRARIA_SECRET_SEEDS.map((s) => {
+                const on = (config.secretSeeds ?? []).includes(s.id);
+                return (
+                  <label
+                    key={s.id}
+                    title={s.help}
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px',
+                      background: on ? 'var(--accent-dim)' : 'var(--bg)',
+                      border: `1px solid ${on ? 'var(--accent)' : 'var(--border-2)'}`,
+                      borderRadius: '8px', cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) => {
+                        const current = config.secretSeeds ?? [];
+                        const next = e.target.checked
+                          ? [...current, s.id]
+                          : current.filter((x) => x !== s.id);
+                        onChange('secretSeeds', next.length ? next : undefined);
+                      }}
+                      style={{ marginTop: '2px', width: 15, height: 15, accentColor: 'var(--accent)', flexShrink: 0, cursor: 'pointer' }}
+                    />
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>{s.label}</span>
+                      <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.35 }}>{s.help}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        <div>
+          <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Max players</label>
+          <input
+            type="number"
+            min={1}
+            max={TERRARIA_MAX_PLAYERS}
+            value={config.maxPlayers}
+            onChange={(e) => onChange('maxPlayers', Number(e.target.value))}
+            className="cc-input"
+          />
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Server password</label>
+          <input
+            type="text"
+            value={config.password ?? ''}
+            onChange={(e) => onChange('password', e.target.value || undefined)}
+            placeholder="Optional"
+            className="cc-input"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Message of the day <span style={{ fontWeight: 400 }}>(optional)</span></label>
+        <input
+          type="text"
+          value={config.motd ?? ''}
+          onChange={(e) => onChange('motd', e.target.value || undefined)}
+          placeholder="Shown to players as they connect"
+          className="cc-input"
+        />
+      </div>
+
+      <label
+        style={{
+          display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px',
+          background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', cursor: 'pointer',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={config.secure !== false}
+          onChange={(e) => onChange('secure', e.target.checked)}
+          style={{ marginTop: '2px', width: 15, height: 15, accentColor: 'var(--accent)', flexShrink: 0, cursor: 'pointer' }}
+        />
+        <span>
+          <span style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>Extra cheat protection</span>
+          <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.35 }}>
+            Terraria&rsquo;s <code style={{ fontFamily: 'var(--font-mono)' }}>secure</code> mode. Recommended for a public server; can be changed later.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+function ServerCardIcon({ serverId, serverType, serverTypeMeta, game = Game.MINECRAFT }: { serverId: string; serverType: string; serverTypeMeta: any; game?: Game }) {
   const [hasError, setHasError] = useState(false);
-  const meta = serverTypeMeta[serverType] || { label: 'MC', color: '#8b949e' };
+  // `serverType` is a Minecraft loader, so for any other game it holds a meaningless
+  // default and must not decide the fallback badge. Fall back on the game instead.
+  const meta = game === Game.MINECRAFT
+    ? (serverTypeMeta[serverType] || { label: 'MC', color: '#8b949e' })
+    : { label: GAME_META[game].short, color: GAME_META[game].color };
 
   if (hasError) {
     return (
@@ -191,12 +530,28 @@ export default function DashboardPage() {
   const [nodePort, setNodePort] = useState(3500);
   const [nodeApiKey, setNodeApiKey] = useState('');
   const [nodeOffloadPriority, setNodeOffloadPriority] = useState(0);
+  const [nodeOvercommit, setNodeOvercommit] = useState('1');
+  const [nodeCpuOvercommit, setNodeCpuOvercommit] = useState('4');
+  // Blank on a new node: the daemon reports its own RAM and cores on registration, and guessing
+  // here would only overwrite the truth with a number typed before the machine was ever contacted.
+  const [nodeTotalMemory, setNodeTotalMemory] = useState('');
+  const [nodeTotalCpu, setNodeTotalCpu] = useState('');
+  const [nodeDetected, setNodeDetected] = useState<{ ramMb: number | null; cores: number | null }>({ ramMb: null, cores: null });
 
   // New Server Form Wizard State
   const [showServerModal, setShowServerModal] = useState(false);
   const [modalStep, setModalStep] = useState<1 | 2 | 3>(1);
   const [serverName, setServerName] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState('AUTO');
+  const [targetGame, setTargetGame] = useState<Game>(Game.MINECRAFT);
+  const isTerraria = targetGame === Game.TERRARIA;
+
+  // Terraria's world settings. Seeded from the shared defaults so the wizard and the
+  // API validator cannot disagree about what an unspecified field means.
+  const [terrariaConfig, setTerrariaConfig] = useState<TerrariaConfig>(DEFAULT_TERRARIA_CONFIG);
+  const setTerraria = <K extends keyof TerrariaConfig>(key: K, value: TerrariaConfig[K]) =>
+    setTerrariaConfig((prev) => ({ ...prev, [key]: value }));
+
   const [serverType, setServerType] = useState('FABRIC');
   const [executionMode, setExecutionMode] = useState<'CONTAINER' | 'PROCESS'>('PROCESS');
   const [selectedMcVersion, setSelectedMcVersion] = useState('26.2');
@@ -210,6 +565,30 @@ export default function DashboardPage() {
   const [serverpackFile, setServerpackFile] = useState<File | null>(null);
   const [actionError, setActionError] = useState('');
   const [showProsCons, setShowProsCons] = useState(false);
+
+  // The wizard mirrors the quota the API enforces, so oversized sizes are visibly out of reach
+  // instead of failing on submit. null = still loading or unlimited.
+  const [quota, setQuota] = useState<QuotaLimits | null>(null);
+  useEffect(() => {
+    if (!showServerModal) return;
+    let active = true;
+    fetch('/api/account/quota')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (active) setQuota(data && !data.unlimited ? data : null); })
+      .catch(() => { /* Informational only — the API still enforces the real limits. */ });
+    return () => { active = false; };
+  }, [showServerModal]);
+
+  // A new server is capped by the per-server ceiling and by whatever is left of the total.
+  const ramCap = smallestCap(quota?.maxServerMemoryMb, quota?.maxMemoryMb, quota?.usedMemoryMb);
+  const cpuCap = smallestCap(quota?.maxServerCpu, quota?.maxCpu, quota?.usedCpu);
+
+  // The wizard's defaults (8 GB / 1 core) can sit above a tight quota, so pull them down to the
+  // largest allowed preset once the quota is known.
+  useEffect(() => {
+    if (ramCap != null) setMemoryMb((mb) => (mb > ramCap ? [16384, 8192, 4096, 2048, 1024].find((p) => p <= ramCap) ?? 1024 : mb));
+    if (cpuCap != null) setCpuLimit((c) => (c > cpuCap ? [8, 4, 2, 1].find((p) => p <= cpuCap) ?? 1 : c));
+  }, [ramCap, cpuCap]);
 
   // Live Modrinth Search in Wizard with Pagination
   const [modpackQuery, setModpackQuery] = useState('');
@@ -241,6 +620,52 @@ export default function DashboardPage() {
         .finally(() => setLoadingModpackVersions(false));
     }
   }, [modpackSlug, serverType]);
+
+  // Only offer nodes that can actually host the game being created, so a mismatch surfaces
+  // as an absent option rather than as a failure deep inside provisioning. A node that has
+  // never reported its games is assumed Minecraft-capable — that matches the column default
+  // and keeps an older daemon usable instead of vanishing from the picker.
+  const gameCapableNodes = useMemo(
+    () => nodes.filter((n) => (n.enabledGames ?? DEFAULT_ENABLED_GAMES).includes(targetGame)),
+    [nodes, targetGame]
+  );
+
+  // If the chosen node loses the capability while the wizard is open — the operator unticks
+  // the game on the daemon — fall back to Auto rather than submitting a doomed request.
+  useEffect(() => {
+    if (selectedNodeId !== 'AUTO' && !gameCapableNodes.some((n) => n.id === selectedNodeId)) {
+      setSelectedNodeId('AUTO');
+    }
+  }, [gameCapableNodes, selectedNodeId]);
+
+  // ── Dashboard game filter ──
+  // null means "all". Kept as state rather than a URL param to match how the rest
+  // of this page behaves.
+  const [gameFilter, setGameFilter] = useState<Game | null>(null);
+
+  /** Games that actually have a server, in the enum's order. */
+  const gamesInUse = useMemo(
+    () => ALL_GAMES.filter((g) => servers.some((s) => gameOf(s) === g)),
+    [servers]
+  );
+
+  const visibleServers = useMemo(
+    () => (gameFilter === null ? servers : servers.filter((s) => gameOf(s) === gameFilter)),
+    [servers, gameFilter]
+  );
+
+  // A filter pinned to a game whose last server was just deleted would show an
+  // empty grid with no obvious way back.
+  useEffect(() => {
+    if (gameFilter !== null && !gamesInUse.includes(gameFilter)) setGameFilter(null);
+  }, [gamesInUse, gameFilter]);
+
+  // Switching game re-seeds RAM: Minecraft's 8 GB default would be six times what a
+  // Terraria world needs, and a user who never opens the Resources step should not be
+  // handed a wasteful allocation because of a default meant for another game.
+  useEffect(() => {
+    setMemoryMb(isTerraria ? 1024 : 8192);
+  }, [isTerraria]);
 
   const fetchData = async () => {
     try {
@@ -341,6 +766,17 @@ export default function DashboardPage() {
         offloadPriority: nodeOffloadPriority,
       };
 
+      // Only meaningful on an existing node; a new one starts at 1.0 (no overcommit).
+      if (editingNodeId && nodeOvercommit !== '') {
+        payload.overcommitRatio = nodeOvercommit;
+      }
+      if (editingNodeId && nodeCpuOvercommit !== '') {
+        payload.cpuOvercommitRatio = nodeCpuOvercommit;
+      }
+
+      if (nodeTotalMemory !== '') payload.totalMemory = Number(nodeTotalMemory);
+      if (nodeTotalCpu !== '') payload.totalCpu = Number(nodeTotalCpu);
+
       if (nodeApiKey) {
         payload.apiKey = nodeApiKey;
       } else if (!editingNodeId) {
@@ -373,6 +809,11 @@ export default function DashboardPage() {
     setNodeHost(node.host);
     setNodePort(node.port);
     setNodeOffloadPriority(node.offloadPriority);
+    setNodeOvercommit(String(node.overcommitRatio ?? 1));
+    setNodeCpuOvercommit(String(node.cpuOvercommitRatio ?? 4));
+    setNodeTotalMemory(String(node.totalMemory ?? ''));
+    setNodeTotalCpu(String(node.totalCpu ?? ''));
+    setNodeDetected({ ramMb: node.liveRamTotal ?? null, cores: node.liveCpuCores ?? null });
     setNodeApiKey(''); // Leave empty for edit
     setShowNodeModal(true);
   };
@@ -432,9 +873,60 @@ export default function DashboardPage() {
     }
   };
 
+  /**
+   * Terraria's create path.
+   *
+   * Deliberately separate from the Minecraft submit below rather than threaded
+   * through it with conditionals — that function carries serverpack uploads,
+   * modpack version resolution and version fallbacks, none of which apply here.
+   */
+  const createTerrariaServer = async () => {
+    if (!serverName.trim()) {
+      setActionError('Please give your server a name.');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/servers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: serverName,
+          nodeId: selectedNodeId,
+          game: Game.TERRARIA,
+          gameConfig: terrariaConfig,
+          // Terraria is PROCESS-only for now — it never goes near docker.ts.
+          executionMode: 'PROCESS',
+          serverPort,
+          memoryMb,
+          cpuLimit,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.details || `Failed to create server (${res.status})`);
+
+      setShowServerModal(false);
+      setModalStep(1);
+      setServerName('');
+      setTerrariaConfig(DEFAULT_TERRARIA_CONFIG);
+      fetchData();
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to create server');
+    }
+  };
+
   const handleCreateServer = async (e: React.FormEvent) => {
     e.preventDefault();
     setActionError('');
+
+    // Terraria takes an entirely different path from here: no EULA (that licence is
+    // Mojang's), no serverpack, no Minecraft version to resolve.
+    if (isTerraria) {
+      await createTerrariaServer();
+      return;
+    }
+
     if (!eulaAccepted) {
       setActionError('You must agree to the Mojang Minecraft EULA before creating a server.');
       return;
@@ -688,6 +1180,9 @@ export default function DashboardPage() {
                   setNodePort(3500);
                   setNodeApiKey('');
                   setNodeOffloadPriority(0);
+                  setNodeTotalMemory('');
+                  setNodeTotalCpu('');
+                  setNodeDetected({ ramMb: null, cores: null });
                   setShowNodeModal(true);
                 }}
                 className="cc-btn-ghost flex-1 sm:flex-initial text-center justify-center"
@@ -803,6 +1298,31 @@ export default function DashboardPage() {
                     </div>
                   )}
 
+                  {/* Allocation, which is a different question from live usage: this is what the
+                      node has *promised* its servers, and it is what decides whether the next
+                      one fits. A node can sit at 10% CPU and still be full. */}
+                  {node.capacity && node.capacity.memoryBudgetMb != null && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
+                        <span title="Total RAM promised to the servers on this node, running or not">
+                          Allocated{node.capacity.overcommitRatio > 1 ? ` · ${node.capacity.overcommitRatio}× overcommit` : ''}
+                        </span>
+                        <span style={{ color: allocColor(node), fontWeight: 700 }}>
+                          {(node.capacity.allocatedMemoryMb / 1024).toFixed(1)} / {(node.capacity.memoryBudgetMb / 1024).toFixed(1)} GB
+                        </span>
+                      </div>
+                      <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.min(allocPct(node), 100)}%`, background: allocColor(node), borderRadius: '2px', transition: 'width 0.5s ease' }} />
+                      </div>
+                      <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                        {node.capacity.freeMemoryMb === 0
+                          ? 'Full — no room for another server'
+                          : `${((node.capacity.freeMemoryMb ?? 0) / 1024).toFixed(1)} GB free for new servers`}
+                        {node.capacity.cpuBudget != null && ` · ${node.capacity.allocatedCpu}/${node.capacity.cpuBudget} cores`}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Footer: server count + admin buttons */}
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '8px', marginTop: '2px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>{node._count.servers} Active Servers</span>
@@ -846,14 +1366,36 @@ export default function DashboardPage() {
         <section className="flex-1 p-4 lg:p-6">
           <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>Your Servers</h2>
-            {servers.length > 0 && (
+            {visibleServers.length > 0 && (
               <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                {servers.filter((s) => s.status === 'RUNNING').length} of {servers.length} running
+                {visibleServers.filter((s) => s.status === 'RUNNING').length} of {visibleServers.length} running
               </span>
+            )}
+
+            {/* Only worth showing once there is actually a mix — a single-game panel
+                does not need a filter that can only ever hide everything. */}
+            {gamesInUse.length > 1 && (
+              <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto', flexWrap: 'wrap' }}>
+                {[null, ...gamesInUse].map((g) => {
+                  const active = gameFilter === g;
+                  const label = g === null ? 'All' : GAME_LABELS[g];
+                  const count = g === null ? servers.length : servers.filter((s) => gameOf(s) === g).length;
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => setGameFilter(g)}
+                      className={active ? 'cc-btn-primary' : 'cc-btn-ghost'}
+                      style={{ padding: '3px 10px', fontSize: '0.72rem' }}
+                    >
+                      {label} <span style={{ opacity: 0.7 }}>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
 
-          {servers.length === 0 ? (
+          {visibleServers.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '56px 24px', border: '1px dashed var(--border-2)', borderRadius: '10px' }}>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '10px' }}>Servers</div>
               <div style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>No servers yet</div>
@@ -881,19 +1423,24 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
-              {servers.map(server => (
+              {visibleServers.map(server => (
                 <div key={server.id} className="cc-card" style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {/* Card top row */}
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-                    <ServerCardIcon serverId={server.id} serverType={server.serverType} serverTypeMeta={serverTypeMeta} />
+                    <ServerCardIcon serverId={server.id} serverType={server.serverType} serverTypeMeta={serverTypeMeta} game={gameOf(server)} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '2px' }}>
                         <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {server.name}
                         </span>
+                        <GameBadge game={gameOf(server)} />
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        {server.serverType} {server.mcVersion}
+                        {/* serverType/mcVersion are Minecraft-only columns; on a Terraria row they
+                            hold defaults that would read as a real engine and version. */}
+                        {gameOf(server) === Game.MINECRAFT
+                          ? <>{server.serverType} {server.mcVersion}</>
+                          : <>{(server.gameConfig as any)?.worldName || GAME_LABELS[gameOf(server)]}</>}
                         {advanced && server.node?.name && <> · {server.node.name}</>}
                       </div>
                     </div>
@@ -1012,6 +1559,91 @@ export default function DashboardPage() {
                 <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Smart Offload Priority (0-10)</label>
                 <input type="number" required value={nodeOffloadPriority} onChange={e => setNodeOffloadPriority(parseInt(e.target.value, 10))} placeholder="0 = Main, 10 = Offload" className="cc-input" />
               </div>
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Total memory (MB)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={nodeTotalMemory}
+                      onChange={e => setNodeTotalMemory(e.target.value)}
+                      placeholder={editingNodeId ? '' : 'Detected from the daemon'}
+                      className="cc-input"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Total CPU cores</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={nodeTotalCpu}
+                      onChange={e => setNodeTotalCpu(e.target.value)}
+                      placeholder={editingNodeId ? '' : 'Detected from the daemon'}
+                      className="cc-input"
+                    />
+                  </div>
+                </div>
+                <p className="cc-help">
+                  How much this machine may hand out to servers. Set it below the real hardware to keep
+                  headroom for the host; 0 disables the check entirely.
+                  {(nodeDetected.ramMb || nodeDetected.cores) && (
+                    <>
+                      {' '}The daemon reports {nodeDetected.ramMb ? `${Math.round(nodeDetected.ramMb / 1024)} GB RAM` : 'unknown RAM'}
+                      {nodeDetected.cores ? ` and ${nodeDetected.cores} cores` : ''}.
+                      {' '}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (nodeDetected.ramMb) setNodeTotalMemory(String(nodeDetected.ramMb));
+                          if (nodeDetected.cores) setNodeTotalCpu(String(nodeDetected.cores));
+                        }}
+                        style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', font: 'inherit', textDecoration: 'underline' }}
+                      >
+                        Use detected
+                      </button>
+                    </>
+                  )}
+                </p>
+              </div>
+              {editingNodeId && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Overcommit ratio (1.0 – 4.0)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="1"
+                    max="4"
+                    value={nodeOvercommit}
+                    onChange={e => setNodeOvercommit(e.target.value)}
+                    className="cc-input"
+                  />
+                  <p className="cc-help">
+                    How much RAM this node may promise beyond what it physically has. 1.0 never oversubscribes;
+                    1.5 allows 150% allocated, which is usually safe because Minecraft servers rarely hold their full
+                    heap at once. New servers are refused once the budget is used up.
+                  </p>
+                </div>
+              )}
+              {editingNodeId && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>CPU overcommit ratio (1.0 – 16.0)</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="1"
+                    max="16"
+                    value={nodeCpuOvercommit}
+                    onChange={e => setNodeCpuOvercommit(e.target.value)}
+                    className="cc-input"
+                  />
+                  <p className="cc-help">
+                    Separate from RAM, and looser on purpose: a server&apos;s CPU limit is a ceiling on bursts, not a
+                    reserved core, and an idle or sleeping server uses almost none of it. 4.0 lets a 4-core node hand
+                    out 16 cores&apos; worth of ceilings. Lower it only if servers are genuinely starving each other.
+                  </p>
+                </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '4px' }}>
                 <button type="button" onClick={() => setShowNodeModal(false)} className="cc-btn-ghost">Cancel</button>
                 <button type="submit" className="cc-btn-primary">{editingNodeId ? 'Update Node' : 'Register Node'}</button>
@@ -1036,7 +1668,7 @@ export default function DashboardPage() {
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '16px', borderBottom: '1px solid var(--border)' }}>
               <div>
-                <h3 style={{ fontSize: '1.125rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Create a Minecraft server</h3>
+                <h3 style={{ fontSize: '1.125rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Create a {GAME_LABELS[targetGame]} server</h3>
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>Three quick steps — everything else is chosen for you.</p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1060,6 +1692,46 @@ export default function DashboardPage() {
             {/* Step 1 */}
             {modalStep === 1 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {/* ── Game picker ──
+                    Sits above the engine cards rather than being its own numbered step, so the
+                    Minecraft path stays the same three steps it has always been. Choosing
+                    Terraria replaces everything below with its own settings rather than
+                    showing Minecraft's disabled. */}
+                <div>
+                  <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Which game?</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${ALL_GAMES.length}, 1fr)`, gap: '10px', marginTop: '8px' }}>
+                    {ALL_GAMES.map((g) => {
+                      const selected = targetGame === g;
+                      const meta = GAME_META[g];
+                      return (
+                        <div
+                          key={g}
+                          onClick={() => setTargetGame(g)}
+                          style={{
+                            padding: '12px 14px', borderRadius: '8px', cursor: 'pointer', transition: 'all 0.15s',
+                            background: selected ? 'var(--accent-dim)' : 'var(--bg)',
+                            border: `1px solid ${selected ? 'var(--accent)' : 'var(--border-2)'}`,
+                            display: 'flex', alignItems: 'center', gap: '10px',
+                          }}
+                        >
+                          <span style={{
+                            fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 800,
+                            color: meta.color, letterSpacing: '0.04em',
+                          }}>{meta.short}</span>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>{GAME_LABELS[g]}</div>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>{meta.blurb}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {isTerraria ? (
+                  <TerrariaWizardStep config={terrariaConfig} onChange={setTerraria} />
+                ) : (
+                <>
                 <div>
                   <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 1 of 3 — What kind of server?</label>
                   <p className="cc-section-sub">
@@ -1134,6 +1806,8 @@ export default function DashboardPage() {
                     </div>
                   )}
                 </div>
+                </>
+                )}
               </div>
             )}
 
@@ -1143,10 +1817,11 @@ export default function DashboardPage() {
                 <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 2 of 3 — Name and resources</label>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Server name</label>
-                  <input type="text" required value={serverName} onChange={e => setServerName(e.target.value)} placeholder="My Minecraft World" className="cc-input" />
+                  <input type="text" required value={serverName} onChange={e => setServerName(e.target.value)} placeholder={isTerraria ? 'My Terraria World' : 'My Minecraft World'} className="cc-input" />
                   <p className="cc-section-sub">Just a label inside the panel — you can rename it any time.</p>
                 </div>
-                <div style={{ display: advanced ? 'block' : 'none' }}>
+                {/* Terraria is PROCESS-only in this release, so there is nothing to choose between. */}
+                <div style={{ display: advanced && !isTerraria ? 'block' : 'none' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Execution Mode <AdvancedBadge /></label>
                     <button
@@ -1212,12 +1887,20 @@ export default function DashboardPage() {
                       <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Target Worker Node <AdvancedBadge /></label>
                       <select value={selectedNodeId} onChange={e => setSelectedNodeId(e.target.value)} className="cc-input">
                         <option value="AUTO">Auto-Select (Smart Priority)</option>
-                        {nodes.map(n => (
+                        {gameCapableNodes.map(n => (
                           <option key={n.id} value={n.id} disabled={!n.isOnline}>
-                            {n.name} (Priority: {n.offloadPriority}){!n.isOnline ? ' — OFFLINE' : ''}
+                            {n.name} (Priority: {n.offloadPriority})
+                            {n.capacity?.freeMemoryMb != null ? ` — ${(n.capacity.freeMemoryMb / 1024).toFixed(1)} GB free` : ''}
+                            {!n.isOnline ? ' — OFFLINE' : ''}
                           </option>
                         ))}
                       </select>
+                      {gameCapableNodes.length === 0 && (
+                        <p style={{ fontSize: '0.7rem', color: 'var(--warning)', marginTop: '5px' }}>
+                          No registered node is set up to host {GAME_LABELS[targetGame]}. Enable it under
+                          &ldquo;Games Hosted On This Node&rdquo; in the node&rsquo;s daemon setup page.
+                        </p>
+                      )}
                       {selectedNodeId !== 'AUTO' && nodes.find(n => n.id === selectedNodeId)?.isOnline === false && (
                         <p style={{ fontSize: '0.7rem', color: 'var(--danger)', marginTop: '5px' }}>
                           This node is currently unreachable — the server cannot be provisioned here until it comes back online.
@@ -1225,7 +1908,9 @@ export default function DashboardPage() {
                       )}
                     </div>
                   )}
-                  <div>
+                  {/* Terraria's version is pinned by the daemon, so there is nothing to pick.
+                      Hidden rather than disabled — an inert dropdown reads as broken. */}
+                  <div style={{ display: isTerraria ? 'none' : 'block' }}>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>
                       Minecraft Version {(serverType === 'MODRINTH' || serverType === 'CUSTOM_ZIP' || serverpackFile !== null) && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>(Locked to pack)</span>}
                     </label>
@@ -1244,7 +1929,7 @@ export default function DashboardPage() {
                     </select>
                   </div>
                 </div>
-                {selectedMcVersion === 'CUSTOM' && serverType !== 'MODRINTH' && (
+                {!isTerraria && selectedMcVersion === 'CUSTOM' && serverType !== 'MODRINTH' && (
                   <div>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--accent)', marginBottom: '5px', fontWeight: 600 }}>Custom Minecraft Version / Snapshot</label>
                     <input type="text" required value={customMcVersion} onChange={e => setCustomMcVersion(e.target.value)} placeholder="e.g. 24w10a, 1.7.10" className="cc-input" />
@@ -1261,12 +1946,21 @@ export default function DashboardPage() {
                   <div>
                     <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Memory (RAM)</label>
                     <select value={memoryMb} onChange={e => setMemoryMb(parseInt(e.target.value, 10))} className="cc-input">
-                      <option value={1024}>1 GB — a few friends, vanilla</option>
-                      <option value={2048}>2 GB — vanilla or light plugins</option>
-                      <option value={4096}>4 GB — plugins or a small modpack</option>
-                      <option value={8192}>8 GB — most modpacks</option>
-                      <option value={16384}>16 GB — large or heavily modded packs</option>
+                      {[
+                        { mb: 1024, note: 'a few friends, vanilla' },
+                        { mb: 2048, note: 'vanilla or light plugins' },
+                        { mb: 4096, note: 'plugins or a small modpack' },
+                        { mb: 8192, note: 'most modpacks' },
+                        { mb: 16384, note: 'large or heavily modded packs' },
+                      ].map(({ mb, note }) => (
+                        <option key={mb} value={mb} disabled={ramCap != null && mb > ramCap}>
+                          {mb / 1024} GB — {ramCap != null && mb > ramCap ? 'over your quota' : note}
+                        </option>
+                      ))}
                     </select>
+                    {ramCap != null && (
+                      <p className="cc-section-sub">Your quota allows up to {ramCap >= 1024 ? `${Math.round((ramCap / 1024) * 10) / 10} GB` : `${ramCap} MB`} for this server.</p>
+                    )}
                     {!advanced && (
                       <p className="cc-section-sub">
                         Port {serverPort} and 1 CPU core were picked automatically. Turn on advanced mode to change them.
@@ -1277,11 +1971,13 @@ export default function DashboardPage() {
                     <div>
                       <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>CPU Cores <AdvancedBadge /></label>
                       <select value={cpuLimit} onChange={e => setCpuLimit(parseFloat(e.target.value))} className="cc-input">
-                        <option value={1.0}>1 Core</option>
-                        <option value={2.0}>2 Cores</option>
-                        <option value={4.0}>4 Cores</option>
-                        <option value={8.0}>8 Cores</option>
+                        {[1, 2, 4, 8].map((cores) => (
+                          <option key={cores} value={cores} disabled={cpuCap != null && cores > cpuCap}>
+                            {cores} Core{cores === 1 ? '' : 's'}{cpuCap != null && cores > cpuCap ? ' — over your quota' : ''}
+                          </option>
+                        ))}
                       </select>
+                      {cpuCap != null && <p className="cc-section-sub">Your quota allows up to {cpuCap} core(s) for this server.</p>}
                     </div>
                   )}
                 </div>
@@ -1291,28 +1987,57 @@ export default function DashboardPage() {
             {/* Step 3 */}
             {modalStep === 3 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>Step 3 of 3 — Review and accept the EULA</label>
+                <label style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-muted)' }}>
+                  {isTerraria ? 'Step 3 of 3 — Review' : 'Step 3 of 3 — Review and accept the EULA'}
+                </label>
                 <div style={{ background: 'var(--bg)', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {[
+                  {(isTerraria ? [
+                    { label: 'Game', value: GAME_LABELS[Game.TERRARIA] },
+                    { label: 'World Name', value: terrariaConfig.worldName },
+                    { label: 'World Size', value: TERRARIA_WORLD_SIZES.find(s => s.value === terrariaConfig.autocreate)?.label ?? '—' },
+                    { label: 'Difficulty', value: TERRARIA_DIFFICULTIES.find(d => d.value === terrariaConfig.difficulty)?.label ?? '—' },
+                    { label: 'World Evil', value: TERRARIA_WORLD_EVILS.find(e => e.id === (terrariaConfig.evil ?? 'RANDOM'))?.label ?? 'Random' },
+                    { label: 'Seed', value: terrariaConfig.seed || 'Random' },
+                    ...(terrariaConfig.secretSeeds?.length ? [{
+                      label: 'Special World',
+                      value: terrariaConfig.secretSeeds
+                        .map(id => TERRARIA_SECRET_SEEDS.find(s => s.id === id)?.label ?? id)
+                        .join(', '),
+                    }] : []),
+                    { label: 'Max Players', value: String(terrariaConfig.maxPlayers) },
+                    { label: 'Password', value: terrariaConfig.password ? 'Set' : 'None' },
+                    { label: 'Cheat Protection', value: terrariaConfig.secure === false ? 'Off' : 'On' },
+                    { label: 'Allocated RAM', value: `${memoryMb} MB` },
+                    { label: 'Game Port', value: String(serverPort) },
+                  ] : [
                     { label: 'Execution Mode', value: executionMode === 'PROCESS' ? 'Standalone Process' : 'Docker Container' },
                     { label: 'Server Engine', value: serverType },
                     { label: 'Minecraft Version', value: (serverType === 'CUSTOM_ZIP' || serverpackFile !== null) ? 'Auto-detected from serverpack' : (selectedMcVersion === 'CUSTOM' ? customMcVersion : selectedMcVersion) },
                     ...(modpackSlug ? [{ label: 'Modpack', value: `@${modpackSlug}` }] : []),
                     { label: 'Allocated RAM', value: `${memoryMb} MB` },
                     { label: 'Game Port', value: String(serverPort) },
-                  ].map(({ label, value }) => (
+                  ]).map(({ label, value }) => (
                     <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                       <span>{label}:</span>
                       <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{value}</span>
                     </div>
                   ))}
                 </div>
+                {/* Mojang's licence, so it is asked for only when Mojang's game is being created. */}
+                {!isTerraria && (
                 <div style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-border)', borderRadius: '8px', padding: '14px', display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
                   <input type="checkbox" id="eulaModalCheckStep3" checked={eulaAccepted} onChange={e => setEulaAccepted(e.target.checked)} style={{ marginTop: '2px', accentColor: 'var(--accent)', width: '16px', height: '16px', cursor: 'pointer', flexShrink: 0 }} />
                   <label htmlFor="eulaModalCheckStep3" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.6, cursor: 'pointer' }}>
                     I agree to the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', fontWeight: 700 }}>Mojang Minecraft EULA</a>. By checking this box, CraftControl sets <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: '0.75rem' }}>EULA=TRUE</code> on server boot.
                   </label>
                 </div>
+                )}
+                {isTerraria && (
+                  <p className="cc-section-sub">
+                    The world is generated on first start, which takes about 15 seconds for a small
+                    world and longer for a large one.
+                  </p>
+                )}
               </div>
             )}
 
@@ -1324,7 +2049,7 @@ export default function DashboardPage() {
                 <button type="button" onClick={() => setShowServerModal(false)} style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
               )}
               {modalStep < 3 ? (
-                <button type="button" onClick={() => { if (serverType === 'MODRINTH' && !modpackSlug) { setActionError('Please select a Modrinth modpack.'); return; } setActionError(''); setModalStep(s => (s + 1) as any); }} className="cc-btn-primary">
+                <button type="button" onClick={() => { if (!isTerraria && serverType === 'MODRINTH' && !modpackSlug) { setActionError('Please select a Modrinth modpack.'); return; } setActionError(''); setModalStep(s => (s + 1) as any); }} className="cc-btn-primary">
                   Next Step --&gt;
                 </button>
               ) : (

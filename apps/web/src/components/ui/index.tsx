@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { createPortal } from 'react-dom';
 
 /* ─────────────────────────────────────────────────
    Shared building blocks for the dashboard panels.
@@ -195,6 +196,14 @@ export function Modal({
   const panelRef = React.useRef<HTMLDivElement>(null);
   const titleId = React.useId();
 
+  // The backdrop is `position: fixed`, which only means "relative to the viewport"
+  // when no ancestor has a transform/filter of its own. Tab panels carry a fade-in
+  // animation that leaves exactly such a transform behind, which used to centre the
+  // dialog inside a tall panel and push most of it below the fold. Rendering into
+  // <body> takes the dialog out of reach of any ancestor's containing block.
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => setMounted(true), []);
+
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -214,9 +223,12 @@ export function Modal({
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
     };
-  }, [onClose]);
+    // `mounted` gates the portal, so the panel only exists to focus on the second pass.
+  }, [onClose, mounted]);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <div className="cc-modal-backdrop" onClick={onClose}>
       <div
         ref={panelRef}
@@ -227,19 +239,21 @@ export function Modal({
         onClick={(e) => e.stopPropagation()}
         style={{ width: '100%', maxWidth: `${width}px`, maxHeight: 'calc(100vh - 48px)', display: 'flex', flexDirection: 'column' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '18px 22px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '18px 22px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           <h3 id={titleId} style={{ fontSize: '0.9375rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>{title}</h3>
           <button onClick={onClose} className="cc-toast-close" aria-label="Close dialog" style={{ fontSize: '0.85rem' }}>✕</button>
         </div>
 
-        <div style={{ padding: '20px 22px', overflowY: 'auto' }}>{children}</div>
+        {/* minHeight:0 lets this shrink inside the flex column instead of pushing the footer off-screen. */}
+        <div style={{ padding: '20px 22px', overflowY: 'auto', minHeight: 0, flex: '1 1 auto' }}>{children}</div>
 
         {footer && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', padding: '16px 22px', borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', padding: '16px 22px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
             {footer}
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { hashPassword, signJwtToken, COOKIE_NAME } from '@/lib/auth';
+import { validatePassword } from '@/lib/auth/password-policy';
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,6 +9,11 @@ export async function POST(req: NextRequest) {
 
     if (!email || !username || !password) {
       return NextResponse.json({ error: 'Email, username, and password are required' }, { status: 400 });
+    }
+
+    const passwordProblem = validatePassword(password);
+    if (passwordProblem) {
+      return NextResponse.json({ error: passwordProblem }, { status: 400 });
     }
 
     const userCount = await prisma.user.count();

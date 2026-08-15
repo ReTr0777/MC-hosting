@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import QRCode from 'qrcode';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { encryptSecret } from '@/lib/crypto';
-import { generateTotpSecret, totpKeyUri } from '@/lib/totp';
+import { encryptSecret } from '@/lib/auth/crypto';
+import { generateTotpSecret, totpKeyUri } from '@/lib/auth/totp';
 
 export async function POST(req: NextRequest) {
   const authUser = await getUserFromRequest(req);

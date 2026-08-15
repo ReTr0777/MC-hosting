@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
+import { DaemonClient } from '@/lib/services/daemon-client';
+import { parseGameList } from '@mc-manager/shared';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -23,6 +24,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const health = await client.getHealth();
     const isOnline = health.status === 'ok' || health.dockerAvailable;
 
+    const reportedGames = parseGameList(health.enabledGames);
+
     // Extract primary disk (largest mounted volume)
     const primaryDisk = health.diskUsage
       ?.filter((d) => d.total > 0)
@@ -34,6 +37,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         isOnline,
         // Update totalMemory from live data so Smart Scheduler stays accurate
         ...(health.memoryUsage?.total ? { totalMemory: health.memoryUsage.total } : {}),
+        // A daemon older than this field reports nothing, which must mean "leave the
+        // stored list alone" — writing an empty array would hide the node from the
+        // create wizard entirely, every 5 seconds, with no way for the operator to see why.
+        ...(reportedGames ? { enabledGames: reportedGames } : {}),
         // Live hardware stats
         liveCpuUsage: health.cpuUsage ?? null,
         liveRamUsed: health.memoryUsage?.used ?? null,

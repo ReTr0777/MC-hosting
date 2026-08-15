@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import AlertsPanel from '@/components/AlertsPanel';
+import AlertsPanel from '@/components/admin/AlertsPanel';
 import { apiPost, apiRequest, errorMessage } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { Chip, EmptyState, InlineError, LoadingLine, Notice, PanelHeader } from '@/components/ui';

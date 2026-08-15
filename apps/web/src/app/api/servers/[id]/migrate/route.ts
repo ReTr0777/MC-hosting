@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
+import { DaemonClient } from '@/lib/services/daemon-client';
 import { CreateServerContainerDto } from '@mc-manager/shared';
-import { VelocityClient } from '@/lib/velocity-client';
+import { VelocityClient } from '@/lib/services/velocity-client';
 import { writeAudit } from '@/lib/audit';
+import { nodeCapacity, capacityViolation } from '@/lib/servers/node-capacity';
 
 async function updateLimboTitle(title: string, subtitle: string) {
   try {
@@ -64,6 +65,20 @@ export async function POST(
       return NextResponse.json({ error: 'Destination node not found' }, { status: 404 });
     }
 
+    // Migration moves the server's whole allocation onto another machine, so it is a capacity
+    // decision like creating one. Checked before the transfer starts — discovering the
+    // destination is full after streaming a 20 GB world across the network helps nobody.
+    // excludeServerId is harmless here (the server is on the source node) but keeps the call
+    // honest if a retry runs after the nodeId has already been switched over.
+    const capacity = await nodeCapacity(destNode.id, { excludeServerId: server.id });
+    const overCapacity = capacity && capacityViolation(capacity, {
+      memoryMb: server.memoryMb,
+      cpuLimit: server.cpuLimit,
+    });
+    if (overCapacity) {
+      return NextResponse.json({ error: overCapacity }, { status: 507 });
+    }
+
     // Acknowledge the migration request immediately
     const response = NextResponse.json({ message: 'Migration started successfully' }, { status: 202 });
 
@@ -108,6 +123,8 @@ export async function POST(
         // 3. Pipe to Destination Daemon import
         const dto: CreateServerContainerDto = {
           serverId: server.id,
+          game: server.game as any,
+          gameConfig: (server.gameConfig as any) || undefined,
           serverType: server.serverType as any,
           mcVersion: server.mcVersion,
           modpackSlug: server.modpackSlug || undefined,

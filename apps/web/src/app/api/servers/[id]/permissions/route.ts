@@ -25,7 +25,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const isGlobalAdmin = user.globalRole === 'GLOBAL_ADMIN';
   const currentUserRole = server.permissions.find((p: { userId: string; role: string }) => p.userId === user.userId)?.role;
 
-  if (!isGlobalAdmin && currentUserRole !== 'ADMIN') {
+  // OWNER outranks ADMIN — it was omitted here, which locked owners out of their own
+  // server's access list unless they also happened to be a global admin.
+  if (!isGlobalAdmin && currentUserRole !== 'ADMIN' && currentUserRole !== 'OWNER') {
     return NextResponse.json({ error: 'Forbidden: Admin access required to view server permissions' }, { status: 403 });
   }
 
@@ -54,7 +56,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const isGlobalAdmin = user.globalRole === 'GLOBAL_ADMIN';
   const currentUserRole = server.permissions[0]?.role;
 
-  if (!isGlobalAdmin && currentUserRole !== 'ADMIN') {
+  // OWNER outranks ADMIN — it was omitted here, which locked owners out of their own
+  // server's access list unless they also happened to be a global admin.
+  if (!isGlobalAdmin && currentUserRole !== 'ADMIN' && currentUserRole !== 'OWNER') {
     return NextResponse.json({ error: 'Forbidden: Admin permission required to manage server privileges' }, { status: 403 });
   }
 

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
+import { DaemonClient } from '@/lib/services/daemon-client';
 import { writeAudit } from '@/lib/audit';
+import { allNodeCapacities } from '@/lib/servers/node-capacity';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -21,6 +22,9 @@ export async function GET(req: NextRequest) {
       totalMemory: true,
       totalCpu: true,
       offloadPriority: true,
+      overcommitRatio: true,
+      cpuOvercommitRatio: true,
+      enabledGames: true,
       liveCpuUsage: true,
       liveRamUsed: true,
       liveRamTotal: true,
@@ -38,7 +42,13 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ nodes });
+  // Live usage says what the box is doing this second; allocation says what it has promised.
+  // The second number is the one that decides whether the next server fits.
+  const capacities = await allNodeCapacities();
+
+  return NextResponse.json({
+    nodes: nodes.map((node) => ({ ...node, capacity: capacities.get(node.id) ?? null })),
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -57,13 +67,20 @@ export async function POST(req: NextRequest) {
     // Ping node to verify connection
     const client = new DaemonClient({ host, port: port || 3500, apiKey });
     let isOnline = false;
+    let health: any = null;
 
     try {
-      const health = await client.getHealth();
+      health = await client.getHealth();
       isOnline = health.status === 'ok' || health.dockerAvailable;
     } catch (e) {
       isOnline = false;
     }
+
+    // Capacity has to describe the real machine, otherwise the allocation checks refuse servers a
+    // node could easily hold. Prefer what the admin typed, then what the daemon reports about
+    // itself, and only fall back to a placeholder when the node answered nothing at all.
+    const detectedMemory = Number(health?.memoryUsage?.total);
+    const detectedCpu = Number(health?.cpuCores);
 
     const node = await prisma.node.create({
       data: {
@@ -72,8 +89,8 @@ export async function POST(req: NextRequest) {
         port: port || 3500,
         apiKey,
         isOnline,
-        totalMemory: totalMemory || 8192,
-        totalCpu: totalCpu || 4,
+        totalMemory: Number(totalMemory) || (detectedMemory > 0 ? detectedMemory : 8192),
+        totalCpu: Number(totalCpu) || (detectedCpu > 0 ? detectedCpu : 4),
       },
     });
 

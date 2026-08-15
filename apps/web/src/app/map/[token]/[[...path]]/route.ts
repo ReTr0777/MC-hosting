@@ -6,7 +6,7 @@ import {
   verifySharePassword,
   shareStateMessage,
   ShareState,
-} from '@/lib/map-share';
+} from '@/lib/servers/map-share';
 
 export const dynamic = 'force-dynamic';
 

@@ -8,11 +8,11 @@ import { authenticateDaemonKey } from './middleware/auth';
 import systemRoutes from './routes/system';
 import serverRoutes from './routes/servers';
 import setupRoutes from './routes/setup';
-import { handleConsoleWebSocket } from './services/console';
-import { tunnelManager } from './services/frpc';
+import { handleConsoleWebSocket } from './services/runtime/console';
+import { tunnelManager } from './services/network/frpc';
 import { schedulerService } from './services/scheduler';
-import { ensureContainerRestartPolicies, docker } from './services/docker';
-import { presenceService } from './services/presence';
+import { ensureContainerRestartPolicies, docker } from './services/runtime/docker';
+import { presenceService } from './services/presence/presence';
 
 tunnelManager.init();
 schedulerService.start();

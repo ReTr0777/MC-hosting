@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { verifyBotSecret } from '@/lib/discord-bot-auth';
+import { verifyBotSecret } from '@/lib/auth/discord-bot-auth';
 
 export async function POST(req: NextRequest) {
   if (!verifyBotSecret(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { generateToken } from '@/lib/tokens';
-import { sendPasswordResetEmail, isEmailConfigured } from '@/lib/email';
-import { getPublicOrigin } from '@/lib/public-url';
+import { generateToken } from '@/lib/auth/tokens';
+import { sendPasswordResetEmail, isEmailConfigured } from '@/lib/services/email';
+import { getPublicOrigin } from '@/lib/utils/public-url';
 
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
 

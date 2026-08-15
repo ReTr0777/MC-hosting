@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
-import { syncCloudflareDns } from '@/lib/cloudflare';
-import { encryptSecret, tryDecryptSecret } from '@/lib/crypto';
+import { DaemonClient } from '@/lib/services/daemon-client';
+import { syncCloudflareDns } from '@/lib/services/cloudflare';
+import { encryptSecret, tryDecryptSecret } from '@/lib/auth/crypto';
 import { writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { DaemonClient } from '@/lib/daemon-client';
+import { DaemonClient } from '@/lib/services/daemon-client';
 import { writeAudit } from '@/lib/audit';
-import { nextMemoryTier } from '@/lib/crash-analyzer';
+import { nextMemoryTier } from '@/lib/diagnostics/crash-analyzer';
 
 export const dynamic = 'force-dynamic';
 
@@ -94,6 +94,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 function buildServerMeta(server: any) {
   return {
     serverId: server.id,
+    // Carried so a start cannot erase which game this server is.
+    game: server.game || undefined,
+    gameConfig: server.gameConfig || undefined,
     serverType: server.serverType,
     mcVersion: server.mcVersion,
     modpackSlug: server.modpackSlug || undefined,

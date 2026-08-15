@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
-import { requestWake } from '@/lib/sleep';
+import { requestWake } from '@/lib/servers/sleep';
+import { serverStartBlock } from '@/lib/servers/suspension';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     include: { node: true },
   });
   if (!server) return NextResponse.json({ error: 'Server not found' }, { status: 404 });
+
+  const block = await serverStartBlock(server.id);
+  if (block) return NextResponse.json({ error: block }, { status: 403 });
 
   try {
     await requestWake(server.node, server);

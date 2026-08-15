@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { verifyPassword, signJwtToken, signPreAuthToken, COOKIE_NAME } from '@/lib/auth';
+import { userSuspensionMessage } from '@/lib/servers/suspension';
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,6 +24,13 @@ export async function POST(req: NextRequest) {
     const isPasswordValid = await verifyPassword(password, user.passwordHash);
     if (!isPasswordValid) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    }
+
+    // Checked after the password so a wrong guess can't be used to discover that an account
+    // exists and is suspended.
+    const suspended = userSuspensionMessage(user);
+    if (suspended) {
+      return NextResponse.json({ error: suspended }, { status: 403 });
     }
 
     if (user.totpEnabled) {

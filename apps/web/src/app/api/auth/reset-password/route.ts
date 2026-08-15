@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { hashPassword } from '@/lib/auth';
-import { hashToken } from '@/lib/tokens';
+import { hashToken } from '@/lib/auth/tokens';
+import { validatePassword } from '@/lib/auth/password-policy';
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,8 +10,9 @@ export async function POST(req: NextRequest) {
     if (!token || typeof token !== 'string' || !password || typeof password !== 'string') {
       return NextResponse.json({ error: 'Token and new password are required' }, { status: 400 });
     }
-    if (password.length < 8) {
-      return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 });
+    const passwordProblem = validatePassword(password);
+    if (passwordProblem) {
+      return NextResponse.json({ error: passwordProblem }, { status: 400 });
     }
 
     const tokenHash = hashToken(token);

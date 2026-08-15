@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import os from 'os';
 import { getConfig, saveConfig } from '../config';
-import { tunnelManager } from '../services/frpc';
+import { tunnelManager } from '../services/network/frpc';
+import { ALL_GAMES, GAME_LABELS, DEFAULT_ENABLED_GAMES, parseGameList } from '@mc-manager/shared';
 
 const router = Router();
 
@@ -83,12 +84,15 @@ router.get('/config', requireSetupPassword, (req: Request, res: Response) => {
     requestHostIp: info.requestHostIp,
     hostname: info.hostname,
     port: config.port,
+    enabledGames: config.enabledGames ?? [...DEFAULT_ENABLED_GAMES],
+    // Sent so the GUI renders the full checkbox list without hardcoding it.
+    availableGames: ALL_GAMES.map((id) => ({ id, label: GAME_LABELS[id] })),
   });
 });
 
 router.post('/config', requireSetupPassword, (req: Request, res: Response) => {
-  const { apiKey, frpServerAddr, frpServerPort, frpToken, newSetupPassword } = req.body;
-  
+  const { apiKey, frpServerAddr, frpServerPort, frpToken, newSetupPassword, enabledGames } = req.body;
+
   const updates: any = {};
   if (apiKey !== undefined) updates.apiKey = apiKey;
   if (frpServerAddr !== undefined) updates.frpServerAddr = frpServerAddr;
@@ -96,8 +100,21 @@ router.post('/config', requireSetupPassword, (req: Request, res: Response) => {
   if (frpToken !== undefined) updates.frpToken = frpToken;
   if (newSetupPassword) updates.setupPassword = newSetupPassword;
 
+  if (enabledGames !== undefined) {
+    // Reject rather than silently fall back: an operator who unticks everything has
+    // asked for something impossible and deserves to be told, not quietly overruled.
+    const parsed = parseGameList(enabledGames);
+    if (!parsed) {
+      return res.status(400).json({
+        error: `enabledGames must contain at least one of: ${ALL_GAMES.join(', ')}`,
+      });
+    }
+    updates.enabledGames = parsed;
+  }
+
   saveConfig(updates);
-  
+
+
   // If FRP settings changed, dynamically restart the tunnel manager!
   if (frpServerAddr || frpServerPort || frpToken) {
     console.log('[Setup] FRP settings changed. Restarting tunnel manager...');
