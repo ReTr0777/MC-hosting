@@ -56,5 +56,13 @@ nsis:
   # would delete the servers along with the app.
   deleteAppDataOnUninstall: false
 
-# Nothing here is published automatically; releases are attached by hand.
-publish: null
+# Installed nodes check GitHub Releases for updates. `--publish always` uploads the
+# installer plus the latest.yml manifest electron-updater reads; `--publish never`
+# (the default build) only writes to release/ locally.
+#
+# The releases must be readable without credentials — an installed node has no
+# GitHub token. A private repo would mean shipping one to every machine.
+publish:
+  provider: github
+  owner: ReTr0777
+  repo: MC-hosting

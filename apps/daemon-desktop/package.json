@@ -8,17 +8,22 @@
   "author": "MC Hosting",
   "main": "dist/main/index.js",
   "scripts": {
-    "build:ts": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/make-icon.mjs && node scripts/copy-assets.mjs",
+    "build:ts": "node scripts/bundle-main.mjs && tsc -p tsconfig.renderer.json && node scripts/make-icon.mjs && node scripts/copy-assets.mjs",
     "stage": "node scripts/stage-daemon.mjs",
     "build": "npm run build:ts && npm run stage",
     "dev": "npm run build:ts && electron .",
     "dist": "npm run build && electron-builder --win --publish never",
+    "//release": "Builds and uploads to GitHub Releases. Needs GH_TOKEN set and the version in this file bumped first.",
+    "release": "npm run build && electron-builder --win --publish always",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
+  "//devDependencies": "electron-updater is a devDependency because scripts/bundle-main.mjs inlines it into dist/. Listing it under dependencies would make electron-builder look for it in this workspace's node_modules, where npm's hoisting means it does not exist.",
   "devDependencies": {
     "@types/node": "^20.11.30",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
+    "electron-updater": "^6.8.9",
+    "esbuild": "^0.25.0",
     "typescript": "^5.4.0"
   }
 }

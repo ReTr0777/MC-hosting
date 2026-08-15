@@ -17,6 +17,8 @@ interface DaemonStatus {
   uptimeMs: number | null;
 }
 interface DockerStatus { state: DockerState; version: string | null; detail: string }
+type UpdateState = 'idle' | 'checking' | 'current' | 'downloading' | 'installing' | 'error';
+interface UpdateStatus { state: UpdateState; version: string | null; percent: number | null }
 interface NodeConfig {
   port: number;
   apiKey: string;
@@ -47,6 +49,8 @@ interface NodeApi {
   start(): Promise<void>;
   stop(): Promise<void>;
   restart(): Promise<void>;
+  getUpdateStatus(): Promise<UpdateStatus>;
+  onUpdateStatus(cb: (s: UpdateStatus) => void): void;
   checkDocker(): Promise<DockerStatus>;
   openDockerDownload(): Promise<void>;
   setAutoStart(enabled: boolean): Promise<boolean>;
@@ -148,6 +152,23 @@ async function refreshDocker(): Promise<void> {
   badge.dataset.state = d.state;
   $('docker-detail').textContent = d.detail;
   $('btn-docker-download').classList.toggle('hidden', d.state !== 'not-installed');
+}
+
+/* ---------- updates ---------- */
+
+function renderUpdate(u: UpdateStatus): void {
+  const badge = $('update-badge');
+  const labels: Record<UpdateState, string> = {
+    idle: 'Up to date',
+    checking: 'Checking for updates…',
+    current: 'Up to date',
+    downloading: u.percent === null ? 'Downloading update…' : `Downloading update… ${u.percent}%`,
+    installing: `Installing ${u.version ?? 'update'} — the node will restart`,
+    error: 'Update check failed',
+  };
+  badge.textContent = labels[u.state];
+  // Only the two states the user might need to act on get colour.
+  badge.dataset.state = u.state === 'error' ? 'not-running' : u.state === 'installing' ? 'ok' : '';
 }
 
 /* ---------- logs ---------- */
@@ -282,6 +303,7 @@ function wire(): void {
   $('btn-clear-logs').addEventListener('click', () => api.clearLogs());
 
   api.onStatus(renderStatus);
+  api.onUpdateStatus(renderUpdate);
   api.onLog(appendLog);
   api.onLogsCleared(() => {
     $('log-view').textContent = '';
@@ -298,6 +320,7 @@ async function init(): Promise<void> {
   wire();
   renderConfig();
   renderStatus(daemonStatus);
+  renderUpdate(await api.getUpdateStatus());
   for (const line of await api.getLogs()) appendLog(line);
   await refreshDocker();
 

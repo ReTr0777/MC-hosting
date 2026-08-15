@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppInfo, DaemonStatus, DockerStatus, LogLine, NodeConfig } from '../shared-types';
+import type { AppInfo, DaemonStatus, DockerStatus, LogLine, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
  * The renderer runs with contextIsolation on and no Node access. Everything it can
@@ -17,6 +17,11 @@ const api = {
   start: (): Promise<void> => ipcRenderer.invoke('daemon:start'),
   stop: (): Promise<void> => ipcRenderer.invoke('daemon:stop'),
   restart: (): Promise<void> => ipcRenderer.invoke('daemon:restart'),
+
+  getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status'),
+  onUpdateStatus: (cb: (s: UpdateStatus) => void): void => {
+    ipcRenderer.on('update:status', (_e, s: UpdateStatus) => cb(s));
+  },
 
   checkDocker: (): Promise<DockerStatus> => ipcRenderer.invoke('docker:check'),
   openDockerDownload: (): Promise<void> => ipcRenderer.invoke('docker:download'),

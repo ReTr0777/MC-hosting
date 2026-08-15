@@ -43,6 +43,14 @@ export interface AppInfo {
   availableGames: { id: string; label: string }[];
 }
 
+export interface UpdateStatus {
+  state: 'idle' | 'checking' | 'current' | 'downloading' | 'installing' | 'error';
+  /** The version being fetched, when known. */
+  version: string | null;
+  /** Download progress 0-100 while downloading. */
+  percent: number | null;
+}
+
 export interface LogLine {
   ts: number;
   stream: 'out' | 'err' | 'app';

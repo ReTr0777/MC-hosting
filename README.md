@@ -125,6 +125,37 @@ Two things worth knowing about the build:
 Prisma is excluded from the packaged daemon. It is only used when `DATABASE_URL` is
 set, both call sites load it lazily, and its native engines would add over 100 MB.
 
+### Shipping an update
+
+Installed nodes check GitHub Releases on launch and every six hours, download in the
+background, and install on their own — a node picked up by someone else stays current
+without being chased. Installing restarts the agent, so the node blinks offline in
+the panel for a few seconds; the game servers are containers and keep running.
+
+To cut a release:
+
+```bash
+# 1. Bump the version — updates trigger on this number alone.
+#    apps/daemon-desktop/package.json  ->  "version": "1.0.1"
+
+# 2. Build and upload the installer plus its latest.yml manifest.
+export GH_TOKEN=<a token with repo scope>
+npm --prefix apps/daemon-desktop run release
+```
+
+`npm run dist:desktop` still builds locally without publishing anything.
+
+Two constraints worth remembering:
+
+- **The releases must be readable without credentials.** An installed node has no
+  GitHub token, so a private repo would mean shipping one to every machine.
+- **The version must increase.** electron-updater compares versions and nothing
+  else; re-publishing the same number is a no-op for every installed node.
+
+`electron-updater` is inlined into `dist/` by `scripts/bundle-main.mjs` rather than
+listed as a runtime dependency, because npm hoists it to the repo root where
+electron-builder would not find it to package.
+
 ## Deployment
 
 `docker-compose.yml` builds and runs the full stack (Postgres, panel, daemon,

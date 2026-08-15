@@ -6,7 +6,8 @@ import { ConfigStore } from './config-store';
 import { DaemonProcess } from './daemon-process';
 import { checkDocker, DOCKER_DOWNLOAD_URL } from './docker';
 import { FileLogger } from './logger';
-import type { AppInfo, DaemonStatus, NodeConfig } from '../shared-types';
+import { initAutoUpdates } from './updater';
+import type { AppInfo, DaemonStatus, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
  * Bootstrap trace, written before anything else can fail.
@@ -45,6 +46,7 @@ let tray: Tray | null = null;
 let store: ConfigStore;
 let daemon: DaemonProcess;
 let log: FileLogger;
+let updateStatus: UpdateStatus = { state: 'idle', version: null, percent: null };
 /** Set on the way out so the close handler stops hiding to tray and lets us exit. */
 let quitting = false;
 
@@ -194,6 +196,7 @@ function registerIpc(): void {
   ipcMain.handle('daemon:stop', () => daemon.stop());
   ipcMain.handle('daemon:restart', () => daemon.restart());
 
+  ipcMain.handle('update:status', () => updateStatus);
   ipcMain.handle('docker:check', () => checkDocker());
   ipcMain.handle('docker:download', () => shell.openExternal(DOCKER_DOWNLOAD_URL));
 
@@ -235,6 +238,25 @@ app.whenReady().then(async () => {
   // The node exists to be online, so start the agent straight away. Docker not being
   // ready is surfaced in the UI rather than blocking the attempt.
   daemon.start();
+
+  // Unpackaged builds have no installer to compare against, so a check would only
+  // ever log an error.
+  if (isPackaged) {
+    initAutoUpdates({
+      log: (m) => log.write('update', m),
+      onStatus: (status) => {
+        updateStatus = status;
+        send('update:status', status);
+      },
+      // The installer replaces files under the running agent; stop it first so the
+      // update does not race a live process holding them open.
+      beforeInstall: async () => {
+        quitting = true;
+        await daemon.stop();
+      },
+    });
+  }
+
   boot('startup complete');
 }).catch((err: Error) => {
   // Without this the whole startup path fails silently: a rejection inside an async
