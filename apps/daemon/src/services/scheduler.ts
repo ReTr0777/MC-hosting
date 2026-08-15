@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 import { ExecutionMode } from '@mc-manager/shared';
 import { backupManager } from './backup/backup';
 import { sendServerCommand } from './runtime/console';
@@ -10,8 +10,22 @@ import { loadConfig } from '../config';
 
 // DATABASE_URL is optional for the daemon — schedules can also be triggered via
 // the web panel's HTTP API. When not set, the scheduler silently skips DB polling.
-const DB_AVAILABLE = !!process.env.DATABASE_URL;
-const prisma = DB_AVAILABLE ? new PrismaClient() : null;
+// Required lazily, and tolerantly: the desktop build ships no Prisma engine at all,
+// so an operator who sets DATABASE_URL there would otherwise crash the daemon on
+// startup instead of just losing schedule polling. See routes/servers.ts for why
+// the dependency is loaded this late.
+function connectPrisma(): PrismaClient | null {
+  if (!process.env.DATABASE_URL) return null;
+  try {
+    return new (require('@prisma/client').PrismaClient)() as PrismaClient;
+  } catch {
+    console.warn('[SchedulerService] DATABASE_URL is set but @prisma/client is unavailable; schedule polling stays off.');
+    return null;
+  }
+}
+
+const prisma = connectPrisma();
+const DB_AVAILABLE = !!prisma;
 const config = loadConfig();
 
 export class SchedulerService {

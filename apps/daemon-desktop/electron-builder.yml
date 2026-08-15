@@ -1,0 +1,56 @@
+appId: com.mchosting.node
+productName: MC Hosting Node
+copyright: MC Hosting
+
+# npm workspaces hoist electron to the repo-root node_modules, where electron-builder
+# does not look. Stating the version outright is simpler than fighting the hoisting;
+# keep it in step with the devDependency in package.json.
+electronVersion: 33.4.11
+
+directories:
+  output: release
+  buildResources: build
+
+# The app has no runtime dependencies of its own — dist/ is self-contained and the
+# daemon ships under extraResources with its own node_modules. Leaving this on makes
+# electron-builder run a production install in this directory, which npm resolves
+# against the workspace root and which then prunes every devDependency there
+# (electron and electron-builder included). There is nothing here to rebuild.
+npmRebuild: false
+
+# The app itself is tiny — dist/ plus the Electron runtime. The daemon travels
+# separately as a resource so it keeps its own node_modules tree intact.
+files:
+  - dist/**/*
+  - package.json
+
+extraResources:
+  - from: build/daemon
+    to: daemon
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  # Off because signing pulls down electron-builder's winCodeSign toolchain, whose
+  # archive contains macOS symlinks that Windows refuses to extract without
+  # Developer Mode or an elevated shell — it fails the build on a normal account.
+  #
+  # Unsigned builds trip SmartScreen on first run. To sign, set CSC_LINK and
+  # CSC_KEY_PASSWORD, flip this to true, and build from an elevated prompt (or turn
+  # on Developer Mode) so the toolchain can unpack.
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: MC Hosting Node
+  # The node keeps running in the tray, so the uninstaller must close it first.
+  deleteAppDataOnUninstall: false
+
+# Nothing here is published automatically; releases are attached by hand.
+publish: null

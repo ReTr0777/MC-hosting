@@ -1,0 +1,24 @@
+{
+  "name": "@mc-manager/daemon-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "//productName": "Also sets app.getName(), which decides the userData folder. Without it Electron uses `name` and the node's config lands in AppData/Roaming/@mc-manager/daemon-desktop.",
+  "productName": "MC Hosting Node",
+  "description": "Desktop node agent for MC Hosting",
+  "author": "MC Hosting",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build:ts": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/make-icon.mjs && node scripts/copy-assets.mjs",
+    "stage": "node scripts/stage-daemon.mjs",
+    "build": "npm run build:ts && npm run stage",
+    "dev": "npm run build:ts && electron .",
+    "dist": "npm run build && electron-builder --win --publish never",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.4.0"
+  }
+}

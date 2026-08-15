@@ -27,7 +27,7 @@ import { processManager } from '../services/runtime/process';
 import { backupManager, gameOfServerDir } from '../services/backup/backup';
 import { CreateServerContainerDto, ExecutionMode, Game, GAME_CAPABILITIES, isGame } from '@mc-manager/shared';
 import { getGame, isNonMinecraftGame } from '../games';
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
 import { synthesizeForgeRunScript } from '../utils/forgeLaunchScript';
 import {
@@ -65,7 +65,24 @@ import {
 
 const router = Router();
 const config = loadConfig();
-const prisma = new PrismaClient();
+
+/*
+ * Prisma is loaded on first use rather than at import time.
+ *
+ * The daemon only touches the database when DATABASE_URL is set (schedules, and
+ * the best-effort mcVersion sync below) — every call site already tolerates it
+ * being unavailable. Requiring the client eagerly would drag Prisma's native
+ * query engine into any build that bundles the daemon, including the desktop
+ * app, purely to support a code path that deployment never takes.
+ */
+let prismaInstance: PrismaClient | null = null;
+function prismaClient(): PrismaClient {
+  if (!prismaInstance) {
+    const { PrismaClient: Client } = require('@prisma/client');
+    prismaInstance = new Client() as PrismaClient;
+  }
+  return prismaInstance;
+}
 
 // GET /api/v1/servers/statuses?ids=a,b,c
 // Bulk liveness probe used by the web panel's monitor loop to reconcile DB state
@@ -690,7 +707,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
     meta.installedVersion = detectedMcVersion;
 
     try {
-      await prisma.server.update({
+      await prismaClient().server.update({
         where: { id: serverId },
         data: { mcVersion: detectedMcVersion },
       });
@@ -3305,7 +3322,7 @@ router.get('/:serverId/schedules', async (req: Request, res: Response) => {
   const { serverId } = req.params;
   const targetId = serverId.replace('process-', '');
   try {
-    const schedules = await prisma.serverSchedule.findMany({
+    const schedules = await prismaClient().serverSchedule.findMany({
       where: { serverId: targetId },
       orderBy: { createdAt: 'desc' },
     });
@@ -3327,7 +3344,7 @@ router.post('/:serverId/schedules', async (req: Request, res: Response) => {
   }
 
   try {
-    const schedule = await prisma.serverSchedule.create({
+    const schedule = await prismaClient().serverSchedule.create({
       data: {
         serverId: targetId,
         name,
@@ -3350,7 +3367,7 @@ router.put('/:serverId/schedules/:scheduleId', async (req: Request, res: Respons
   const { name, cronExpression, actionType, payload, isEnabled } = req.body;
 
   try {
-    const schedule = await prisma.serverSchedule.update({
+    const schedule = await prismaClient().serverSchedule.update({
       where: { id: scheduleId },
       data: {
         ...(name && { name }),
@@ -3372,7 +3389,7 @@ router.delete('/:serverId/schedules/:scheduleId', async (req: Request, res: Resp
   const { scheduleId } = req.params;
 
   try {
-    await prisma.serverSchedule.delete({
+    await prismaClient().serverSchedule.delete({
       where: { id: scheduleId },
     });
     res.json({ success: true, message: 'Schedule deleted' });
@@ -3387,7 +3404,7 @@ router.post('/:serverId/schedules/:scheduleId/trigger', async (req: Request, res
   const { scheduleId } = req.params;
 
   try {
-    const schedule = await prisma.serverSchedule.findUnique({
+    const schedule = await prismaClient().serverSchedule.findUnique({
       where: { id: scheduleId },
       include: { server: true },
     });

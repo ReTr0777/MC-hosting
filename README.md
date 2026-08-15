@@ -10,6 +10,7 @@ players through an FRP tunnel and a Velocity proxy.
 apps/
   web/            Next.js 14 panel — dashboard UI + the whole REST API (App Router)
   daemon/         Node agent that runs on each host: owns Docker, files, backups
+  daemon-desktop/ Electron wrapper that installs the daemon on Windows as an app
   discord-bot/    Slash-command bot (/status, /start, /stop, /restart)
   proxy/          Velocity proxy image (public 25565 + REST API)
   proxy-plugin/   Java plugin giving Velocity the REST API the panel calls
@@ -91,6 +92,38 @@ npm run build       # shared -> daemon -> web
 
 Tests live next to the code they cover, as `*.test.ts`, and run on the Node test
 runner via `tsx`.
+
+## Windows node installer
+
+`apps/daemon-desktop` packages the daemon as a Windows application, so a machine can
+join as a node by running an installer instead of writing a compose file.
+
+```bash
+npm run dist:desktop     # -> apps/daemon-desktop/release/MC Hosting Node Setup <version>.exe
+```
+
+The installed app starts the daemon as a child process, keeps it in the system tray
+(closing the window leaves the node online), and offers a window with node status,
+the address and API key to paste into the panel, tunnel settings, and a live log.
+It can start itself at sign-in.
+
+**Docker Desktop is still required** — game servers are containers either way. The
+app detects it and links to the download if it is missing.
+
+Two things worth knowing about the build:
+
+- The daemon is staged into `build/daemon` with its own `node_modules` by
+  `scripts/stage-daemon.mjs`. That install deliberately runs in a temp directory
+  outside the repo: npm resolves any install under `apps/` against the workspace
+  root, and `--omit=dev` there would prune the root's devDependencies.
+- Builds are unsigned, so Windows SmartScreen warns on first run. To sign, set
+  `CSC_LINK` and `CSC_KEY_PASSWORD`, set `signAndEditExecutable: true` in
+  `electron-builder.yml`, and build with Developer Mode on or from an elevated
+  prompt — the signing toolchain contains symlinks Windows will not otherwise
+  unpack.
+
+Prisma is excluded from the packaged daemon. It is only used when `DATABASE_URL` is
+set, both call sites load it lazily, and its native engines would add over 100 MB.
 
 ## Deployment
 

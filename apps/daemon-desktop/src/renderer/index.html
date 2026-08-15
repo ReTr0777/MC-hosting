@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+    <title>MC Hosting Node</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <div>
+          <h1>MC Hosting Node</h1>
+          <p class="sub" id="host-line">&nbsp;</p>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="pill" id="state-pill" data-state="stopped">Stopped</span>
+        <button id="btn-start" class="btn primary">Start</button>
+        <button id="btn-stop" class="btn">Stop</button>
+        <button id="btn-restart" class="btn">Restart</button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="overview" role="tab">Overview</button>
+      <button class="tab" data-tab="connection" role="tab">Connection</button>
+      <button class="tab" data-tab="tunnel" role="tab">Tunnel</button>
+      <button class="tab" data-tab="logs" role="tab">Logs</button>
+    </nav>
+
+    <main>
+      <!-- Overview -->
+      <section class="panel active" id="tab-overview">
+        <div class="card" id="docker-card">
+          <div class="card-head">
+            <h2>Docker</h2>
+            <span class="badge" id="docker-badge">Checking…</span>
+          </div>
+          <p class="muted" id="docker-detail">Checking for Docker Desktop…</p>
+          <div class="row">
+            <button id="btn-docker-recheck" class="btn small">Check again</button>
+            <button id="btn-docker-download" class="btn small hidden">Get Docker Desktop</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Node status</h2></div>
+          <dl class="facts">
+            <div><dt>State</dt><dd id="fact-state">—</dd></div>
+            <div><dt>Uptime</dt><dd id="fact-uptime">—</dd></div>
+            <div><dt>Process</dt><dd id="fact-pid">—</dd></div>
+            <div><dt>Listening on</dt><dd id="fact-port">—</dd></div>
+          </dl>
+          <p class="error hidden" id="fact-error"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Application</h2></div>
+          <label class="check">
+            <input type="checkbox" id="chk-autostart" />
+            <span>Start this node automatically when I sign in to Windows</span>
+          </label>
+          <p class="muted">Closing the window keeps the node online in the system tray. Use Quit in the tray menu to take it offline.</p>
+          <div class="row">
+            <button id="btn-open-data" class="btn small">Open data folder</button>
+            <span class="muted mono" id="fact-datadir"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Connection -->
+      <section class="panel" id="tab-connection">
+        <div class="card">
+          <div class="card-head"><h2>Panel connection</h2></div>
+          <p class="muted">Add this node in the web panel using the address and key below.</p>
+
+          <label class="field">
+            <span>Node address</span>
+            <div class="row">
+              <input id="inp-address" class="mono" readonly />
+              <button class="btn small" data-copy="inp-address">Copy</button>
+            </div>
+            <small class="muted" id="address-hint"></small>
+          </label>
+
+          <label class="field">
+            <span>Daemon API key</span>
+            <div class="row">
+              <input id="inp-apikey" class="mono" type="password" readonly />
+              <button class="btn small" id="btn-reveal">Show</button>
+              <button class="btn small" data-copy="inp-apikey">Copy</button>
+              <button class="btn small danger" id="btn-regen">Regenerate</button>
+            </div>
+            <small class="muted">Regenerating takes the node offline in the panel until you paste the new key there.</small>
+          </label>
+
+          <label class="field">
+            <span>Port</span>
+            <div class="row">
+              <input id="inp-port" type="number" min="1" max="65535" />
+              <button class="btn small" id="btn-save-port">Save</button>
+            </div>
+            <small class="muted">Changing the port restarts the node.</small>
+          </label>
+
+          <div class="field">
+            <span>Games this node hosts</span>
+            <div class="row" id="games-row"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tunnel -->
+      <section class="panel" id="tab-tunnel">
+        <div class="card">
+          <div class="card-head"><h2>FRP tunnel</h2></div>
+          <p class="muted">
+            Lets players reach servers on this machine without port forwarding. Leave the
+            address empty to run without a tunnel.
+          </p>
+          <label class="field">
+            <span>Tunnel server address</span>
+            <input id="inp-frp-addr" placeholder="e.g. panel.example.com" />
+          </label>
+          <label class="field">
+            <span>Tunnel server port</span>
+            <input id="inp-frp-port" type="number" min="1" max="65535" />
+          </label>
+          <label class="field">
+            <span>Tunnel token</span>
+            <input id="inp-frp-token" type="password" />
+          </label>
+          <div class="row">
+            <button id="btn-save-tunnel" class="btn primary">Save and restart node</button>
+            <span id="tunnel-saved" class="muted hidden">Saved.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs -->
+      <section class="panel" id="tab-logs">
+        <div class="card fill">
+          <div class="card-head">
+            <h2>Agent log</h2>
+            <div class="row">
+              <label class="check inline">
+                <input type="checkbox" id="chk-follow" checked /><span>Follow</span>
+              </label>
+                <button id="btn-open-log" class="btn small">Open log file</button>
+              <button id="btn-clear-logs" class="btn small">Clear</button>
+            </div>
+          </div>
+          <pre id="log-view" class="log" aria-live="polite"></pre>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
