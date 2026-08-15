@@ -66,3 +66,6 @@ publish:
   provider: github
   owner: ReTr0777
   repo: MC-hosting
+  # Published, not the default draft: electron-updater only ever sees published
+  # releases, so a draft would upload fine and update nobody.
+  releaseType: release
