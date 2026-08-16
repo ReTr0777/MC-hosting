@@ -21,7 +21,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const client = new DaemonClient({ host: node.host, port: node.port, apiKey: node.apiKey });
 
   try {
-    const health = await client.getHealth();
+    // Generous on purpose: this poll decides the online badge, and a remote node
+    // answering slowly is not the same as a node that is down.
+    const health = await client.getHealth(DaemonClient.HEALTH_TIMEOUT_MS);
     const isOnline = health.status === 'ok' || health.dockerAvailable;
 
     const reportedGames = parseGameList(health.enabledGames);

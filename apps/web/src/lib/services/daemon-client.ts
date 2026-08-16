@@ -57,8 +57,22 @@ export class DaemonClient {
     return data as T;
   }
 
-  async getHealth(): Promise<DaemonHealthDto> {
-    return this.request<DaemonHealthDto>('/system/health');
+  /**
+   * The default 5s is a LAN assumption, and a node reached over a tunnel breaks it.
+   *
+   * This endpoint does real work before it answers — CPU, disk and temperature stats —
+   * on hardware that may be a laptop, and the reply then travels back through an frps
+   * server and whatever link the node is on. A remote node that is perfectly healthy
+   * can take longer than five seconds, and every timeout reads as "offline", which is
+   * indistinguishable from a node that is genuinely down.
+   *
+   * Callers that poll should pass something generous; the cost of waiting is a slower
+   * offline indication, and the cost of not waiting is a working node shown as dead.
+   */
+  static readonly HEALTH_TIMEOUT_MS = 15000;
+
+  async getHealth(timeoutMs?: number): Promise<DaemonHealthDto> {
+    return this.request<DaemonHealthDto>('/system/health', {}, timeoutMs);
   }
 
   async createServer(dto: CreateServerContainerDto): Promise<{ message: string; containerId: string }> {

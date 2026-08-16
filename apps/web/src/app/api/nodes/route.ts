@@ -70,7 +70,8 @@ export async function POST(req: NextRequest) {
     let health: any = null;
 
     try {
-      health = await client.getHealth();
+      // A node registered over a tunnel deserves the same patience as one being polled.
+      health = await client.getHealth(DaemonClient.HEALTH_TIMEOUT_MS);
       isOnline = health.status === 'ok' || health.dockerAvailable;
     } catch (e) {
       isOnline = false;
