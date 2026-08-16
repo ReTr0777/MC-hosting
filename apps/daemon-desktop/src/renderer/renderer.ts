@@ -307,7 +307,9 @@ function wire(): void {
   $('btn-regen').addEventListener('click', async () => {
     config.apiKey = await api.regenerateApiKey();
     renderConfig();
-    toast('New key generated. Update it in the web panel, then restart the node.');
+    // The restart is already done by the time this resolves, so the key on screen is
+    // the one the agent is now accepting — nothing left for the user to remember.
+    toast('New key generated and node restarted. Paste it into the web panel.');
   });
 
   $('btn-save-port').addEventListener('click', async () => {

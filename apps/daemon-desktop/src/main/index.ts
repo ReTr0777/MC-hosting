@@ -247,7 +247,19 @@ function registerIpc(): void {
     return store.read();
   });
 
-  ipcMain.handle('config:regenerate-key', () => store.regenerateApiKey());
+  /*
+   * Restarts the agent, like every other setting here does.
+   *
+   * The daemon reads its key once at startup, so without this the app shows a new key
+   * while the running agent still only accepts the old one. Pasting the new key into
+   * the panel then produces a node that authenticates with nothing and sits offline —
+   * with a 401 as the only clue, on the far side of a tunnel.
+   */
+  ipcMain.handle('config:regenerate-key', async () => {
+    const key = store.regenerateApiKey();
+    await daemon.restart();
+    return key;
+  });
 
   ipcMain.handle('config:import', async () => {
     const picked = await dialog.showOpenDialog({
