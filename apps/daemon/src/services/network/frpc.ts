@@ -22,10 +22,20 @@ function frpcBinary(): string {
   return process.env.FRPC_PATH || 'frpc';
 }
 
+/** Backoff bounds for bringing a dead tunnel back, and how long counts as "it held". */
+const RESTART_MIN_MS = 5_000;
+const RESTART_MAX_MS = 60_000;
+const STABLE_MS = 60_000;
+
 class TunnelManager {
   private frpcProcess: ChildProcess | null = null;
   /** Set once frpc turns out to be unusable, so the warning is not repeated on every reload. */
   private spawnFailed = false;
+  /** True while we are taking frpc down on purpose, so its exit is not treated as a fault. */
+  private intentionalStop = false;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private restartDelayMs = RESTART_MIN_MS;
+  private startedAt = 0;
   private frpConfigPath: string;
   private proxies: Map<string, ProxyRule> = new Map();
   private baseConfig: string = '';
@@ -39,6 +49,16 @@ class TunnelManager {
   }
 
   public async init() {
+    // A restart already queued is superseded by this one.
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+
+    // Set for the whole setup path: the old process's exit below is our doing, and
+    // must not be mistaken for the tunnel dropping.
+    this.intentionalStop = true;
+
     // If a process is already running, kill it before restarting
     if (this.frpcProcess) {
       console.log('[TunnelManager] Killing existing frpc process...');
@@ -59,9 +79,16 @@ class TunnelManager {
       return;
     }
 
+    /*
+     * loginFailExit = false because a node's link is not guaranteed to be good at the
+     * moment it starts. frpc's default is to give up permanently after a single failed
+     * login — on a mobile connection, or any link that drops, that leaves the tunnel
+     * dead until a human restarts the agent. Retrying is what "unattended" requires.
+     */
     this.baseConfig = `
 serverAddr = "${serverAddr}"
 serverPort = ${serverPort}
+loginFailExit = false
 ${token ? `\n[auth]\nmethod = "token"\ntoken = "${token}"` : ''}
 
 ${apiPort ? `
@@ -127,11 +154,32 @@ remotePort = ${apiPort}
       console.error(`[frpc error] ${data.toString().trim()}`);
     });
 
+    this.startedAt = Date.now();
+    this.intentionalStop = false;
+
+    const started = this.frpcProcess;
     this.frpcProcess.on('exit', (code) => {
+      // A process we have already replaced; its exit says nothing about the current
+      // tunnel, and acting on it would clear the live one's handle.
+      if (this.frpcProcess !== started) return;
+
       console.warn(`[TunnelManager] frpc process exited with code ${code}`);
       this.frpcProcess = null;
       // It exited on its own, so it is not stranded and must not be hunted later.
       this.clearPidFile();
+
+      if (this.intentionalStop) return;
+
+      /*
+       * Bring it back. A tunnel is the only route to a node behind NAT, so leaving it
+       * down until someone notices means the node is simply gone from the panel — and
+       * the person who would notice is the one who cannot reach it.
+       *
+       * A process that held for a while gets the short delay again; one that dies
+       * immediately backs off, so a genuinely broken setup is not retried in a loop.
+       */
+      if (Date.now() - this.startedAt > STABLE_MS) this.restartDelayMs = RESTART_MIN_MS;
+      this.scheduleRestart();
     });
   }
 
@@ -149,6 +197,29 @@ remotePort = ${apiPort}
    * Signals are not delivered on Windows, where a killed parent leaves frpc orphaned
    * regardless; the desktop app kills the process tree for that case.
    */
+  /**
+   * Queues bringing the tunnel back, once, with a growing delay.
+   *
+   * Not called when frpc could not be launched at all: a missing or blocked binary
+   * does not fix itself, and retrying it on a timer only fills the log.
+   */
+  private scheduleRestart(): void {
+    if (this.restartTimer || this.spawnFailed) return;
+
+    const wait = this.restartDelayMs;
+    console.warn(`[TunnelManager] Tunnel is down. Reconnecting in ${Math.round(wait / 1000)}s.`);
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.init().catch((err: Error) => {
+        console.error(`[TunnelManager] Reconnect attempt failed: ${err.message}`);
+      });
+    }, wait);
+    // Unref'd so a pending retry cannot hold the process open on shutdown.
+    this.restartTimer.unref?.();
+
+    this.restartDelayMs = Math.min(this.restartDelayMs * 2, RESTART_MAX_MS);
+  }
+
   /** Written beside frpc.toml; see the call site for why it exists. */
   private get pidFilePath(): string {
     return path.join(path.dirname(this.frpConfigPath), 'frpc.pid');
@@ -173,6 +244,11 @@ remotePort = ${apiPort}
 
   private registerCleanup(): void {
     const stop = () => {
+      this.intentionalStop = true;
+      if (this.restartTimer) {
+        clearTimeout(this.restartTimer);
+        this.restartTimer = null;
+      }
       if (!this.frpcProcess) return;
       this.frpcProcess.kill();
       this.frpcProcess = null;
