@@ -108,10 +108,30 @@ export class ConfigStore {
     const incoming = doc.node ?? {};
     const patch: Record<string, unknown> = {};
 
-    if (typeof incoming.apiKey !== 'string' || incoming.apiKey.length < 8) {
-      throw new Error('The config has no usable daemon key in it.');
+    /*
+     * Accept whatever key the panel issued, however short.
+     *
+     * This used to demand eight characters, which the panel never enforced when the
+     * node was registered — so a node created with a short key exported a file this
+     * app refused, and the import failed with a message implying the file was corrupt.
+     * Import is the wrong place to enforce a password policy: the panel is the
+     * authority on what a node's key is, and refusing to match it only guarantees the
+     * two disagree.
+     *
+     * The one value still rejected is the daemon's built-in fallback, because it is a
+     * published constant rather than a secret anybody chose.
+     */
+    const incomingKey = typeof incoming.apiKey === 'string' ? incoming.apiKey.trim() : '';
+    if (!incomingKey) {
+      throw new Error('That config has no daemon key in it. Export a fresh copy from the panel.');
     }
-    patch.apiKey = incoming.apiKey;
+    if (incomingKey === 'default-daemon-secret-key') {
+      throw new Error(
+        'That config carries the placeholder daemon key, which every node ships with and is not a secret. ' +
+          'Set a real key on the node in the panel, then export again.'
+      );
+    }
+    patch.apiKey = incomingKey;
 
     if (typeof incoming.port === 'number' && incoming.port > 0 && incoming.port < 65536) {
       patch.port = incoming.port;
