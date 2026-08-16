@@ -1,4 +1,4 @@
-import { fork, execFile, ChildProcess } from 'child_process';
+import { fork, execFileSync, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import type { DaemonStatus, DaemonState, LogLine } from '../shared-types';
@@ -121,12 +121,24 @@ export class DaemonProcess extends EventEmitter {
       `Where-Object { $_.Path -eq '${target}' } | ` +
       `Stop-Process -Force -ErrorAction SilentlyContinue`;
 
+    /*
+     * Synchronous, and that is the whole point.
+     *
+     * Run asynchronously, this races the agent it is about to start: PowerShell takes
+     * a few hundred milliseconds to come up, by which time the new frpc is running,
+     * matches the same path, and gets killed by the sweep meant to protect it. Every
+     * caller here must therefore be certain the sweep has finished before anything new
+     * is spawned, and blocking is the only way to promise that. It costs half a second
+     * on start and stop, against a tunnel that otherwise dies the moment it connects.
+     */
     try {
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err) => {
-        // Best effort: a sweep that fails must not stop the agent from starting.
-        if (err) this.log('app', `Could not check for stranded tunnel clients: ${err.message}`);
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        stdio: 'ignore',
+        // A sweep that hangs must not hang the app with it.
+        timeout: 10_000,
       });
     } catch (err) {
+      // Best effort: a sweep that fails must not stop the agent from starting.
       this.log('app', `Could not check for stranded tunnel clients: ${(err as Error).message}`);
     }
   }
