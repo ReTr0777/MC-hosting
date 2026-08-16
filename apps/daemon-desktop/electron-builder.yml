@@ -18,15 +18,24 @@ directories:
 # (electron and electron-builder included). There is nothing here to rebuild.
 npmRebuild: false
 
-# The app itself is tiny — dist/ plus the Electron runtime. The daemon travels
-# separately as a resource so it keeps its own node_modules tree intact.
+# The daemon is packed *into* app.asar rather than shipped alongside it.
+#
+# It used to be an extraResources folder, which lands as ~7000 loose files under
+# resources/daemon. An auto-update restored the shallow files but not the
+# node_modules tree beneath them, so updated nodes died on "Cannot find module
+# 'express'". app.asar is one file, and replacing it wholesale is the update path
+# Electron is built around — the tree cannot be half-applied.
+#
+# daemon-runtime/ is produced by `npm run stage`. It cannot live under build/,
+# because that is buildResources and electron-builder never packs it.
 files:
   - dist/**/*
+  - daemon-runtime/**/*
   - package.json
 
-extraResources:
-  - from: build/daemon
-    to: daemon
+# No asarUnpack: nothing in the packaged app loads a native addon. The daemon's two
+# optional ones (ssh2's crypto binding and cpu-features) are left out of the bundle
+# entirely — see scripts/bundle-daemon.mjs.
 
 win:
   target:

@@ -1,7 +1,6 @@
 import { fork, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import fs from 'fs';
-import path from 'path';
 import type { DaemonStatus, DaemonState, LogLine } from '../shared-types';
 
 const MAX_LOG_LINES = 2000;
@@ -24,10 +23,26 @@ export class DaemonProcess extends EventEmitter {
   private stopping = false;
   /** Raised by the stderr watcher so the exit handler can explain *why* it died. */
   private portConflict = false;
+  /** Likewise: the agent's own files are incomplete, so no restart will help. */
+  private brokenInstall = false;
 
   constructor(
     private readonly entryPath: string,
     private readonly serversDir: string,
+    /**
+     * Working directory for the child. Never derive it from entryPath: packaged, the
+     * agent lives inside app.asar, and spawning with a cwd inside the archive fails —
+     * the OS needs a real directory. The daemon only falls back to cwd for its data
+     * path when DAEMON_DATA_DIR is unset, which it never is here.
+     */
+    private readonly workingDir: string,
+    /**
+     * Extra module search path for the child, or null to leave resolution alone.
+     * Packaged, the agent is a single bundled file and the handful of packages that
+     * could not be bundled live in a vendor/ directory it would never find on its
+     * own — electron-builder strips anything called node_modules.
+     */
+    private readonly modulePath: string | null,
     private readonly getPort: () => number,
     /** Mirrors everything to the on-disk log; the in-memory buffer dies with the app. */
     private readonly toFile: (message: string) => void = () => {}
@@ -94,8 +109,9 @@ export class DaemonProcess extends EventEmitter {
         ELECTRON_RUN_AS_NODE: '1',
         DAEMON_DATA_DIR: this.serversDir,
         DAEMON_PORT: String(this.getPort()),
+        ...(this.modulePath ? { NODE_PATH: this.modulePath } : {}),
       },
-      cwd: path.dirname(this.entryPath),
+      cwd: this.workingDir,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
 
@@ -108,6 +124,12 @@ export class DaemonProcess extends EventEmitter {
       // user to read a Node stack trace out of the log pane.
       if (text.includes('EADDRINUSE')) {
         this.portConflict = true;
+      }
+      // The agent shipped without part of itself. Historically this was an update
+      // dropping the dependency tree; whatever the cause, restarting cannot fix it
+      // and the raw MODULE_NOT_FOUND stack tells the user nothing they can act on.
+      if (text.includes('MODULE_NOT_FOUND') || text.includes('Cannot find module')) {
+        this.brokenInstall = true;
       }
       this.log('err', text);
     });
@@ -124,6 +146,12 @@ export class DaemonProcess extends EventEmitter {
       if (clean) {
         this.log('app', 'Daemon agent stopped.');
         this.setState('stopped');
+      } else if (this.brokenInstall) {
+        this.lastError =
+          'This node agent is missing part of its own installation, so it cannot start. ' +
+          'Reinstalling MC Hosting Node from the latest installer will repair it.';
+        this.log('app', this.lastError);
+        this.setState('crashed');
       } else if (this.portConflict) {
         this.lastError =
           `Port ${this.getPort()} is already in use. Another node agent — or a daemon running in ` +
@@ -137,6 +165,7 @@ export class DaemonProcess extends EventEmitter {
       }
       this.stopping = false;
       this.portConflict = false;
+      this.brokenInstall = false;
     });
 
     // The agent binds its port a moment after fork; there is no ready handshake to

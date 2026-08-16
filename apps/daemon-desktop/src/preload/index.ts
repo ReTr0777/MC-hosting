@@ -21,6 +21,9 @@ const api = {
   restart: (): Promise<void> => ipcRenderer.invoke('daemon:restart'),
 
   getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:status'),
+  checkForUpdate: (): Promise<void> => ipcRenderer.invoke('update:check'),
+  /** Takes the update the node hoster was offered — including one they deferred. */
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('update:install'),
   onUpdateStatus: (cb: (s: UpdateStatus) => void): void => {
     ipcRenderer.on('update:status', (_e, s: UpdateStatus) => cb(s));
   },

@@ -42,9 +42,11 @@ scratch/
 # local minecraft server runtime data (world, mods, logs, configs)
 server/
 
-# desktop app installer output (the staged daemon and icon under build/ are
-# generated too, and are already covered by the build/ rule above)
+# desktop app installer output (the generated icon under build/ is already covered
+# by the build/ rule above)
 release/
+# the daemon tree staged for packing into app.asar, rebuilt by `npm run stage`
+apps/daemon-desktop/daemon-runtime/
 
 # build artifacts
 *.tsbuildinfo

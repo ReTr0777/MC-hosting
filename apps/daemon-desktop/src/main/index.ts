@@ -6,7 +6,7 @@ import { ConfigStore } from './config-store';
 import { DaemonProcess } from './daemon-process';
 import { checkDocker, DOCKER_DOWNLOAD_URL } from './docker';
 import { FileLogger } from './logger';
-import { initAutoUpdates } from './updater';
+import { initAutoUpdates, type UpdaterControls } from './updater';
 import type { AppInfo, DaemonStatus, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
@@ -36,10 +36,23 @@ if (!app.requestSingleInstanceLock()) {
 
 const isPackaged = app.isPackaged;
 
-/** Where the compiled daemon lives: bundled under resources when packaged. */
+/**
+ * Where the compiled daemon lives: inside app.asar when packaged.
+ *
+ * It used to ride along as extraResources, i.e. ~7000 loose files under
+ * resources/daemon. Auto-updates restored the shallow ones and dropped the whole
+ * node_modules tree underneath, leaving an installed node that started and died on
+ * "Cannot find module 'express'". app.asar is a single file, which is the one thing
+ * an update is guaranteed to replace whole, so the daemon travels inside it —
+ * Electron's fs patch makes the archive readable to the forked agent (see
+ * daemon-process.ts, which must keep the child's cwd outside it).
+ */
 const daemonEntry = isPackaged
-  ? path.join(process.resourcesPath, 'daemon', 'index.js')
+  ? path.join(app.getAppPath(), 'daemon-runtime', 'index.js')
   : path.join(__dirname, '..', '..', '..', 'daemon', 'dist', 'index.js');
+
+/** Packages the bundle could not inline. Unpackaged, npm has already placed them. */
+const daemonModulePath = isPackaged ? path.join(app.getAppPath(), 'daemon-runtime', 'vendor') : null;
 
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -47,6 +60,8 @@ let store: ConfigStore;
 let daemon: DaemonProcess;
 let log: FileLogger;
 let updateStatus: UpdateStatus = { state: 'idle', version: null, percent: null };
+/** Set only in packaged builds; there is nothing to update in development. */
+let updater: UpdaterControls | null = null;
 /** Set on the way out so the close handler stops hiding to tray and lets us exit. */
 let quitting = false;
 
@@ -120,6 +135,39 @@ function showWindow(): void {
     win.show();
     win.focus();
   }
+}
+
+/**
+ * Offers an update and waits for an answer.
+ *
+ * Parented to the window when there is one, so it cannot end up behind it. When the
+ * app is sitting in the tray there is no parent to attach to and the dialog stands on
+ * its own — which is the point: a node hoster who never opens the window still gets
+ * asked rather than updated silently.
+ */
+async function promptForUpdate(version: string): Promise<boolean> {
+  const options: Electron.MessageBoxOptions = {
+    type: 'question',
+    buttons: ['Update now', 'Not now'],
+    defaultId: 0,
+    // Esc and the close button both mean "not now", never an accidental restart.
+    cancelId: 1,
+    title: 'MC Hosting Node',
+    message: `Version ${version} is available.`,
+    detail:
+      `This node is running ${app.getVersion()}.\n\n` +
+      'Updating restarts the node agent, so the node shows offline in the panel for a few ' +
+      'seconds. Game servers keep running — they are Docker containers and are not part of ' +
+      'this app.\n\n' +
+      'You can install it later from the app window instead.',
+    noLink: true,
+  };
+
+  const parent = win && !win.isDestroyed() ? win : null;
+  const { response } = parent
+    ? await dialog.showMessageBox(parent, options)
+    : await dialog.showMessageBox(options);
+  return response === 0;
 }
 
 function trayIcon(): Electron.NativeImage {
@@ -217,6 +265,9 @@ function registerIpc(): void {
   ipcMain.handle('daemon:restart', () => daemon.restart());
 
   ipcMain.handle('update:status', () => updateStatus);
+  // Both no-ops unpackaged, where there is no updater and the UI hides the control.
+  ipcMain.handle('update:check', () => updater?.check());
+  ipcMain.handle('update:install', () => updater?.installPending());
   ipcMain.handle('docker:check', () => checkDocker());
   ipcMain.handle('docker:download', () => shell.openExternal(DOCKER_DOWNLOAD_URL));
 
@@ -240,7 +291,14 @@ app.whenReady().then(async () => {
   store = new ConfigStore(app.getPath('userData'));
   store.ensureInitialised();
 
-  daemon = new DaemonProcess(daemonEntry, store.serversDir, () => store.read().port, (m) => log.write('daemon', m));
+  daemon = new DaemonProcess(
+    daemonEntry,
+    store.serversDir,
+    app.getPath('userData'),
+    daemonModulePath,
+    () => store.read().port,
+    (m) => log.write('daemon', m)
+  );
   daemon.on('status', (status: DaemonStatus) => {
     send('daemon:status', status);
     buildTrayMenu(status);
@@ -262,12 +320,13 @@ app.whenReady().then(async () => {
   // Unpackaged builds have no installer to compare against, so a check would only
   // ever log an error.
   if (isPackaged) {
-    initAutoUpdates({
+    updater = initAutoUpdates({
       log: (m) => log.write('update', m),
       onStatus: (status) => {
         updateStatus = status;
         send('update:status', status);
       },
+      confirmUpdate: promptForUpdate,
       // The installer replaces files under the running agent; stop it first so the
       // update does not race a live process holding them open.
       beforeInstall: async () => {

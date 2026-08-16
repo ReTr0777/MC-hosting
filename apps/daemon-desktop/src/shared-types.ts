@@ -44,8 +44,9 @@ export interface AppInfo {
 }
 
 export interface UpdateStatus {
-  state: 'idle' | 'checking' | 'current' | 'downloading' | 'installing' | 'error';
-  /** The version being fetched, when known. */
+  /** 'available' means found and waiting on the node hoster to accept it. */
+  state: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error';
+  /** The version offered or being fetched, when known. */
   version: string | null;
   /** Download progress 0-100 while downloading. */
   percent: number | null;

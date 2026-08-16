@@ -17,7 +17,7 @@ interface DaemonStatus {
   uptimeMs: number | null;
 }
 interface DockerStatus { state: DockerState; version: string | null; detail: string }
-type UpdateState = 'idle' | 'checking' | 'current' | 'downloading' | 'installing' | 'error';
+type UpdateState = 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error';
 interface UpdateStatus { state: UpdateState; version: string | null; percent: number | null }
 interface NodeConfig {
   port: number;
@@ -51,6 +51,8 @@ interface NodeApi {
   stop(): Promise<void>;
   restart(): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatus>;
+  checkForUpdate(): Promise<void>;
+  installUpdate(): Promise<void>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): void;
   checkDocker(): Promise<DockerStatus>;
   openDockerDownload(): Promise<void>;
@@ -163,13 +165,28 @@ function renderUpdate(u: UpdateStatus): void {
     idle: 'Up to date',
     checking: 'Checking for updates…',
     current: 'Up to date',
+    available: `Version ${u.version ?? '?'} available`,
     downloading: u.percent === null ? 'Downloading update…' : `Downloading update… ${u.percent}%`,
     installing: `Installing ${u.version ?? 'update'} — the node will restart`,
     error: 'Update check failed',
   };
   badge.textContent = labels[u.state];
-  // Only the two states the user might need to act on get colour.
+  // Only the states the user might need to act on get colour.
   badge.dataset.state = u.state === 'error' ? 'not-running' : u.state === 'installing' ? 'ok' : '';
+
+  // An offered update stays reachable here, so declining the popup is not a dead end.
+  const offered = u.state === 'available';
+  $('btn-update-install').classList.toggle('hidden', !offered);
+  // Nothing to check for while an update is already on its way in.
+  $('btn-update-check').classList.toggle('hidden', u.state === 'downloading' || u.state === 'installing');
+
+  const detail = $('update-detail');
+  detail.classList.toggle('hidden', !offered);
+  if (offered) {
+    detail.textContent =
+      'Installing restarts the node agent — it shows offline in the panel for a few seconds. ' +
+      'Game servers keep running.';
+  }
 }
 
 /* ---------- logs ---------- */
@@ -317,6 +334,17 @@ function wire(): void {
   });
 
   $('btn-open-data').addEventListener('click', () => api.openDataDir());
+
+  $('btn-update-check').addEventListener('click', async () => {
+    await api.checkForUpdate();
+    toast('Checking for updates…');
+  });
+
+  $('btn-update-install').addEventListener('click', async () => {
+    await api.installUpdate();
+    toast('Downloading the update. The node restarts when it is ready.');
+  });
+
   $('btn-open-log').addEventListener('click', () => api.openLogFile());
   $('btn-clear-logs').addEventListener('click', () => api.clearLogs());
 

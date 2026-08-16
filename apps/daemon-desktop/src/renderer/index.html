@@ -66,8 +66,11 @@
             <span>Start this node automatically when I sign in to Windows</span>
           </label>
           <p class="muted">Closing the window keeps the node online in the system tray. Use Quit in the tray menu to take it offline.</p>
+          <p class="muted hidden" id="update-detail"></p>
           <div class="row">
             <button id="btn-open-data" class="btn small">Open data folder</button>
+            <button id="btn-update-install" class="btn small primary hidden">Install update</button>
+            <button id="btn-update-check" class="btn small">Check for updates</button>
             <span class="muted mono" id="fact-datadir"></span>
           </div>
         </div>
