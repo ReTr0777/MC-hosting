@@ -54,6 +54,13 @@ const daemonEntry = isPackaged
 /** Packages the bundle could not inline. Unpackaged, npm has already placed them. */
 const daemonModulePath = isPackaged ? path.join(app.getAppPath(), 'daemon-runtime', 'vendor') : null;
 
+/**
+ * The bundled tunnel client, shipped beside the asar because Windows cannot execute a
+ * binary from inside one. Unpackaged there is nothing to point at, so the daemon falls
+ * back to looking for frpc on PATH.
+ */
+const frpcPath = isPackaged ? path.join(process.resourcesPath, 'frpc.exe') : null;
+
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let store: ConfigStore;
@@ -296,6 +303,7 @@ app.whenReady().then(async () => {
     store.serversDir,
     app.getPath('userData'),
     daemonModulePath,
+    frpcPath,
     () => store.read().port,
     (m) => log.write('daemon', m)
   );

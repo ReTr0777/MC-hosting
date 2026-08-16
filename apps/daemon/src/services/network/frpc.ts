@@ -10,8 +10,22 @@ interface ProxyRule {
   remotePort: number;
 }
 
+/**
+ * The frpc executable to run.
+ *
+ * The Docker image installs it on PATH (see apps/daemon/Dockerfile). The desktop node
+ * app ships its own copy and points FRPC_PATH at it, because a Windows machine has no
+ * PATH entry for frpc and asking every node hoster to install one by hand defeats the
+ * point of an installer.
+ */
+function frpcBinary(): string {
+  return process.env.FRPC_PATH || 'frpc';
+}
+
 class TunnelManager {
   private frpcProcess: ChildProcess | null = null;
+  /** Set once frpc turns out to be unavailable, so the warning is not repeated on every reload. */
+  private binaryMissing = false;
   private frpConfigPath: string;
   private proxies: Map<string, ProxyRule> = new Map();
   private baseConfig: string = '';
@@ -61,10 +75,32 @@ remotePort = ${apiPort}
 
     this.writeConfig();
 
+    const binary = frpcBinary();
     console.log('[TunnelManager] Starting frpc tunnel client...');
-    this.frpcProcess = spawn('frpc', ['-c', this.frpConfigPath], {
+    this.frpcProcess = spawn(binary, ['-c', this.frpConfigPath], {
       stdio: 'pipe',
       detached: false,
+    });
+
+    /*
+     * Without this handler a failed spawn emits an unhandled 'error' event, which
+     * takes down the whole daemon — a node with a tunnel address typed into it would
+     * die on startup and stay dead. The tunnel is an optional extra: losing it must
+     * cost the tunnel and nothing else.
+     */
+    this.frpcProcess.on('error', (err: NodeJS.ErrnoException) => {
+      this.frpcProcess = null;
+      if (err.code !== 'ENOENT') {
+        console.error(`[TunnelManager] frpc failed to start: ${err.message}. Tunnelling is off; the node keeps running.`);
+        return;
+      }
+      if (this.binaryMissing) return;
+      this.binaryMissing = true;
+      console.error(
+        `[TunnelManager] frpc was not found (tried "${binary}"). Tunnelling is off and the node ` +
+          'keeps running, but players cannot reach servers on this machine through the tunnel. ' +
+          'Clear the tunnel server address to silence this, or set FRPC_PATH to an frpc binary.'
+      );
     });
 
     this.frpcProcess.stdout?.on('data', (data) => {

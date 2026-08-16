@@ -10,6 +10,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { bundleDaemon } from './bundle-daemon.mjs';
+import { fetchFrpc } from './fetch-frpc.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.join(here, '..');
@@ -76,5 +77,12 @@ fs.writeFileSync(
   path.join(stage, 'package.json'),
   JSON.stringify({ name: 'mc-hosting-daemon-runtime', version: '1.0.0', private: true, type: 'commonjs', main: 'index.js' }, null, 2)
 );
+
+/*
+ * 5. The tunnel client, which electron-builder picks up from build/frpc as an
+ *    extraResource. It cannot travel inside app.asar with everything else: Windows
+ *    cannot execute a binary that only exists inside an archive.
+ */
+await fetchFrpc();
 
 console.log(`Daemon staged at ${path.relative(repoRoot, stage)}`);

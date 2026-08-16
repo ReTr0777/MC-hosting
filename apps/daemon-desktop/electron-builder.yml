@@ -37,6 +37,14 @@ files:
 # optional ones (ssh2's crypto binding and cpu-features) are left out of the bundle
 # entirely — see scripts/bundle-daemon.mjs.
 
+# frpc is the one thing that cannot live in the asar: Windows cannot execute a binary
+# that exists only inside an archive. It is a single file rather than a tree, and the
+# daemon now survives its absence, so losing it costs the tunnel and nothing else.
+# Fetched and checksum-verified by scripts/fetch-frpc.mjs during `npm run stage`.
+extraResources:
+  - from: build/frpc/frpc.exe
+    to: frpc.exe
+
 win:
   target:
     - target: nsis

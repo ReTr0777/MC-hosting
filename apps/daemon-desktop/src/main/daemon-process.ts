@@ -43,6 +43,12 @@ export class DaemonProcess extends EventEmitter {
      * own — electron-builder strips anything called node_modules.
      */
     private readonly modulePath: string | null,
+    /**
+     * The frpc binary to hand the agent, or null to let it search PATH. Packaged, the
+     * app ships its own copy — a Windows machine has no frpc on PATH, and the tunnel
+     * would silently never come up.
+     */
+    private readonly frpcPath: string | null,
     private readonly getPort: () => number,
     /** Mirrors everything to the on-disk log; the in-memory buffer dies with the app. */
     private readonly toFile: (message: string) => void = () => {}
@@ -110,6 +116,7 @@ export class DaemonProcess extends EventEmitter {
         DAEMON_DATA_DIR: this.serversDir,
         DAEMON_PORT: String(this.getPort()),
         ...(this.modulePath ? { NODE_PATH: this.modulePath } : {}),
+        ...(this.frpcPath ? { FRPC_PATH: this.frpcPath } : {}),
       },
       cwd: this.workingDir,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
