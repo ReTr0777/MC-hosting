@@ -7,6 +7,10 @@ export interface NodeCredentials {
 }
 
 export class DaemonClient {
+  /** Applies to every call that does not ask for something longer. */
+  static readonly DEFAULT_TIMEOUT_MS = 15000;
+  static readonly HEALTH_TIMEOUT_MS = DaemonClient.DEFAULT_TIMEOUT_MS;
+
   private baseUrl: string;
   private apiKey: string;
 
@@ -16,7 +20,7 @@ export class DaemonClient {
     this.apiKey = node.apiKey;
   }
 
-  public async request<T>(endpoint: string, options: RequestInit = {}, timeoutMs = 5000): Promise<T> {
+  public async request<T>(endpoint: string, options: RequestInit = {}, timeoutMs = DaemonClient.DEFAULT_TIMEOUT_MS): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -26,9 +30,18 @@ export class DaemonClient {
 
     let res: Response;
     try {
-      // Short default timeout catches an unreachable/dead daemon fast. Calls that make the
-      // daemon do heavy synchronous work (e.g. extracting a large modpack zip) pass a longer
-      // timeoutMs explicitly — see completeChunkedUpload below.
+      /*
+       * This timeout does not govern how fast a dead node is noticed, which is the job
+       * it used to be given. A node that is off or unreachable refuses the connection
+       * immediately — the error arrives in milliseconds, never through this path. The
+       * timeout only ever applies to a node that accepted the connection and is simply
+       * taking its time: an Unraid array spinning its disks up to list backups, or a
+       * reply crossing a tunnel and a mobile link. Cutting those short does not detect
+       * anything sooner, it just reports a working node as broken.
+       *
+       * Calls that make the daemon do heavy synchronous work (e.g. extracting a large
+       * modpack zip) pass a longer timeoutMs explicitly — see completeChunkedUpload.
+       */
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -58,19 +71,13 @@ export class DaemonClient {
   }
 
   /**
-   * The default 5s is a LAN assumption, and a node reached over a tunnel breaks it.
+   * Takes a timeout because this is the call that decides the online badge.
    *
-   * This endpoint does real work before it answers — CPU, disk and temperature stats —
-   * on hardware that may be a laptop, and the reply then travels back through an frps
-   * server and whatever link the node is on. A remote node that is perfectly healthy
-   * can take longer than five seconds, and every timeout reads as "offline", which is
-   * indistinguishable from a node that is genuinely down.
-   *
-   * Callers that poll should pass something generous; the cost of waiting is a slower
-   * offline indication, and the cost of not waiting is a working node shown as dead.
+   * It does real work before answering — CPU, disk and temperature stats — on hardware
+   * that may be a laptop, and the reply then travels back through whatever link the
+   * node is on. Every timeout here renders as "offline", which is indistinguishable
+   * from a node that is genuinely down, so pollers should be generous.
    */
-  static readonly HEALTH_TIMEOUT_MS = 15000;
-
   async getHealth(timeoutMs?: number): Promise<DaemonHealthDto> {
     return this.request<DaemonHealthDto>('/system/health', {}, timeoutMs);
   }
@@ -167,7 +174,7 @@ export class DaemonClient {
   }
 
   async uploadChunk(serverId: string, uploadId: string, chunkIndex: number, chunk: Buffer): Promise<{ success: boolean }> {
-    // The 5s default timeout is meant to catch a dead daemon fast, but a 20MB chunk over a
+    // The default timeout suits a request the daemon answers promptly, but a 20MB chunk over a
     // slow upload connection or through the frp tunnel can easily take longer than that to
     // transfer. Aborting mid-transfer and letting the client immediately retry the same chunk
     // index risked a second write racing the still-draining first one on the daemon's disk,
@@ -186,7 +193,7 @@ export class DaemonClient {
   async completeChunkedUpload(serverId: string, uploadId: string, fileName: string, totalChunks: number, isServerpack = true, targetPath = '', isFullImport = false, totalBytes?: number): Promise<{ message: string }> {
     // Reassembles the chunks and, for serverpacks, extracts+detects the launch setup
     // synchronously before responding — large modpacks can take minutes, well past the
-    // default 5s connectivity timeout. A Modrinth .mrpack goes further still: the daemon has to
+    // default connectivity timeout. A Modrinth .mrpack goes further still: the daemon has to
     // fetch every mod listed in the manifest and run the loader's own server installer before it
     // can answer, so this budget covers a slow CDN plus a Forge/NeoForge install.
     return this.request<{ message: string }>(`/servers/${serverId}/upload-complete`, {
