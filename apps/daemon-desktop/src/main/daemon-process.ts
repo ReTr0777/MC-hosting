@@ -135,20 +135,38 @@ export class DaemonProcess extends EventEmitter {
     }
 
     /*
-     * The IMAGENAME filter is what makes this safe. Windows reuses process ids, so the
-     * recorded one may since have been handed to something unrelated; taskkill only
-     * acts if the pid is genuinely an frpc.exe. Synchronous, because the caller is
-     * about to start a replacement and must not race it.
+     * Signal 0 asks "does this pid exist" without touching it, and the answer is
+     * usually no: an agent that died still leaves its file behind. Checking first
+     * means the common case spawns nothing at all.
      */
     try {
-      execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F', '/FI', 'IMAGENAME eq frpc.exe'], {
-        stdio: 'ignore',
+      process.kill(pid, 0);
+    } catch {
+      fs.rmSync(this.tunnelPidPath, { force: true });
+      return;
+    }
+
+    /*
+     * It exists — but Windows reuses process ids, so it may be something else entirely
+     * by now. The IMAGENAME filter is what makes this safe: taskkill acts only if the
+     * pid is genuinely an frpc.exe. Synchronous, because the caller is about to start a
+     * replacement and must not race it.
+     *
+     * The output decides what to report. taskkill exits 0 whether it killed something
+     * or merely found nothing matching, so trusting the exit code alone produces a log
+     * line claiming a cleanup that never happened.
+     */
+    try {
+      const out = execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F', '/FI', 'IMAGENAME eq frpc.exe'], {
+        encoding: 'utf8',
         timeout: 10_000,
       });
-      this.log('app', `Cleared a tunnel client left behind by an earlier run (pid ${pid}).`);
+      if (out.includes('SUCCESS')) {
+        this.log('app', `Cleared a tunnel client left behind by an earlier run (pid ${pid}).`);
+      }
     } catch {
-      // Already gone, or the pid now belongs to something else and the filter spared
-      // it. Either way there is nothing stranded, which is the outcome we wanted.
+      // Gone between the check and the kill, or the pid now belongs to something else
+      // and the filter spared it. Either way nothing is stranded, which is the point.
     }
     fs.rmSync(this.tunnelPidPath, { force: true });
   }

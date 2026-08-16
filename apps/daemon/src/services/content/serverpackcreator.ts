@@ -178,6 +178,12 @@ export async function buildServerWithServerPackCreator(config: ServerPackCreator
         child.stdout.on('data', (data) => console.log(`[SPC CLI] ${data.toString().trim()}`));
         child.stderr.on('data', (data) => console.warn(`[SPC CLI WARN] ${data.toString().trim()}`));
 
+        // See the matching handler in curseforge.ts: the jar is checked for, the JVM
+        // that runs it is not, and a node without Java is ordinary on Windows.
+        child.on('error', (err: NodeJS.ErrnoException) => {
+          reject(new Error(err.code === 'ENOENT' ? 'Java is not installed on this node, so the modpack could not be prepared' : `ServerPackCreator CLI could not start: ${err.message}`));
+        });
+
         child.on('close', (code) => {
           if (code === 0) resolve();
           else reject(new Error(`ServerPackCreator CLI exited with status code ${code}`));

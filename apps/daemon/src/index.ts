@@ -1,3 +1,8 @@
+// First, deliberately: this registers the process-level guards before any other
+// module's top-level code runs and gets the chance to fail.
+import { installProcessGuards } from './guards';
+installProcessGuards();
+
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -74,6 +79,29 @@ server.on('upgrade', (request, socket, head) => {
   } else {
     socket.destroy();
   }
+});
+
+/*
+ * The one failure that must stay fatal.
+ *
+ * Everything else in this process is allowed to fail and carry on, but a node that
+ * cannot listen is not a node — and the guards in ./guards would otherwise turn this
+ * into a process that stays alive answering nothing, which looks identical to a
+ * healthy node from the outside and is far worse than exiting.
+ *
+ * The literal error code belongs in the message: the desktop app reads stderr for it
+ * to tell a port clash apart from a crash.
+ */
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `[Daemon] Port ${config.port} is already in use (EADDRINUSE). Another node agent — or a ` +
+        'daemon running in Docker — already has it. Change the port, or stop the other one.'
+    );
+  } else {
+    console.error(`[Daemon] The API server could not start: ${err.code ?? ''} ${err.message}`.trim());
+  }
+  process.exit(1);
 });
 
 server.listen(config.port, () => {

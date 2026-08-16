@@ -434,6 +434,29 @@ class ProcessManager extends EventEmitter {
     // conflict. FRP tunnels are only used for Docker-container-mode servers.
     // (No tunnel registration here)
 
+    /*
+     * A server that cannot be launched is a failed server, not a failed node.
+     *
+     * Both spawn paths above run an interpreter this machine may simply not have —
+     * java, or bash on a Windows node. Unhandled, that arrives as an 'error' event
+     * with no listener, which throws and takes the daemon down along with every other
+     * server it was hosting. Report it the same way any other start failure is
+     * reported, so the panel shows why.
+     */
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      const message =
+        err.code === 'ENOENT'
+          ? `Could not start '${dto.serverId}': the runtime it needs is not installed on this node (${err.path ?? 'command not found'}).`
+          : `Could not start '${dto.serverId}': ${err.message}`;
+      console.error(`[ProcessManager] ${message}`);
+      mp.status = 'OFFLINE';
+      provisioningManager.emit('status', {
+        serverId: dto.serverId,
+        status: STATUS.FAILED,
+        error: message,
+      });
+    });
+
     const handleData = (data: Buffer) => {
       const text = data.toString('utf8');
       const lines = text.split(/\r?\n/);
@@ -609,6 +632,23 @@ class ProcessManager extends EventEmitter {
       };
 
       this.processes.set(dto.serverId, mp);
+
+      // Same reasoning as the Minecraft path: a game binary this machine does not
+      // have must fail this server, not the daemon hosting the others.
+      child.on('error', (err: NodeJS.ErrnoException) => {
+        const message =
+          err.code === 'ENOENT'
+            ? `${definition.label} could not start: '${launch.command}' is not installed on this node.`
+            : `${definition.label} could not start: ${err.message}`;
+        console.error(`[ProcessManager] ${message} (${dto.serverId})`);
+        if (readyTimer) clearTimeout(readyTimer);
+        mp.status = 'OFFLINE';
+        provisioningManager.emit('status', {
+          serverId: dto.serverId,
+          status: STATUS.FAILED,
+          error: message,
+        });
+      });
 
       // The hang this guards against produces no output at all, so a timer is
       // the only thing that can detect it. Fail loudly rather than leaving a

@@ -913,6 +913,15 @@ router.post('/:serverId/upload-complete', async (req: Request, res: Response) =>
       return await new Promise<void>((resolve) => {
         const tar = spawn('tar', ['-xzf', destinationPath, '-C', serverDir]);
         tar.stderr.on('data', (data) => console.warn(`[tar full-import stderr] ${data}`));
+        // No listener here and an unavailable tar would throw out of the promise and
+        // kill the node; it must also resolve, or this request never answers.
+        tar.on('error', (err: NodeJS.ErrnoException) => {
+          const detail = err.code === 'ENOENT' ? 'tar is not available on this node' : err.message;
+          console.error(`[Daemon API] tar full-import could not start: ${detail}`);
+          fs.rmSync(destinationPath, { force: true });
+          if (!res.headersSent) res.status(500).json({ error: `Archive extraction failed: ${detail}` });
+          resolve();
+        });
         tar.on('close', (code) => {
           fs.rmSync(destinationPath, { force: true });
           if (code !== 0) {
@@ -1192,6 +1201,15 @@ router.get('/:serverId/export', async (req: Request, res: Response) => {
   // tar -czf - -C /path/to/server .
   const tar = spawn('tar', ['-czf', '-', '-C', serverDir, '.']);
 
+  // Without this an unavailable tar emits an 'error' event with no listener, and the
+  // export takes the whole node down with it rather than failing one download.
+  tar.on('error', (err: NodeJS.ErrnoException) => {
+    const detail = err.code === 'ENOENT' ? 'tar is not available on this node' : err.message;
+    console.error(`[Daemon API] tar export could not start: ${detail}`);
+    if (!res.headersSent) res.status(500).json({ error: `Export failed: ${detail}` });
+    else res.destroy();
+  });
+
   tar.stdout.pipe(res);
 
   tar.stderr.on('data', (data) => {
@@ -1228,6 +1246,14 @@ router.post('/import', (req: Request, res: Response) => {
 
   // tar -xzf - -C /path/to/server
   const tar = spawn('tar', ['-xzf', '-', '-C', serverDir]);
+
+  // As with export: one unavailable tool must fail one import, not the node.
+  tar.on('error', (err: NodeJS.ErrnoException) => {
+    const detail = err.code === 'ENOENT' ? 'tar is not available on this node' : err.message;
+    console.error(`[Daemon API] tar import could not start: ${detail}`);
+    req.unpipe(tar.stdin);
+    if (!res.headersSent) res.status(500).json({ error: `Import failed: ${detail}` });
+  });
 
   req.pipe(tar.stdin);
 
