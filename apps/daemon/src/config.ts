@@ -13,6 +13,17 @@ export interface DaemonConfig {
   frpServerAddr?: string;
   frpServerPort?: number;
   frpToken?: string;
+  /**
+   * Port on the tunnel server that maps back to this node's API, or unset for no
+   * such mapping.
+   *
+   * The panel reaches a node by connecting *to* it, which a node behind NAT — a
+   * machine at someone else's house, or on the far side of a second router — cannot
+   * accept. Its tunnel connection runs the other way and already works, so this
+   * publishes the API along it: the panel then registers the node as
+   * <tunnel server>:<this port> instead of an address it could never route to.
+   */
+  frpApiRemotePort?: number;
   s3Endpoint?: string;
   s3Bucket?: string;
   s3Region?: string;
@@ -34,6 +45,9 @@ const defaultConfig: DaemonConfig = {
   frpServerAddr: process.env.FRP_SERVER_ADDR || '',
   frpServerPort: parseInt(process.env.FRP_SERVER_PORT || '7000', 10),
   frpToken: process.env.FRP_TOKEN || '',
+  // FRP_DAEMON_API_PORT predates the config field and still works, so a Docker node
+  // set up through env vars keeps behaving as it did.
+  frpApiRemotePort: process.env.FRP_DAEMON_API_PORT ? parseInt(process.env.FRP_DAEMON_API_PORT, 10) : undefined,
   s3RetainLocal: true,
   enabledGames: [...DEFAULT_ENABLED_GAMES],
 };

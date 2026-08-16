@@ -231,6 +231,11 @@ function registerIpc(): void {
     if (typeof patch.frpServerAddr === 'string') clean.frpServerAddr = patch.frpServerAddr.trim();
     if (typeof patch.frpServerPort === 'number') clean.frpServerPort = patch.frpServerPort;
     if (typeof patch.frpToken === 'string') clean.frpToken = patch.frpToken;
+    // Stored as 0 rather than removed, so clearing the field is a value the daemon
+    // reads as "do not publish" instead of falling back to a stale setting.
+    if (typeof patch.frpApiRemotePort === 'number') {
+      clean.frpApiRemotePort = patch.frpApiRemotePort > 0 ? patch.frpApiRemotePort : 0;
+    }
     // An empty list would make the node invisible to the panel's picker, with no
     // obvious way to recover from inside the app. Refuse instead of silently fixing.
     if (Array.isArray(patch.enabledGames)) {

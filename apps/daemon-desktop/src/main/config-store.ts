@@ -68,6 +68,9 @@ export class ConfigStore {
       frpServerAddr: typeof raw.frpServerAddr === 'string' ? raw.frpServerAddr : '',
       frpServerPort: typeof raw.frpServerPort === 'number' ? raw.frpServerPort : 7000,
       frpToken: typeof raw.frpToken === 'string' ? raw.frpToken : '',
+      // 0 means "not published": the UI shows an empty field, and the daemon leaves
+      // the API off the tunnel entirely.
+      frpApiRemotePort: typeof raw.frpApiRemotePort === 'number' ? raw.frpApiRemotePort : 0,
       enabledGames: Array.isArray(raw.enabledGames) ? (raw.enabledGames as string[]) : ['MINECRAFT'],
       dataDir: typeof raw.dataDir === 'string' ? raw.dataDir : this.serversDir,
     };

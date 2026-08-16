@@ -28,6 +28,8 @@ export interface NodeConfig {
   frpServerAddr: string;
   frpServerPort: number;
   frpToken: string;
+  /** Tunnel-server port that maps back to this node's API; 0 when not published. */
+  frpApiRemotePort: number;
   enabledGames: string[];
   dataDir: string;
 }

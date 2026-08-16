@@ -80,6 +80,7 @@ router.get('/config', requireSetupPassword, (req: Request, res: Response) => {
     frpServerAddr: config.frpServerAddr,
     frpServerPort: config.frpServerPort,
     frpToken: config.frpToken,
+    frpApiRemotePort: config.frpApiRemotePort,
     deviceIps: info.deviceIps,
     requestHostIp: info.requestHostIp,
     hostname: info.hostname,
@@ -91,13 +92,18 @@ router.get('/config', requireSetupPassword, (req: Request, res: Response) => {
 });
 
 router.post('/config', requireSetupPassword, (req: Request, res: Response) => {
-  const { apiKey, frpServerAddr, frpServerPort, frpToken, newSetupPassword, enabledGames } = req.body;
+  const { apiKey, frpServerAddr, frpServerPort, frpToken, frpApiRemotePort, newSetupPassword, enabledGames } = req.body;
 
   const updates: any = {};
   if (apiKey !== undefined) updates.apiKey = apiKey;
   if (frpServerAddr !== undefined) updates.frpServerAddr = frpServerAddr;
   if (frpServerPort !== undefined) updates.frpServerPort = parseInt(frpServerPort, 10);
   if (frpToken !== undefined) updates.frpToken = frpToken;
+  // Empty clears the mapping; the tunnel then carries game servers only.
+  if (frpApiRemotePort !== undefined) {
+    const parsed = parseInt(frpApiRemotePort, 10);
+    updates.frpApiRemotePort = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
   if (newSetupPassword) updates.setupPassword = newSetupPassword;
 
   if (enabledGames !== undefined) {
@@ -116,7 +122,7 @@ router.post('/config', requireSetupPassword, (req: Request, res: Response) => {
 
 
   // If FRP settings changed, dynamically restart the tunnel manager!
-  if (frpServerAddr || frpServerPort || frpToken) {
+  if (frpServerAddr || frpServerPort || frpToken || frpApiRemotePort !== undefined) {
     console.log('[Setup] FRP settings changed. Restarting tunnel manager...');
     tunnelManager.init(); // This re-generates frpc.toml and restarts the process
   }

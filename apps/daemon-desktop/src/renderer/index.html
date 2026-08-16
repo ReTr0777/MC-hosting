@@ -145,6 +145,16 @@
             <span>Tunnel token</span>
             <input id="inp-frp-token" type="password" />
           </label>
+          <label class="field">
+            <span>Panel access port (optional)</span>
+            <input id="inp-frp-api-port" type="number" min="1" max="65535" placeholder="e.g. 3501 — leave empty if the panel can already reach this machine" />
+          </label>
+          <p class="muted">
+            Only needed when the panel cannot open a connection to this machine — a node at
+            another house, or behind a second router. Pick a free port on the tunnel server,
+            then register this node in the panel as <em>tunnel server address : this port</em>
+            instead of this machine's own IP.
+          </p>
           <div class="row">
             <button id="btn-save-tunnel" class="btn primary">Save and restart node</button>
             <span id="tunnel-saved" class="muted hidden">Saved.</span>

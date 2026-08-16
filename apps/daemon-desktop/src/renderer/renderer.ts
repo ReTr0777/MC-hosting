@@ -25,6 +25,8 @@ interface NodeConfig {
   frpServerAddr: string;
   frpServerPort: number;
   frpToken: string;
+  /** Tunnel-server port mapping back to this node's API; 0 when not published. */
+  frpApiRemotePort: number;
   enabledGames: string[];
   dataDir: string;
 }
@@ -218,6 +220,8 @@ function renderConfig(): void {
   $<HTMLInputElement>('inp-frp-addr').value = config.frpServerAddr;
   $<HTMLInputElement>('inp-frp-port').value = String(config.frpServerPort);
   $<HTMLInputElement>('inp-frp-token').value = config.frpToken;
+  // 0 is "not published" — show it as empty rather than as a port nobody chose.
+  $<HTMLInputElement>('inp-frp-api-port').value = config.frpApiRemotePort ? String(config.frpApiRemotePort) : '';
 
   const row = $('games-row');
   row.textContent = '';
@@ -320,10 +324,15 @@ function wire(): void {
       frpServerAddr: $<HTMLInputElement>('inp-frp-addr').value,
       frpServerPort: Number($<HTMLInputElement>('inp-frp-port').value) || 7000,
       frpToken: $<HTMLInputElement>('inp-frp-token').value,
+      frpApiRemotePort: Number($<HTMLInputElement>('inp-frp-api-port').value) || 0,
     });
     renderConfig();
     await api.restart();
-    toast('Tunnel settings saved. Node restarting.');
+    toast(
+      config.frpApiRemotePort
+        ? `Saved. Register this node in the panel as ${config.frpServerAddr}:${config.frpApiRemotePort}`
+        : 'Tunnel settings saved. Node restarting.'
+    );
   });
 
   $('chk-autostart').addEventListener('change', async (e) => {

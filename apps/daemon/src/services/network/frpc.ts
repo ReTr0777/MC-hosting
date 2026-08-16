@@ -51,7 +51,7 @@ class TunnelManager {
     const serverAddr = config.frpServerAddr;
     const serverPort = config.frpServerPort || 7000;
     const token = config.frpToken;
-    const apiPort = process.env.FRP_DAEMON_API_PORT;
+    const apiPort = config.frpApiRemotePort;
 
     if (!serverAddr) {
       console.log('[TunnelManager] FRP Server Address not configured. Tunneling disabled.');
@@ -68,12 +68,19 @@ ${apiPort ? `
 name = "daemon-api-${apiPort}"
 type = "tcp"
 localIP = "127.0.0.1"
-localPort = 3500
+localPort = ${config.port}
 remotePort = ${apiPort}
 ` : ''}
     `.trim() + '\n\n';
 
     this.writeConfig();
+
+    if (apiPort) {
+      console.log(
+        `[TunnelManager] Publishing this node's API at ${serverAddr}:${apiPort}. ` +
+          'Register the node in the panel at that address, not at this machine\'s own IP.'
+      );
+    }
 
     const binary = frpcBinary();
     console.log('[TunnelManager] Starting frpc tunnel client...');
