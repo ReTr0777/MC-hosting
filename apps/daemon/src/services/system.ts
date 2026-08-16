@@ -9,7 +9,72 @@ const docker = new Docker();
 let _prevNetStats: Awaited<ReturnType<typeof si.networkStats>> | null = null;
 let _prevNetTime = Date.now();
 
+/*
+ * Health is polled, so it has to be cheap — and on Windows it very much was not.
+ *
+ * Several systeminformation calls shell out to PowerShell there, and starting an
+ * interpreter costs hundreds of milliseconds of CPU each time. The panel polls every
+ * node every five seconds, every open dashboard tab runs its own loop, and each poll
+ * used to run nine of these from scratch. Slow replies then overran the panel's
+ * timeout, which retried, which started more of them: a laptop ended up at 70% CPU
+ * with a pile of PowerShell processes, and the node it was hosting flickered offline
+ * because its own health check was what kept it busy.
+ *
+ * Two things fix it. Concurrent callers share one computation instead of each starting
+ * their own, which is what stops the pile-up; and a short cache means a burst of polls
+ * costs one measurement rather than one each.
+ */
+const HEALTH_TTL_MS = 4_000;
+/** Facts about the machine that do not change while it is running. */
+const STATIC_TTL_MS = 10 * 60_000;
+/** Slowest call by far on Windows, and the least important thing on the page. */
+const TEMP_TTL_MS = 60_000;
+
+let healthCache: { at: number; value: DaemonHealthDto } | null = null;
+let healthInFlight: Promise<DaemonHealthDto> | null = null;
+
+function cached<T>(ttlMs: number, load: () => Promise<T>) {
+  let at = 0;
+  let value: T | null = null;
+  let inFlight: Promise<T> | null = null;
+  return async (): Promise<T> => {
+    if (value !== null && Date.now() - at < ttlMs) return value;
+    if (inFlight) return inFlight;
+    inFlight = load()
+      .then((result) => {
+        value = result;
+        at = Date.now();
+        return result;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+}
+
+const cpuInfoCached = cached(STATIC_TTL_MS, () => si.cpu());
+const osInfoCached = cached(STATIC_TTL_MS, () => si.osInfo());
+const cpuTempCached = cached(TEMP_TTL_MS, () => si.cpuTemperature().catch(() => ({ main: null as number | null })));
+
 export async function getSystemHealth(): Promise<DaemonHealthDto> {
+  const fresh = healthCache && Date.now() - healthCache.at < HEALTH_TTL_MS;
+  if (fresh && healthCache) return healthCache.value;
+  if (healthInFlight) return healthInFlight;
+
+  healthInFlight = collectSystemHealth()
+    .then((value) => {
+      healthCache = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      healthInFlight = null;
+    });
+
+  return healthInFlight;
+}
+
+async function collectSystemHealth(): Promise<DaemonHealthDto> {
   let dockerAvailable = false;
   try {
     await docker.ping();
@@ -22,12 +87,14 @@ export async function getSystemHealth(): Promise<DaemonHealthDto> {
     si.currentLoad(),
     si.mem(),
     si.time(),
-    si.cpu(),
+    // Model, cores and OS do not change while the process runs, and temperature is
+    // both the slowest to read and the least urgent to be current.
+    cpuInfoCached(),
     si.fsSize(),
-    si.osInfo(),
+    osInfoCached(),
     si.networkStats(),
     si.networkInterfaces(),
-    si.cpuTemperature().catch(() => ({ main: null })),
+    cpuTempCached(),
   ]);
 
   // --- Disk usage ---
