@@ -1,3 +1,4 @@
+import os from 'os';
 import si from 'systeminformation';
 import Docker from 'dockerode';
 import { DaemonHealthDto, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
@@ -57,6 +58,70 @@ const cpuInfoCached = cached(STATIC_TTL_MS, () => si.cpu());
 const osInfoCached = cached(STATIC_TTL_MS, () => si.osInfo());
 const cpuTempCached = cached(TEMP_TTL_MS, () => si.cpuTemperature().catch(() => ({ main: null as number | null })));
 
+/*
+ * Everything below is measured on a timescale that suits what it describes, because on
+ * Windows each of these shells out and none of them is cheap. Timed on a desktop:
+ * networkStats 3.5s, networkInterfaces 1.4s, fsSize 0.8s, mem 0.9s. Running that set on
+ * every poll is what put a laptop at 50% CPU.
+ *
+ * The network figures are the extreme case — the panel reads no part of them, so they
+ * cost seconds per poll to produce something nothing displays.
+ */
+const SLOW_TTL_MS = 60_000;
+
+/*
+ * Each of these falls back rather than rejecting. They are extras on a page — a disk
+ * list, a swap figure, a network rate — and a node that cannot read one of them is
+ * still a node. Letting the failure through would fail the whole health check, which
+ * the panel reads as the node being down: the least useful stat on the page taking
+ * the node offline.
+ */
+const fsSizeCached = cached(SLOW_TTL_MS, () => si.fsSize().catch(() => [] as Awaited<ReturnType<typeof si.fsSize>>));
+/** Only swap is taken from here; the live totals come from os, which costs nothing. */
+const swapCached = cached(SLOW_TTL_MS, () => si.mem().catch(() => ({ swapused: 0, swaptotal: 0 } as Awaited<ReturnType<typeof si.mem>>)));
+const netCached = cached(SLOW_TTL_MS, async () => {
+  const [stats, ifaces] = await Promise.all([
+    si.networkStats().catch(() => [] as Awaited<ReturnType<typeof si.networkStats>>),
+    si.networkInterfaces().catch(() => [] as Awaited<ReturnType<typeof si.networkInterfaces>>),
+  ]);
+  return { stats, ifaces };
+});
+
+/*
+ * Live CPU without a subprocess.
+ *
+ * os.cpus() reports cumulative busy and idle ticks, so the load over an interval is the
+ * ratio of their deltas. si.currentLoad() computes the same thing by asking Windows,
+ * which costs half a second; this costs microseconds and needs no cache at all.
+ */
+let prevTicks: { idle: number; total: number } | null = null;
+
+function readTicks(): { idle: number; total: number } {
+  let idle = 0;
+  let total = 0;
+  for (const core of os.cpus()) {
+    for (const [kind, ticks] of Object.entries(core.times) as [string, number][]) {
+      total += ticks;
+      if (kind === 'idle') idle += ticks;
+    }
+  }
+  return { idle, total };
+}
+
+function cpuUsagePercent(): number {
+  const now = readTicks();
+  const prev = prevTicks;
+  prevTicks = now;
+  // Nothing to compare against on the first call, and no history to invent.
+  if (!prev) return 0;
+
+  const idleDelta = now.idle - prev.idle;
+  const totalDelta = now.total - prev.total;
+  if (totalDelta <= 0) return 0;
+
+  return Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
+}
+
 export async function getSystemHealth(): Promise<DaemonHealthDto> {
   const fresh = healthCache && Date.now() - healthCache.at < HEALTH_TTL_MS;
   if (fresh && healthCache) return healthCache.value;
@@ -83,19 +148,21 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
     dockerAvailable = false;
   }
 
-  const [cpu, mem, time, cpuInfo, fsSize, osInfo, netStats, netIfaces, cpuTemp] = await Promise.all([
-    si.currentLoad(),
-    si.mem(),
-    si.time(),
-    // Model, cores and OS do not change while the process runs, and temperature is
-    // both the slowest to read and the least urgent to be current.
+  // The live figures come from os: exact, instant, and no process spawned.
+  const cpuUsage = cpuUsagePercent();
+  const totalBytes = os.totalmem();
+  const freeBytes = os.freemem();
+  const uptimeSeconds = os.uptime();
+
+  const [cpuInfo, fsSize, osInfo, net, cpuTemp, swap] = await Promise.all([
     cpuInfoCached(),
-    si.fsSize(),
+    fsSizeCached(),
     osInfoCached(),
-    si.networkStats(),
-    si.networkInterfaces(),
+    netCached(),
     cpuTempCached(),
+    swapCached(),
   ]);
+  const { stats: netStats, ifaces: netIfaces } = net;
 
   // --- Disk usage ---
   const diskUsage = fsSize
@@ -142,14 +209,14 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
 
   return {
     status: dockerAvailable ? 'ok' : 'degraded',
-    uptime: Math.floor(time.uptime),
-    cpuUsage: Math.round(cpu.currentLoad * 100) / 100,
+    uptime: Math.floor(uptimeSeconds),
+    cpuUsage: Math.round(cpuUsage * 100) / 100,
     memoryUsage: {
-      used: Math.round(mem.active / (1024 * 1024)),
-      total: Math.round(mem.total / (1024 * 1024)),
-      free: Math.round(mem.available / (1024 * 1024)),
-      swapUsed: Math.round(mem.swapused / (1024 * 1024)),
-      swapTotal: Math.round(mem.swaptotal / (1024 * 1024)),
+      used: Math.round((totalBytes - freeBytes) / (1024 * 1024)),
+      total: Math.round(totalBytes / (1024 * 1024)),
+      free: Math.round(freeBytes / (1024 * 1024)),
+      swapUsed: Math.round(swap.swapused / (1024 * 1024)),
+      swapTotal: Math.round(swap.swaptotal / (1024 * 1024)),
     },
     dockerAvailable,
     cpuModel: `${cpuInfo.manufacturer} ${cpuInfo.brand}`.trim(),

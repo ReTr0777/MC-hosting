@@ -29,8 +29,10 @@ const STABLE_MS = 60_000;
 
 class TunnelManager {
   private frpcProcess: ChildProcess | null = null;
-  /** Set once frpc turns out to be unusable, so the warning is not repeated on every reload. */
+  /** Set when frpc cannot be launched at all and retrying would not help, which stops the supervisor. */
   private spawnFailed = false;
+  /** Separate from the above purely to keep the explanation out of the log on every retry. */
+  private failureReported = false;
   /** True while we are taking frpc down on purpose, so its exit is not treated as a fault. */
   private intentionalStop = false;
   private restartTimer: NodeJS.Timeout | null = null;
@@ -156,6 +158,14 @@ remotePort = ${apiPort}
 
     this.startedAt = Date.now();
     this.intentionalStop = false;
+    /*
+     * It launched, so whatever was wrong before is no longer wrong. Without this the
+     * flags latch for the life of the process: one transient failure — an antivirus
+     * scan holding the file for a moment — would silently disable the supervisor, and
+     * a tunnel that dropped hours later would never come back.
+     */
+    this.spawnFailed = false;
+    this.failureReported = false;
 
     const started = this.frpcProcess;
     this.frpcProcess.on('exit', (code) => {
@@ -276,10 +286,22 @@ remotePort = ${apiPort}
    */
   private reportSpawnFailure(err: NodeJS.ErrnoException, binary: string): void {
     this.frpcProcess = null;
+
+    /*
+     * A locked file is the one failure here that clears on its own — an antivirus scan
+     * finishes, and the next attempt works. The others describe a binary that is absent
+     * or refused, which no amount of retrying changes, so those stop the supervisor
+     * rather than have it spawn into the same wall every minute.
+     */
+    const retryable = err.code === 'EBUSY';
+
     // init() runs again on every tunnel change, and repeating the whole explanation
     // each time buries the log the operator is trying to read.
-    if (this.spawnFailed) return;
-    this.spawnFailed = true;
+    const firstReport = !this.failureReported;
+    this.failureReported = true;
+    if (retryable) this.scheduleRestart();
+    else this.spawnFailed = true;
+    if (!firstReport) return;
 
     const tail =
       'Tunnelling is off and the node keeps running, but players cannot reach servers on ' +
