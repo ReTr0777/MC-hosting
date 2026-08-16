@@ -31,6 +31,7 @@ class TunnelManager {
   private baseConfig: string = '';
   
   constructor() {
+    this.registerCleanup();
     const dataDir = getConfig().dataDir;
     // frpc.toml lives one level above the servers subdir (e.g. /app/data/frpc.toml)
     const baseDataDir = path.dirname(dataDir);
@@ -119,6 +120,39 @@ remotePort = ${apiPort}
       console.warn(`[TunnelManager] frpc process exited with code ${code}`);
       this.frpcProcess = null;
     });
+  }
+
+  /**
+   * Takes frpc down with the daemon.
+   *
+   * frpc is a child process, not a subprocess of the OS's imagination: when the daemon
+   * goes away it keeps running, keeps its control connection to the tunnel server, and
+   * keeps its proxy registered. The next daemon start then registers the same remote
+   * port against a server that still believes the dead one owns it, so the tunnel
+   * server accepts connections and forwards them nowhere — a node that answers for a
+   * moment and then hangs forever, which is far harder to diagnose than one that is
+   * plainly down.
+   *
+   * Signals are not delivered on Windows, where a killed parent leaves frpc orphaned
+   * regardless; the desktop app kills the process tree for that case.
+   */
+  private registerCleanup(): void {
+    const stop = () => {
+      if (!this.frpcProcess) return;
+      this.frpcProcess.kill();
+      this.frpcProcess = null;
+    };
+
+    // 'exit' handlers must be synchronous, which kill() is.
+    process.on('exit', stop);
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+      process.on(signal, () => {
+        stop();
+        // Re-raising would need the default handler back; exiting here is equivalent
+        // and keeps the code obvious.
+        process.exit(0);
+      });
+    }
   }
 
   /**

@@ -1,4 +1,4 @@
-import { fork, ChildProcess } from 'child_process';
+import { fork, execFile, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import type { DaemonStatus, DaemonState, LogLine } from '../shared-types';
@@ -93,8 +93,47 @@ export class DaemonProcess extends EventEmitter {
     this.emit('status', this.getStatus());
   }
 
+  /**
+   * Kills tunnel clients left behind by an earlier run.
+   *
+   * Windows terminates a process without touching its children, so every crash or
+   * forced stop can strand the frpc the agent spawned. A stranded one keeps its proxy
+   * registered with the tunnel server, which then hands the remote port to a dead
+   * client and leaves the new agent unreachable through a port that still accepts
+   * connections. Clearing them before starting is what makes a restart actually mean
+   * something.
+   *
+   * Matched on the executable's full path, so this only ever touches the copy this app
+   * ships — an frpc the machine's owner runs for their own reasons is left alone.
+   */
+  private sweepStrandedTunnels(): void {
+    if (process.platform !== 'win32' || !this.frpcPath) return;
+
+    /*
+     * Single quotes throughout, deliberately. The whole script travels as one argv
+     * entry through Windows' command-line quoting, and a double quote anywhere in it
+     * comes out the other side mangled — which fails silently, as a sweep that matches
+     * nothing rather than an error anyone would notice.
+     */
+    const target = this.frpcPath.replace(/'/g, "''");
+    const script =
+      `Get-Process -Name frpc -ErrorAction SilentlyContinue | ` +
+      `Where-Object { $_.Path -eq '${target}' } | ` +
+      `Stop-Process -Force -ErrorAction SilentlyContinue`;
+
+    try {
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err) => {
+        // Best effort: a sweep that fails must not stop the agent from starting.
+        if (err) this.log('app', `Could not check for stranded tunnel clients: ${err.message}`);
+      });
+    } catch (err) {
+      this.log('app', `Could not check for stranded tunnel clients: ${(err as Error).message}`);
+    }
+  }
+
   start(): void {
     if (this.child) return;
+    this.sweepStrandedTunnels();
 
     if (!fs.existsSync(this.entryPath)) {
       this.lastError = `Daemon build not found at ${this.entryPath}. Run "npm run build" in apps/daemon-desktop.`;
@@ -194,6 +233,10 @@ export class DaemonProcess extends EventEmitter {
       }, 5000);
       child.once('exit', () => {
         clearTimeout(timer);
+        // The agent is gone but its own children are not: on Windows nothing cascades,
+        // so the frpc it spawned would outlive it and keep holding the tunnel's remote
+        // port. Sweeping here means a stop is a real stop.
+        this.sweepStrandedTunnels();
         resolve();
       });
       child.kill();
