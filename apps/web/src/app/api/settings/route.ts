@@ -5,6 +5,7 @@ import { encryptSecret, maskSecret, tryDecryptSecret } from '@/lib/auth/crypto';
 import { writeAudit } from '@/lib/audit';
 import { AI_DEFAULT_BASE_URL, AI_DEFAULT_MODEL } from '@/lib/diagnostics/ai-analyzer';
 import { PUBLIC_URL_SETTING_KEY, validatePublicUrl } from '@/lib/utils/public-url';
+import { FRP_ADDR_KEY, FRP_PORT_KEY, FRP_TOKEN_KEY, FRP_DEFAULT_PORT, validateFrpAddr } from '@/lib/servers/frp';
 
 export async function GET(request: NextRequest) {
   const user = await getUserFromRequest(request);
@@ -38,6 +39,9 @@ export async function GET(request: NextRequest) {
 
     const smtpPassResult = tryDecryptSecret(settingsMap['SMTP_PASS'] || '');
     const aiKeyResult = tryDecryptSecret(settingsMap['AI_API_KEY'] || '');
+    // Encrypted like any other shared secret: it is what authorises a machine to open
+    // tunnels through the frps server.
+    const frpTokenResult = tryDecryptSecret(settingsMap[FRP_TOKEN_KEY] || '');
 
     return NextResponse.json({
       settings: {
@@ -66,6 +70,10 @@ export async function GET(request: NextRequest) {
         aiModel: settingsMap['AI_MODEL'] || AI_DEFAULT_MODEL,
         aiApiKey: aiKeyResult.value,
         maskedAiApiKey: maskSecret(aiKeyResult.value),
+        frpServerAddr: settingsMap[FRP_ADDR_KEY] || '',
+        frpServerPort: settingsMap[FRP_PORT_KEY] || String(FRP_DEFAULT_PORT),
+        frpToken: frpTokenResult.value,
+        maskedFrpToken: maskSecret(frpTokenResult.value),
       },
       logs: cloudflareLogs,
     });
@@ -87,6 +95,7 @@ export async function POST(request: NextRequest) {
       smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure,
       aiAnalysisEnabled, aiBaseUrl, aiModel, aiApiKey,
       publicAppUrl,
+      frpServerAddr, frpServerPort, frpToken,
     } = body;
 
     const upsertSetting = async (key: string, value: string) => {
@@ -123,6 +132,24 @@ export async function POST(request: NextRequest) {
       await upsertSetting(PUBLIC_URL_SETTING_KEY, checked.value);
     }
 
+    /*
+     * The tunnel preset every node shares. Rejecting a pasted URL here rather than at
+     * the node is deliberate: frpc wants a bare host, and given one it cannot use it
+     * simply never connects, which is a silent failure on someone else's machine.
+     */
+    if (frpServerAddr !== undefined) {
+      const checked = validateFrpAddr(String(frpServerAddr));
+      if (!checked.ok) {
+        return NextResponse.json({ error: checked.error }, { status: 400 });
+      }
+      await upsertSetting(FRP_ADDR_KEY, checked.value);
+    }
+    if (frpServerPort !== undefined) await upsertSetting(FRP_PORT_KEY, String(frpServerPort).trim());
+    if (frpToken !== undefined) {
+      const cleanFrpToken = String(frpToken).trim();
+      await upsertSetting(FRP_TOKEN_KEY, cleanFrpToken ? encryptSecret(cleanFrpToken) : '');
+    }
+
     if (aiAnalysisEnabled !== undefined) await upsertSetting('AI_ANALYSIS_ENABLED', String(!!aiAnalysisEnabled));
     if (aiBaseUrl !== undefined) await upsertSetting('AI_BASE_URL', aiBaseUrl.trim() || AI_DEFAULT_BASE_URL);
     if (aiModel !== undefined) await upsertSetting('AI_MODEL', aiModel.trim() || AI_DEFAULT_MODEL);
@@ -146,6 +173,9 @@ export async function POST(request: NextRequest) {
       aiBaseUrl !== undefined && 'AI_BASE_URL',
       aiModel !== undefined && 'AI_MODEL',
       aiApiKey !== undefined && 'AI_API_KEY',
+      frpServerAddr !== undefined && FRP_ADDR_KEY,
+      frpServerPort !== undefined && FRP_PORT_KEY,
+      frpToken !== undefined && FRP_TOKEN_KEY,
     ].filter(Boolean);
     await writeAudit({ userId: user.userId, action: 'SETTINGS_UPDATE', details: { keys: changedKeys } });
 

@@ -74,6 +74,9 @@ export default function SettingsPage() {
   const [smtpPass, setSmtpPass] = useState('');
   const [smtpFrom, setSmtpFrom] = useState('');
   const [smtpSecure, setSmtpSecure] = useState(false);
+  const [frpServerAddr, setFrpServerAddr] = useState('');
+  const [frpServerPort, setFrpServerPort] = useState('7000');
+  const [frpToken, setFrpToken] = useState('');
   const [publicAppUrl, setPublicAppUrl] = useState('');
   const [publicAppUrlFromEnv, setPublicAppUrlFromEnv] = useState('');
   const [aiEnabled, setAiEnabled] = useState(false);
@@ -97,6 +100,9 @@ export default function SettingsPage() {
       setSmtpPass(s.smtpPass || '');
       setSmtpFrom(s.smtpFrom || '');
       setSmtpSecure(Boolean(s.smtpSecure));
+      setFrpServerAddr(s.frpServerAddr || '');
+      setFrpServerPort(s.frpServerPort || '7000');
+      setFrpToken(s.frpToken || '');
       setPublicAppUrl(s.publicAppUrl || '');
       setPublicAppUrlFromEnv(s.publicAppUrlFromEnv || '');
       setAiEnabled(Boolean(s.aiAnalysisEnabled));
@@ -125,6 +131,7 @@ export default function SettingsPage() {
         smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpSecure,
         aiAnalysisEnabled: aiEnabled, aiBaseUrl, aiModel, aiApiKey,
         publicAppUrl,
+        frpServerAddr, frpServerPort, frpToken,
       });
       toast.success('Settings saved');
       await fetchSettings();
@@ -308,6 +315,33 @@ export default function SettingsPage() {
               <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} style={{ width: 16, height: 16, accentColor: 'var(--accent)' }} />
               <span>Use implicit TLS (port 465). Leave unchecked for STARTTLS on port 587.</span>
             </label>
+          </section>
+
+          <section className="cc-panel">
+            <PanelHeader
+              title="FRP tunnel"
+              description={
+                'Lets nodes host servers players can reach without port forwarding, and lets this panel reach a node ' +
+                'that is behind NAT. Every node uses the same server and token, so they are set once here and travel ' +
+                'with each exported node config. Leave the address blank if no node needs a tunnel.'
+              }
+            />
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+              <div style={{ gridColumn: 'span 2', minWidth: 0 }}>
+                <label className="cc-label" htmlFor="frp-addr">Server address</label>
+                <input id="frp-addr" value={frpServerAddr} onChange={(e) => setFrpServerAddr(e.target.value)} placeholder="tunnel.example.com or 203.0.113.10" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+                <p className="cc-help">Host or IP only — no http:// and no port. Nodes must be able to reach it from wherever they run.</p>
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="frp-port">Server port</label>
+                <input id="frp-port" value={frpServerPort} onChange={(e) => setFrpServerPort(e.target.value)} placeholder="7000" className="cc-input" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div>
+                <label className="cc-label" htmlFor="frp-token">Token</label>
+                <SecretInput id="frp-token" value={frpToken} onChange={setFrpToken} placeholder="Shared frps token" />
+              </div>
+            </div>
           </section>
 
           <section className="cc-panel">

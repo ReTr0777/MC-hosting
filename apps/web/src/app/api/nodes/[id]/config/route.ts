@@ -3,6 +3,8 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { writeAudit } from '@/lib/audit';
 import { getPublicOrigin } from '@/lib/utils/public-url';
+import { tryDecryptSecret } from '@/lib/auth/crypto';
+import { buildFrpPreset, FRP_ADDR_KEY, FRP_PORT_KEY, FRP_TOKEN_KEY } from '@/lib/servers/frp';
 
 /**
  * Exports a node's settings as a file the desktop node app can import.
@@ -36,6 +38,26 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ error: 'Node not found' }, { status: 404 });
   }
 
+  /*
+   * The tunnel preset rides along when the installation has one.
+   *
+   * Every node tunnels to the same frps with the same token, so those three values are
+   * a property of the deployment rather than of any one node — and without them here
+   * the operator is left typing an address, a port and a shared secret into every
+   * desktop app by hand, which is exactly the transcription the export exists to
+   * avoid. Omitted entirely when no address is set, which the node app reads as
+   * "leave whatever tunnel settings are already there alone".
+   */
+  const settings = await prisma.systemSetting.findMany({
+    where: { key: { in: [FRP_ADDR_KEY, FRP_PORT_KEY, FRP_TOKEN_KEY] } },
+  });
+  const byKey = Object.fromEntries(settings.map((s) => [s.key, s.value]));
+  const tunnel = buildFrpPreset(
+    byKey[FRP_ADDR_KEY],
+    byKey[FRP_PORT_KEY],
+    tryDecryptSecret(byKey[FRP_TOKEN_KEY] || '').value
+  );
+
   const config = {
     format: NODE_CONFIG_FORMAT,
     version: NODE_CONFIG_VERSION,
@@ -50,6 +72,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       port: node.port,
       enabledGames: node.enabledGames,
     },
+    ...(tunnel ? { tunnel } : {}),
   };
 
   await writeAudit({
