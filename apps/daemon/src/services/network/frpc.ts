@@ -24,8 +24,8 @@ function frpcBinary(): string {
 
 class TunnelManager {
   private frpcProcess: ChildProcess | null = null;
-  /** Set once frpc turns out to be unavailable, so the warning is not repeated on every reload. */
-  private binaryMissing = false;
+  /** Set once frpc turns out to be unusable, so the warning is not repeated on every reload. */
+  private spawnFailed = false;
   private frpConfigPath: string;
   private proxies: Map<string, ProxyRule> = new Map();
   private baseConfig: string = '';
@@ -84,31 +84,28 @@ remotePort = ${apiPort}
 
     const binary = frpcBinary();
     console.log('[TunnelManager] Starting frpc tunnel client...');
-    this.frpcProcess = spawn(binary, ['-c', this.frpConfigPath], {
-      stdio: 'pipe',
-      detached: false,
-    });
 
     /*
-     * Without this handler a failed spawn emits an unhandled 'error' event, which
-     * takes down the whole daemon — a node with a tunnel address typed into it would
-     * die on startup and stay dead. The tunnel is an optional extra: losing it must
-     * cost the tunnel and nothing else.
+     * spawn reports a failure in one of two ways, and it has to be caught both times.
+     * A binary that is missing arrives asynchronously as an 'error' event; one that
+     * Windows refuses to execute — EPERM, typically antivirus — throws synchronously,
+     * straight out of this async function and into an unhandled rejection that kills
+     * the node. Same failure, same response, two code paths.
      */
-    this.frpcProcess.on('error', (err: NodeJS.ErrnoException) => {
-      this.frpcProcess = null;
-      if (err.code !== 'ENOENT') {
-        console.error(`[TunnelManager] frpc failed to start: ${err.message}. Tunnelling is off; the node keeps running.`);
-        return;
-      }
-      if (this.binaryMissing) return;
-      this.binaryMissing = true;
-      console.error(
-        `[TunnelManager] frpc was not found (tried "${binary}"). Tunnelling is off and the node ` +
-          'keeps running, but players cannot reach servers on this machine through the tunnel. ' +
-          'Clear the tunnel server address to silence this, or set FRPC_PATH to an frpc binary.'
-      );
-    });
+    try {
+      this.frpcProcess = spawn(binary, ['-c', this.frpConfigPath], {
+        stdio: 'pipe',
+        detached: false,
+      });
+    } catch (err) {
+      this.reportSpawnFailure(err as NodeJS.ErrnoException, binary);
+      return;
+    }
+
+    // Without this handler a failed spawn emits an unhandled 'error' event, which takes
+    // down the whole daemon: a node with a tunnel address typed into it would die on
+    // startup and stay dead.
+    this.frpcProcess.on('error', (err: NodeJS.ErrnoException) => this.reportSpawnFailure(err, binary));
 
     this.frpcProcess.stdout?.on('data', (data) => {
       console.log(`[frpc] ${data.toString().trim()}`);
@@ -122,6 +119,35 @@ remotePort = ${apiPort}
       console.warn(`[TunnelManager] frpc process exited with code ${code}`);
       this.frpcProcess = null;
     });
+  }
+
+  /**
+   * Reports frpc failing to launch, once, and carries on.
+   *
+   * The tunnel is an optional extra. Whatever went wrong with it, the node itself must
+   * stay up: it still hosts servers, and the panel still needs to reach it.
+   */
+  private reportSpawnFailure(err: NodeJS.ErrnoException, binary: string): void {
+    this.frpcProcess = null;
+    // init() runs again on every tunnel change, and repeating the whole explanation
+    // each time buries the log the operator is trying to read.
+    if (this.spawnFailed) return;
+    this.spawnFailed = true;
+
+    const tail =
+      'Tunnelling is off and the node keeps running, but players cannot reach servers on ' +
+      'this machine through the tunnel. Clear the tunnel server address to stop trying.';
+
+    if (err.code === 'ENOENT') {
+      console.error(`[TunnelManager] frpc was not found (tried "${binary}"). ${tail} Or set FRPC_PATH to an frpc binary.`);
+    } else if (err.code === 'EPERM' || err.code === 'EACCES') {
+      console.error(
+        `[TunnelManager] Windows refused to run frpc (${err.code}) at "${binary}". Antivirus ` +
+          `blocking or quarantining it is the usual cause — allow that file, then restart the node. ${tail}`
+      );
+    } else {
+      console.error(`[TunnelManager] frpc failed to start: ${err.message}. ${tail}`);
+    }
   }
 
   private writeConfig() {

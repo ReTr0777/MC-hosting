@@ -14,7 +14,11 @@ import { schedulerService } from './services/scheduler';
 import { ensureContainerRestartPolicies, docker } from './services/runtime/docker';
 import { presenceService } from './services/presence/presence';
 
-tunnelManager.init();
+// Never awaited, so a rejection here would otherwise be an unhandled one — which Node
+// turns into an exit. The tunnel is optional; the node it runs on is not.
+tunnelManager.init().catch((err: Error) => {
+  console.error(`[TunnelManager] Tunnel setup failed: ${err.message}. The node keeps running without it.`);
+});
 schedulerService.start();
 ensureContainerRestartPolicies().catch(() => {});
 
