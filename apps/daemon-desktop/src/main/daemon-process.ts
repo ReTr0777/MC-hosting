@@ -1,6 +1,7 @@
 import { fork, execFileSync, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import fs from 'fs';
+import path from 'path';
 import type { DaemonStatus, DaemonState, LogLine } from '../shared-types';
 
 const MAX_LOG_LINES = 2000;
@@ -103,52 +104,60 @@ export class DaemonProcess extends EventEmitter {
    * connections. Clearing them before starting is what makes a restart actually mean
    * something.
    *
-   * Matched on the executable's full path, so this only ever touches the copy this app
-   * ships — an frpc the machine's owner runs for their own reasons is left alone.
+   * Only ever kills a pid the agent itself recorded, and only if that pid is still an
+   * frpc.exe — an frpc the machine's owner runs for their own reasons is left alone.
    */
   private sweepStrandedTunnels(): void {
     if (process.platform !== 'win32' || !this.frpcPath) return;
 
     /*
-     * Single quotes throughout, deliberately. The whole script travels as one argv
-     * entry through Windows' command-line quoting, and a double quote anywhere in it
-     * comes out the other side mangled — which fails silently, as a sweep that matches
-     * nothing rather than an error anyone would notice.
+     * The agent records the tunnel client's pid and deletes the file when it shuts the
+     * client down itself, so a file that still exists means one was stranded. No file
+     * is the normal case, and it costs a single stat.
+     *
+     * This used to search the process table with PowerShell on every start and stop,
+     * which spawned an interpreter — hundreds of milliseconds of CPU — even on nodes
+     * running no tunnel at all. It was doing real work to answer a question the agent
+     * could simply have written down.
      */
-    /*
-     * try/catch and an explicit exit 0, because "nothing to sweep" is the normal case
-     * and PowerShell treats it as failure: Get-Process finding no match still leaves a
-     * non-zero exit code even under SilentlyContinue, which surfaces here as a scary
-     * log line on every single start. Worse, it made a real failure indistinguishable
-     * from the healthy case.
-     */
-    const target = this.frpcPath.replace(/'/g, "''");
-    const script =
-      `try { Get-Process -Name frpc -ErrorAction Stop | ` +
-      `Where-Object { $_.Path -eq '${target}' } | ` +
-      `Stop-Process -Force -ErrorAction SilentlyContinue } catch { }; exit 0`;
+    let pid: number;
+    try {
+      const raw = fs.readFileSync(this.tunnelPidPath, 'utf8').trim();
+      pid = Number(raw);
+      if (!Number.isInteger(pid) || pid <= 0) throw new Error(`unusable pid ${JSON.stringify(raw)}`);
+    } catch (err) {
+      // Missing is the healthy path and says nothing worth logging.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.log('app', `Ignoring unreadable tunnel pid file: ${(err as Error).message}`);
+        fs.rmSync(this.tunnelPidPath, { force: true });
+      }
+      return;
+    }
 
     /*
-     * Synchronous, and that is the whole point.
-     *
-     * Run asynchronously, this races the agent it is about to start: PowerShell takes
-     * a few hundred milliseconds to come up, by which time the new frpc is running,
-     * matches the same path, and gets killed by the sweep meant to protect it. Every
-     * caller here must therefore be certain the sweep has finished before anything new
-     * is spawned, and blocking is the only way to promise that. It costs half a second
-     * on start and stop, against a tunnel that otherwise dies the moment it connects.
+     * The IMAGENAME filter is what makes this safe. Windows reuses process ids, so the
+     * recorded one may since have been handed to something unrelated; taskkill only
+     * acts if the pid is genuinely an frpc.exe. Synchronous, because the caller is
+     * about to start a replacement and must not race it.
      */
     try {
-      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F', '/FI', 'IMAGENAME eq frpc.exe'], {
         stdio: 'ignore',
-        // A sweep that hangs must not hang the app with it.
         timeout: 10_000,
       });
-    } catch (err) {
-      // Best effort: a sweep that fails must not stop the agent from starting.
-      this.log('app', `Could not check for stranded tunnel clients: ${(err as Error).message}`);
+      this.log('app', `Cleared a tunnel client left behind by an earlier run (pid ${pid}).`);
+    } catch {
+      // Already gone, or the pid now belongs to something else and the filter spared
+      // it. Either way there is nothing stranded, which is the outcome we wanted.
     }
+    fs.rmSync(this.tunnelPidPath, { force: true });
   }
+
+  /** Matches where the agent writes it: beside frpc.toml, above the servers directory. */
+  private get tunnelPidPath(): string {
+    return path.join(path.dirname(this.serversDir), 'frpc.pid');
+  }
+
 
   start(): void {
     if (this.child) return;

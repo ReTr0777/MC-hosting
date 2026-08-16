@@ -103,6 +103,17 @@ remotePort = ${apiPort}
       return;
     }
 
+    /*
+     * Record the pid so the next run can clean up after this one.
+     *
+     * frpc outlives a daemon that is killed rather than asked to stop — which is every
+     * crash, and on Windows every stop, since signals are not delivered there. The
+     * supervising app reads this file on start and kills what it names. Its absence is
+     * the normal case and costs nothing to check, which matters: the alternative was
+     * hunting for stray processes on every single start.
+     */
+    this.writePidFile(this.frpcProcess.pid);
+
     // Without this handler a failed spawn emits an unhandled 'error' event, which takes
     // down the whole daemon: a node with a tunnel address typed into it would die on
     // startup and stay dead.
@@ -119,6 +130,8 @@ remotePort = ${apiPort}
     this.frpcProcess.on('exit', (code) => {
       console.warn(`[TunnelManager] frpc process exited with code ${code}`);
       this.frpcProcess = null;
+      // It exited on its own, so it is not stranded and must not be hunted later.
+      this.clearPidFile();
     });
   }
 
@@ -136,11 +149,35 @@ remotePort = ${apiPort}
    * Signals are not delivered on Windows, where a killed parent leaves frpc orphaned
    * regardless; the desktop app kills the process tree for that case.
    */
+  /** Written beside frpc.toml; see the call site for why it exists. */
+  private get pidFilePath(): string {
+    return path.join(path.dirname(this.frpConfigPath), 'frpc.pid');
+  }
+
+  private writePidFile(pid: number | undefined): void {
+    if (!pid) return;
+    try {
+      fs.writeFileSync(this.pidFilePath, String(pid), 'utf8');
+    } catch {
+      // Cleanup is a courtesy to the next run, never a reason to fail this one.
+    }
+  }
+
+  private clearPidFile(): void {
+    try {
+      fs.rmSync(this.pidFilePath, { force: true });
+    } catch {
+      /* as above */
+    }
+  }
+
   private registerCleanup(): void {
     const stop = () => {
       if (!this.frpcProcess) return;
       this.frpcProcess.kill();
       this.frpcProcess = null;
+      // Killed by us, so there is nothing left for the next run to clean up.
+      this.clearPidFile();
     };
 
     // 'exit' handlers must be synchronous, which kill() is.
