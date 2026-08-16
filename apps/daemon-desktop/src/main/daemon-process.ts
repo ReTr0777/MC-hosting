@@ -115,11 +115,18 @@ export class DaemonProcess extends EventEmitter {
      * comes out the other side mangled — which fails silently, as a sweep that matches
      * nothing rather than an error anyone would notice.
      */
+    /*
+     * try/catch and an explicit exit 0, because "nothing to sweep" is the normal case
+     * and PowerShell treats it as failure: Get-Process finding no match still leaves a
+     * non-zero exit code even under SilentlyContinue, which surfaces here as a scary
+     * log line on every single start. Worse, it made a real failure indistinguishable
+     * from the healthy case.
+     */
     const target = this.frpcPath.replace(/'/g, "''");
     const script =
-      `Get-Process -Name frpc -ErrorAction SilentlyContinue | ` +
+      `try { Get-Process -Name frpc -ErrorAction Stop | ` +
       `Where-Object { $_.Path -eq '${target}' } | ` +
-      `Stop-Process -Force -ErrorAction SilentlyContinue`;
+      `Stop-Process -Force -ErrorAction SilentlyContinue } catch { }; exit 0`;
 
     /*
      * Synchronous, and that is the whole point.
