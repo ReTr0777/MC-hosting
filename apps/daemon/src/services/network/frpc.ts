@@ -209,12 +209,29 @@ remotePort = ${apiPort}
       'Tunnelling is off and the node keeps running, but players cannot reach servers on ' +
       'this machine through the tunnel. Clear the tunnel server address to stop trying.';
 
+    /*
+     * Antivirus is the common thread in all three of these, because frp is a legitimate
+     * tunnel that intruders also use, so scanners routinely flag it as a hacktool. The
+     * codes differ by how far the scanner got: removed the file, blocked execution, or
+     * still has it locked mid-scan. Saying so is the difference between a fix that
+     * takes a minute and an evening of guessing.
+     */
+    const bundled = Boolean(process.env.FRPC_PATH);
     if (err.code === 'ENOENT') {
-      console.error(`[TunnelManager] frpc was not found (tried "${binary}"). ${tail} Or set FRPC_PATH to an frpc binary.`);
-    } else if (err.code === 'EPERM' || err.code === 'EACCES') {
       console.error(
-        `[TunnelManager] Windows refused to run frpc (${err.code}) at "${binary}". Antivirus ` +
-          `blocking or quarantining it is the usual cause — allow that file, then restart the node. ${tail}`
+        bundled
+          ? `[TunnelManager] frpc is missing from "${binary}". Antivirus quarantining it is the usual ` +
+              `cause — restore it and add an exclusion, or reinstall the node app. ${tail}`
+          : `[TunnelManager] frpc was not found (tried "${binary}"). ${tail} Or set FRPC_PATH to an frpc binary.`
+      );
+    } else if (err.code === 'EPERM' || err.code === 'EACCES' || err.code === 'EBUSY') {
+      const why =
+        err.code === 'EBUSY'
+          ? 'The file is locked by another program — antivirus scanning or quarantining it is the usual cause'
+          : 'Antivirus blocking or quarantining it is the usual cause';
+      console.error(
+        `[TunnelManager] Windows refused to run frpc (${err.code}) at "${binary}". ${why} — allow that ` +
+          `file, then restart the node. ${tail}`
       );
     } else {
       console.error(`[TunnelManager] frpc failed to start: ${err.message}. ${tail}`);
