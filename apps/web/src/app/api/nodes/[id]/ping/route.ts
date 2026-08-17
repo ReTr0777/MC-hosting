@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
+import { isHealthOnline } from '@/lib/services/node-status';
 import { parseGameList } from '@mc-manager/shared';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     // Generous on purpose: this poll decides the online badge, and a remote node
     // answering slowly is not the same as a node that is down.
     const health = await client.getHealth(DaemonClient.HEALTH_TIMEOUT_MS);
-    const isOnline = health.status === 'ok' || health.dockerAvailable;
+    const isOnline = isHealthOnline(health);
 
     const reportedGames = parseGameList(health.enabledGames);
 

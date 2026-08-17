@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { DaemonClient } from '@/lib/services/daemon-client';
+import { isHealthOnline } from '@/lib/services/node-status';
 import { dispatchNotification } from '@/lib/services/notifications';
 import { monitorKey } from '@/lib/auth/monitor-auth';
 import { runDueSchedules } from '@/lib/servers/scheduler';
@@ -120,7 +121,7 @@ export async function POST(request: NextRequest) {
       let health: any = null;
       try {
         health = await client.getHealth();
-        nodeOnline = health.status === 'ok' || health.dockerAvailable;
+        nodeOnline = isHealthOnline(health);
       } catch (err) {
         nodeOnline = false;
       }

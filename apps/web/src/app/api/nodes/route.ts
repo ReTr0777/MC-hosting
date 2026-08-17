@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
+import { isHealthOnline } from '@/lib/services/node-status';
 import { writeAudit } from '@/lib/audit';
 import { allNodeCapacities } from '@/lib/servers/node-capacity';
 
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
     try {
       // A node registered over a tunnel deserves the same patience as one being polled.
       health = await client.getHealth(DaemonClient.HEALTH_TIMEOUT_MS);
-      isOnline = health.status === 'ok' || health.dockerAvailable;
+      isOnline = isHealthOnline(health);
     } catch (e) {
       isOnline = false;
     }
