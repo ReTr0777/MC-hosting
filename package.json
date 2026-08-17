@@ -9,27 +9,24 @@
     "dev:web": "npm --prefix apps/web run dev",
     "dev:daemon": "npm --prefix apps/daemon run dev",
     "dev:discord-bot": "npm --prefix apps/discord-bot run dev",
-
     "build": "npm run build:shared && npm run build:daemon && npm run build:web",
     "build:shared": "npm --prefix packages/shared run build",
     "build:web": "npm --prefix apps/web run build",
     "build:daemon": "npm --prefix apps/daemon run build",
     "build:discord-bot": "npm --prefix apps/discord-bot run build",
-
     "dev:desktop": "npm --prefix apps/daemon-desktop run dev",
     "//dist:desktop": "Builds the Windows installer. Needs build:shared and build:daemon to have run first — the staging step bundles their dist output.",
     "dist:desktop": "npm run build:shared && npm run build:daemon && npm --prefix apps/daemon-desktop run dist",
-
+    "//dist:portable": "Builds the portable Linux/Android node bundle (arm64 by default; --arch=amd64 for a PC).",
+    "dist:portable": "npm run build:shared && npm run build:daemon && npm --prefix apps/daemon run dist:portable --",
     "test": "npm run test:shared && npm run test:daemon && npm run test:web",
     "test:shared": "npm --prefix packages/shared run test",
     "test:web": "npm --prefix apps/web run test",
     "test:daemon": "npm --prefix apps/daemon run test",
-
     "typecheck": "npm run typecheck:web && npm run typecheck:daemon && npm run typecheck:desktop",
     "typecheck:web": "npm --prefix apps/web run typecheck",
     "typecheck:daemon": "npm --prefix apps/daemon run typecheck",
     "typecheck:desktop": "npm --prefix apps/daemon-desktop run typecheck",
-
     "prisma:generate": "npm --prefix apps/web run prisma:generate",
     "prisma:migrate": "npm --prefix apps/web run prisma:migrate"
   },

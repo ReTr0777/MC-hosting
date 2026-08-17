@@ -1,13 +1,15 @@
 {
   "name": "@mc-manager/daemon",
-  "version": "1.0.0",
+  "version": "1.2.14",
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "//dist:portable": "Builds the Docker-free node bundle for Linux/Android. Needs build:shared and build:daemon first.",
+    "dist:portable": "node scripts/build-portable.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1107.0",

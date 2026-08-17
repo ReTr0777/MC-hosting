@@ -203,6 +203,33 @@ Two things worth knowing about the build:
 Prisma is excluded from the packaged daemon. It is only used when `DATABASE_URL` is
 set, both call sites load it lazily, and its native engines would add over 100 MB.
 
+## Portable node (Linux, Raspberry Pi, Android)
+
+Neither the Docker image nor the Windows installer suits a machine that cannot run
+Docker at all. Android is the clearest case — no root, and a kernel built without
+the cgroup and overlayfs support containers need — but the same applies to any host
+where installing Docker is more trouble than the node is worth.
+
+```bash
+npm run dist:portable                  # -> apps/daemon/release/mc-hosting-node-<version>-linux-arm64.tar.gz
+npm run dist:portable -- --arch=amd64  # for an x86 Linux box
+```
+
+Unpack it on the target and run `sh start.sh`. There is nothing to install and no
+build step — it carries the same esbuild bundle the Windows installer ships, the
+vendored `node-unrar-js`, the setup page, and an `frpc` for the right architecture.
+Node.js and a JDK come from the target's package manager; the bundled `README.md`
+covers Termux specifically.
+
+**Servers run as processes, not containers.** `ExecutionMode.PROCESS` is already the
+panel's default when creating a server, so this needs no configuration, but Docker
+Container mode will not work on such a node. The node reports `dockerAvailable:
+false` and a status of `degraded`; the panel does not read that field, so it shows as
+online and behaves normally.
+
+Set `JAVA_BIN` if the JDK is not the one first on `PATH`. The version-based selection
+in `resolveJavaCmd` looks under `/opt/java`, which only the Docker image has.
+
 ### Shipping an update
 
 Installed nodes check GitHub Releases on launch and every six hours, download in the

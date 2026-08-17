@@ -29,8 +29,18 @@ export interface ManagedProcess {
 }
 
 export function resolveJavaCmd(mcVersion?: string): string {
+  /*
+   * An explicit JAVA_BIN wins over everything below.
+   *
+   * The /opt/java layout is the Docker image's, built by apps/daemon/Dockerfile. A
+   * node installed any other way — the portable Linux bundle, Termux on a phone, a
+   * Raspberry Pi — has its JDK wherever the package manager put it, and without this
+   * could only ever use whichever `java` happens to be first on PATH.
+   */
+  if (process.env.JAVA_BIN) return process.env.JAVA_BIN;
+
   const v = mcVersion || '26.2';
-  
+
   if (v.startsWith('26') || v.startsWith('25') || v.startsWith('1.22')) {
     if (fs.existsSync('/opt/java/openjdk-25/bin/java')) return '/opt/java/openjdk-25/bin/java';
     if (fs.existsSync('/opt/java/openjdk-21/bin/java')) return '/opt/java/openjdk-21/bin/java';
