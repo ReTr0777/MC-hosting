@@ -224,8 +224,10 @@ covers Termux specifically.
 **Servers run as processes, not containers.** `ExecutionMode.PROCESS` is already the
 panel's default when creating a server, so this needs no configuration, but Docker
 Container mode will not work on such a node. The node reports `dockerAvailable:
-false` and a status of `degraded`; the panel does not read that field, so it shows as
-online and behaves normally.
+false` and a status of `degraded`, which `isHealthOnline` treats as online — Docker
+is a capability, not liveness. Panel builds before that fix recorded such a node as
+offline on every poll while storing the specs from the same reply, so the symptom
+was an OFFLINE card showing real hardware.
 
 Set `JAVA_BIN` if the JDK is not the one first on `PATH`. The version-based selection
 in `resolveJavaCmd` looks under `/opt/java`, which only the Docker image has.

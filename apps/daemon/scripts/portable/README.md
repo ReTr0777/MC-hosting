@@ -14,8 +14,14 @@ Process**, which is the default when you create a server, so in practice there i
 nothing to change. Docker Container mode needs a Docker daemon and will fail here.
 
 The node reports `dockerAvailable: false` and a status of `degraded`. That is
-expected and does not affect anything — the panel shows it as online and every
-process-mode feature works.
+expected: the panel treats it as online, because Docker is a capability rather than
+a sign of life, and every process-mode feature works.
+
+**This needs a panel from 2026-08-17 or later.** Older builds decided the online
+badge with `status === 'ok' || dockerAvailable`, so a node with no Docker was marked
+offline on every poll — while still storing the CPU and memory from that same reply.
+If the card shows real hardware specs next to an OFFLINE badge, the panel is the
+piece that needs updating, not the node.
 
 ## Setup on Android (Termux)
 
