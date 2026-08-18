@@ -90,6 +90,15 @@ export interface DaemonHealthDto {
    * panel must read that as "unknown" rather than as "no Java".
    */
   javaMajor?: number | null;
+  /**
+   * Free and total space on the filesystem holding the data directory, in MB.
+   *
+   * Not the same question as diskUsage, which lists mounts without saying which one
+   * servers are written to. The panel checks this before streaming a world here, so it
+   * has to be the disk that will actually receive it. Null when it could not be read.
+   */
+  dataDiskFreeMb?: number | null;
+  dataDiskTotalMb?: number | null;
 }
 
 export interface WsAuthPayload {

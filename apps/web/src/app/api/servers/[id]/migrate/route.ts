@@ -5,7 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { CreateServerContainerDto, javaSupportViolation } from '@mc-manager/shared';
 import { VelocityClient } from '@/lib/services/velocity-client';
 import { writeAudit } from '@/lib/audit';
-import { nodeCapacity, capacityViolation } from '@/lib/servers/node-capacity';
+import { nodeCapacity, capacityViolation, diskSpaceViolation } from '@/lib/servers/node-capacity';
 
 async function updateLimboTitle(title: string, subtitle: string) {
   try {
@@ -44,6 +44,33 @@ function readStats(files: unknown, bytes: unknown): TransferStats | null {
   const b = Number(bytes);
   if (!Number.isFinite(f) || !Number.isFinite(b) || f < 0 || b < 0) return null;
   return { files: f, bytes: b };
+}
+
+/**
+ * How large a server is on its own node, in MB, or null if it cannot be established.
+ *
+ * Reuses the verify endpoint, which already counts a server directory for the transfer
+ * check. Asked before anything is stopped, so a destination without room is refused
+ * while the server is still running — the whole point of a preflight.
+ */
+async function serverSizeMb(
+  node: { host: string; port: number; apiKey: string },
+  serverId: string
+): Promise<number | null> {
+  try {
+    const res = await fetch(`http://${node.host}:${node.port}/api/v1/servers/${serverId}/verify`, {
+      headers: { Authorization: `Bearer ${node.apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return null;
+
+    const { bytes } = await res.json();
+    return Number.isFinite(bytes) ? Math.ceil(bytes / (1024 * 1024)) : null;
+  } catch {
+    // An old daemon has no such route, and a slow one is not worth blocking a migration
+    // over. Either way the disk check is skipped rather than guessed at.
+    return null;
+  }
 }
 
 /** How long to let a destination provision before giving up on it. */
@@ -198,6 +225,23 @@ export async function POST(
     const javaProblem = javaSupportViolation(destNode.name, server.game, server.mcVersion, destHealth.javaMajor);
     if (javaProblem) {
       return NextResponse.json({ error: javaProblem }, { status: 409 });
+    }
+
+    /*
+     * Room for the world itself, which is not what the capacity check measures — that
+     * one budgets RAM and cores. A destination with plenty of both and a full disk
+     * accepts the whole transfer and fails at extraction, and the verification added
+     * alongside this correctly refuses to delete the source afterwards. Correct, but
+     * expensive: the server was stopped for the duration and the bytes crossed the
+     * network for nothing.
+     *
+     * Both figures are asked for rather than assumed. A daemon too old to report either
+     * skips the check, the same as everywhere else here.
+     */
+    const sourceSize = await serverSizeMb(server.node, server.id);
+    const noRoom = diskSpaceViolation(destNode.name, sourceSize, destHealth.dataDiskFreeMb);
+    if (noRoom) {
+      return NextResponse.json({ error: noRoom }, { status: 507 });
     }
 
     // Acknowledge the migration request immediately

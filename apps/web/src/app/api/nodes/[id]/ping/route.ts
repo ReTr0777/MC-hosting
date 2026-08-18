@@ -54,6 +54,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         liveCpuCores: health.cpuCores ?? null,
         liveOsDistro: health.osInfo?.distro ?? null,
         liveCpuTemp: health.cpuTemp ?? null,
+        liveJavaMajor: health.javaMajor ?? null,
+        liveDataDiskFreeMb: health.dataDiskFreeMb ?? null,
         liveLastSeenAt: new Date(),
       },
     });

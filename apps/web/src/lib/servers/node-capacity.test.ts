@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeCapacity, capacityViolation, CapacityNode, CapacityServer } from './node-capacity';
+import {
+  computeCapacity,
+  capacityViolation,
+  diskSpaceViolation,
+  diskSpaceNeededMb,
+  CapacityNode,
+  CapacityServer,
+} from './node-capacity';
 
 /**
  * The distinction that matters here is allocated vs active. Scheduling against active RAM is
@@ -93,4 +100,55 @@ test('a CPU ratio of zero or nonsense falls back to the default rather than free
 test('a full node reports zero free rather than a negative number', () => {
   const capacity = computeCapacity(node(), [server(20480, 4)]);
   assert.equal(capacity.freeMemoryMb, 0);
+});
+
+/**
+ * Disk is checked separately from RAM and cores because it is a different kind of
+ * number: physical space that exists or does not, rather than a budget with an
+ * overcommit ratio deliberately applied to it.
+ */
+
+test('a server that fits with headroom to spare is allowed', () => {
+  assert.equal(diskSpaceViolation('unraid', 2000, 500_000), null);
+});
+
+test('a server that would fill the disk exactly is refused', () => {
+  // The arithmetic says 4000 fits in 4000. Extraction needs the full size and
+  // provisioning writes on top of it, so landing at zero free is a failure.
+  const problem = diskSpaceViolation('s10samsung', 4000, 4000);
+
+  assert.ok(problem);
+  assert.match(problem, /s10samsung/);
+  assert.match(problem, /4000 MB is free/);
+});
+
+test('the refusal names the size, the requirement and what is actually free', () => {
+  const problem = diskSpaceViolation('phone', 20_000, 3_000);
+
+  assert.ok(problem);
+  assert.match(problem, /server is 20000 MB/);
+  assert.match(problem, /about 22512 MB/);
+  assert.match(problem, /only 3000 MB is free/);
+});
+
+test('headroom is a tenth over, plus a floor for small servers', () => {
+  assert.equal(diskSpaceNeededMb(10_000), 11_512);
+  // Without the floor a 100 MB server would ask for 110 MB, which is close enough to
+  // zero free to fail anyway.
+  assert.equal(diskSpaceNeededMb(100), 622);
+});
+
+test('an unknown at either end is not a refusal', () => {
+  // A daemon too old to report its free space, or a source that could not be measured.
+  // The same rule the Java and transfer checks follow: unknown is not evidence.
+  assert.equal(diskSpaceViolation('node', null, 1000), null);
+  assert.equal(diskSpaceViolation('node', 1000, null), null);
+  assert.equal(diskSpaceViolation('node', undefined, undefined), null);
+});
+
+test('a genuinely empty server is still measured, not treated as unknown', () => {
+  // Zero is a real size and must not read as "could not tell" — a node with no space
+  // at all should still refuse it on the floor alone.
+  assert.ok(diskSpaceViolation('node', 0, 100));
+  assert.equal(diskSpaceViolation('node', 0, 600), null);
 });

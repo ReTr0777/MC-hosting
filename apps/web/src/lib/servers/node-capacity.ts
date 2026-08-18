@@ -134,6 +134,51 @@ export function capacityViolation(
 }
 
 /**
+ * Headroom demanded on top of a server's own size before it may be moved onto a node.
+ *
+ * Extraction needs the full uncompressed size and provisioning writes on top of it, so
+ * landing at exactly zero free is a failure even when the arithmetic says it fits. A
+ * tenth over plus a floor for small servers is headroom, not a prediction of what
+ * provisioning will use.
+ */
+const DISK_HEADROOM_DIVISOR = 10;
+const DISK_HEADROOM_FLOOR_MB = 512;
+
+export function diskSpaceNeededMb(sizeMb: number): number {
+  // Divided rather than multiplied by 1.1: that product is 11000.000000000002 for a
+  // 10 GB server, and ceil turns the rounding error into a megabyte that appears in
+  // the refusal message for no reason anyone could explain.
+  return sizeMb + Math.ceil(sizeMb / DISK_HEADROOM_DIVISOR) + DISK_HEADROOM_FLOOR_MB;
+}
+
+/**
+ * Whether a node has the disk to receive a server of this size. A message, or null.
+ *
+ * Separate from capacityViolation because it answers a different question with a
+ * different number: that one budgets RAM and cores against an overcommit ratio, this
+ * one is physical space that either exists or does not. A node can pass either and
+ * fail the other.
+ *
+ * Null for `sizeMb` or `freeMb` means one end could not say, and passes — the same
+ * rule the Java and transfer checks follow.
+ */
+export function diskSpaceViolation(
+  nodeName: string,
+  sizeMb: number | null | undefined,
+  freeMb: number | null | undefined
+): string | null {
+  if (sizeMb == null || freeMb == null) return null;
+
+  const needed = diskSpaceNeededMb(sizeMb);
+  if (freeMb >= needed) return null;
+
+  return (
+    `Node "${nodeName}" does not have room on disk: the server is ${sizeMb} MB and needs about ` +
+    `${needed} MB with headroom, but only ${freeMb} MB is free where that node stores its servers.`
+  );
+}
+
+/**
  * @param excludeServerId Server whose allocation should not count — set when resizing or
  *   migrating, so a server is never measured against space it is itself occupying.
  */

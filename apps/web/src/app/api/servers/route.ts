@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
-import { ServerType, ExecutionMode, Game, GAME_LABELS, isGame, parseTerrariaConfig } from '@mc-manager/shared';
+import { ServerType, ExecutionMode, Game, GAME_LABELS, isGame, parseTerrariaConfig, javaSupportViolation, requiredJavaMajor } from '@mc-manager/shared';
 import { writeAudit } from '@/lib/audit';
 import { quotaSnapshot, quotaViolation } from '@/lib/servers/quota';
 import { computeCapacity, capacityViolation, nodeCapacity } from '@/lib/servers/node-capacity';
@@ -202,14 +202,41 @@ export async function POST(req: NextRequest) {
 
         // Capability filter runs *before* capacity ranking: a node with all the room in
         // the world is still the wrong answer if it does not host this game.
-        const onlineNodes = allOnlineNodes.filter((node: any) => node.enabledGames?.includes(targetGame));
+        const gameNodes = allOnlineNodes.filter((node: any) => node.enabledGames?.includes(targetGame));
 
-        if (onlineNodes.length === 0) {
+        if (gameNodes.length === 0) {
           return NextResponse.json(
             {
               error:
                 `No online node is configured to host ${GAME_LABELS[targetGame]}. ` +
                 'Enable it in the node\'s daemon setup page, then try again.',
+            },
+            { status: 503 }
+          );
+        }
+
+        /*
+         * Java is a capability like the game list, and belongs in the same pass. A node
+         * whose newest JDK is older than this version will provision the server, download
+         * everything, and fail on the first start — after the scheduler chose it, which is
+         * the moment the panel already knew better.
+         *
+         * liveJavaMajor is null for a daemon too old to report it, and those nodes stay
+         * eligible: an unknown is not a disqualification.
+         */
+        const onlineNodes = gameNodes.filter(
+          (node: any) => !javaSupportViolation(node.name, targetGame, mcVersion, node.liveJavaMajor)
+        );
+
+        if (onlineNodes.length === 0) {
+          const required = requiredJavaMajor(mcVersion);
+          return NextResponse.json(
+            {
+              error:
+                `No online node can run Minecraft ${mcVersion}, which needs Java ${required}. ` +
+                `Checked ${gameNodes.length} node(s): ` +
+                gameNodes.map((n: any) => `"${n.name}" has Java ${n.liveJavaMajor}`).join(', ') +
+                '. Install a newer JDK on one of them, or pick an older Minecraft version.',
             },
             { status: 503 }
           );
@@ -291,6 +318,13 @@ export async function POST(req: NextRequest) {
           { error: `Node "${node.name}" is not configured to host ${GAME_LABELS[targetGame]}.` },
           { status: 400 }
         );
+      }
+
+      // Same for Java: the wizard's dropdown is not the only way to reach this route,
+      // and an explicitly chosen node never passed the scheduler's filter above.
+      const javaProblem = javaSupportViolation(node.name, targetGame, mcVersion, node.liveJavaMajor);
+      if (javaProblem) {
+        return NextResponse.json({ error: javaProblem }, { status: 409 });
       }
 
       // Also checked for an explicitly chosen node, which never went through the scheduler above.

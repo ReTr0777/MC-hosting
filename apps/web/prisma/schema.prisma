@@ -200,6 +200,12 @@ model Node {
   liveCpuCores    Int?     // Physical CPU cores
   liveOsDistro    String?  // OS distro e.g. "Ubuntu 22.04"
   liveCpuTemp     Float?   // CPU temperature in celsius (if available)
+  // Newest Java the node can run. Null for a daemon too old to report it, which must
+  // read as "unknown" rather than "none" — see javaSupportViolation in shared.
+  liveJavaMajor   Int?
+  // Free space on the filesystem holding the daemon's data directory, in MB. Distinct
+  // from liveDiskTotal, which describes the largest mount and may be another disk.
+  liveDataDiskFreeMb Int?
   liveLastSeenAt  DateTime? // Last time a successful hardware check was received
 
   createdAt       DateTime @default(now())

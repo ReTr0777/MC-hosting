@@ -55,6 +55,33 @@ function cached<T>(ttlMs: number, load: () => Promise<T>) {
   };
 }
 
+/*
+ * Free space where servers actually live.
+ *
+ * diskUsage below lists mounts, and nothing in it says which one holds the data
+ * directory — on a node with a separate volume for worlds, the largest mount and the
+ * relevant mount are different disks. The panel needs the relevant one before it
+ * streams a 20 GB world here, so it is measured directly rather than guessed at.
+ *
+ * statfs is a single syscall, so this needs no cache of its own beyond the health
+ * payload's.
+ */
+async function dataDiskFree(): Promise<{ freeMb: number; totalMb: number } | null> {
+  try {
+    const fs = await import('fs/promises');
+    const stats = await fs.statfs(getConfig().dataDir);
+    return {
+      // bavail, not bfree: blocks reserved for root are not space we can write to.
+      freeMb: Math.floor((stats.bavail * stats.bsize) / (1024 * 1024)),
+      totalMb: Math.floor((stats.blocks * stats.bsize) / (1024 * 1024)),
+    };
+  } catch {
+    // Unsupported platform, or a data directory that does not exist yet. Reporting
+    // nothing is honest; inventing a figure the panel would schedule against is not.
+    return null;
+  }
+}
+
 const cpuInfoCached = cached(STATIC_TTL_MS, () => si.cpu());
 const osInfoCached = cached(STATIC_TTL_MS, () => si.osInfo());
 const cpuTempCached = cached(TEMP_TTL_MS, () => si.cpuTemperature().catch(() => ({ main: null as number | null })));
@@ -155,7 +182,7 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
   const freeBytes = os.freemem();
   const uptimeSeconds = os.uptime();
 
-  const [cpuInfo, fsSize, osInfo, net, cpuTemp, swap, javaMajor] = await Promise.all([
+  const [cpuInfo, fsSize, osInfo, net, cpuTemp, swap, javaMajor, dataDisk] = await Promise.all([
     cpuInfoCached(),
     fsSizeCached(),
     osInfoCached(),
@@ -165,6 +192,7 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
     // Probed once for the life of the process and cached there, so this is free after
     // the first health check. See detectBestJavaMajor.
     detectBestJavaMajor(),
+    dataDiskFree(),
   ]);
   const { stats: netStats, ifaces: netIfaces } = net;
 
@@ -240,5 +268,7 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
     // without a second round trip. See api/nodes/[id]/ping/route.ts.
     enabledGames: getConfig().enabledGames ?? [...DEFAULT_ENABLED_GAMES],
     javaMajor,
+    dataDiskFreeMb: dataDisk?.freeMb ?? null,
+    dataDiskTotalMb: dataDisk?.totalMb ?? null,
   };
 }
