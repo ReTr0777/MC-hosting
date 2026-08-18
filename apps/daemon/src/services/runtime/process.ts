@@ -9,6 +9,12 @@ import { tunnelManager } from '../network/frpc';
 import { flattenServerDir } from '../../utils/flatten';
 import { synthesizeForgeRunScript } from '../../utils/forgeLaunchScript';
 import { gameOfServer, getGame, isNonMinecraftGame } from '../../games';
+import {
+  JAVA_PREFERENCE,
+  requiredJavaMajor,
+  javaVersionProblem,
+  explainClassVersionError,
+} from './java-version';
 
 export interface ManagedProcess {
   serverId: string;
@@ -39,25 +45,16 @@ export function resolveJavaCmd(mcVersion?: string): string {
    */
   if (process.env.JAVA_BIN) return process.env.JAVA_BIN;
 
-  const v = mcVersion || '26.2';
-
-  if (v.startsWith('26') || v.startsWith('25') || v.startsWith('1.22')) {
-    if (fs.existsSync('/opt/java/openjdk-25/bin/java')) return '/opt/java/openjdk-25/bin/java';
-    if (fs.existsSync('/opt/java/openjdk-21/bin/java')) return '/opt/java/openjdk-21/bin/java';
-    return 'java';
+  /*
+   * Which Java this version needs is decided in java-version.ts, so the preflight
+   * check and this cannot disagree about it. Picking one binary and then vetting it
+   * against a different rule would be worse than not checking at all.
+   */
+  for (const major of JAVA_PREFERENCE[requiredJavaMajor(mcVersion)]) {
+    const candidate = `/opt/java/openjdk-${major}/bin/java`;
+    if (fs.existsSync(candidate)) return candidate;
   }
 
-  const verMatch = v.match(/^1\.(\d+)/);
-  if (verMatch) {
-    const minor = parseInt(verMatch[1], 10);
-    if (minor >= 21) {
-      if (fs.existsSync('/opt/java/openjdk-21/bin/java')) return '/opt/java/openjdk-21/bin/java';
-      if (fs.existsSync('/opt/java/openjdk-25/bin/java')) return '/opt/java/openjdk-25/bin/java';
-      return 'java';
-    }
-  }
-
-  if (fs.existsSync('/opt/java/openjdk-17/bin/java')) return '/opt/java/openjdk-17/bin/java';
   return 'java';
 }
 
@@ -248,6 +245,29 @@ class ProcessManager extends EventEmitter {
     }
   }
 
+  /**
+   * Refuses the launch when this node's Java is too old for the server.
+   *
+   * Throwing is what the caller wants: the start request returns the reason instead
+   * of reporting success, and the FAILED status carries the same sentence to the
+   * panel. Left to proceed, the spawn succeeds and the JVM dies moments later with
+   * an UnsupportedClassVersionError stack trace — which reads as a crash, not as a
+   * node that was never able to run this.
+   */
+  private async assertJavaCanRun(serverId: string, javaCmd: string, mcVersion?: string): Promise<void> {
+    const problem = await javaVersionProblem(javaCmd, mcVersion);
+    if (!problem) return;
+
+    const message = `Cannot start '${serverId}': ${problem}`;
+    console.error(`[ProcessManager] ${message}`);
+    provisioningManager.emit('status', {
+      serverId,
+      status: STATUS.FAILED,
+      error: problem,
+    });
+    throw new Error(problem);
+  }
+
   public async startProcess(dto: CreateServerContainerDto): Promise<void> {
     // Touch point 1 of 2 (plan.md §2). Everything below this guard is the
     // original Minecraft body, unchanged. `dto.game` is absent or MINECRAFT for
@@ -369,6 +389,7 @@ class ProcessManager extends EventEmitter {
         } catch (e) {}
       }
       const resolvedJavaCmd = resolveJavaCmd(scriptMcVersion);
+      await this.assertJavaCanRun(dto.serverId, resolvedJavaCmd, scriptMcVersion);
       const javaDir = path.dirname(resolvedJavaCmd);
       const javaHome = path.dirname(javaDir); // e.g. /opt/java/openjdk-21
       const augmentedPath = `${javaDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`;
@@ -415,6 +436,7 @@ class ProcessManager extends EventEmitter {
       }
 
       const javaCmd = resolveJavaCmd(effectiveMcVersion);
+      await this.assertJavaCanRun(dto.serverId, javaCmd, effectiveMcVersion);
       console.log(`[ProcessManager] Spawning standalone Java process using '${javaCmd}' for server ${dto.serverId} in '${serverDir}': ${javaCmd} ${javaArgs.join(' ')}`);
 
       child = spawn(javaCmd, javaArgs, {
@@ -477,6 +499,21 @@ class ProcessManager extends EventEmitter {
         if (mp.logBuffer.length > 300) mp.logBuffer.shift();
 
         this.emit('log', { serverId: dto.serverId, line, type: 'stdout' });
+
+        /*
+         * The preflight check catches the common case before launching, but not every
+         * one: a modpack's run.sh can call its own java, and a jar can bundle a library
+         * built for something newer than itself. Where that happens the trace still
+         * arrives, so translate it in place — the numbers in it are class-file
+         * versions, which are not the Java versions anyone would recognise.
+         */
+        const classVersionHint = explainClassVersionError(line);
+        if (classVersionHint) {
+          const hint = `[CraftControl] ${classVersionHint}`;
+          mp.logBuffer.push(hint);
+          this.emit('log', { serverId: dto.serverId, line: hint, type: 'stdout' });
+          console.error(`[ProcessManager] ${dto.serverId}: ${classVersionHint}`);
+        }
 
         // Player Join Detection
         const joinMatch = line.match(/(?:\[.*\]:?\s*)?([a-zA-Z0-9_]{2,16}) (?:joined the game|logged in with entity id)/i);

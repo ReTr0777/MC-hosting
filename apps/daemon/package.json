@@ -1,6 +1,6 @@
 {
   "name": "@mc-manager/daemon",
-  "version": "1.2.14",
+  "version": "1.2.15",
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
