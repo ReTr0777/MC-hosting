@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
-import { CreateServerContainerDto } from '@mc-manager/shared';
+import { CreateServerContainerDto, javaSupportViolation } from '@mc-manager/shared';
 import { VelocityClient } from '@/lib/services/velocity-client';
 import { writeAudit } from '@/lib/audit';
 import { nodeCapacity, capacityViolation } from '@/lib/servers/node-capacity';
@@ -77,6 +77,36 @@ export async function POST(
     });
     if (overCapacity) {
       return NextResponse.json({ error: overCapacity }, { status: 507 });
+    }
+
+    /*
+     * Memory and cores are not the only way a destination can be wrong for a server.
+     *
+     * A node whose newest JDK is older than the version needs will accept the whole
+     * transfer, take ownership of the world, and then refuse every start — while step 5
+     * below deletes the source copy with deleteData: true. The server ends up on the one
+     * machine that cannot run it, with nothing to go back to. Java 25 arriving on a phone
+     * whose Termux ships 21 is the case this was written for.
+     *
+     * Asked live rather than read from the node row, because nothing persists the JDK and
+     * a node's Java changes the moment someone installs one. It costs one request against
+     * a node we are about to stream a world to.
+     */
+    let destHealth;
+    try {
+      destHealth = await new DaemonClient(destNode).getHealth(8000);
+    } catch (e: any) {
+      // The transfer posts to this same daemon. Failing here says so plainly, instead of
+      // stopping the server first and discovering it while the export is already open.
+      return NextResponse.json(
+        { error: `Destination node "${destNode.name}" is not responding (${e.message}). Migration needs it online.` },
+        { status: 503 }
+      );
+    }
+
+    const javaProblem = javaSupportViolation(destNode.name, server.game, server.mcVersion, destHealth.javaMajor);
+    if (javaProblem) {
+      return NextResponse.json({ error: javaProblem }, { status: 409 });
     }
 
     // Acknowledge the migration request immediately

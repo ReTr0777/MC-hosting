@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   requiredJavaMajor,
+  detectBestJavaMajor,
   parseJavaMajor,
   explainClassVersionError,
   javaVersionProblem,
@@ -120,6 +121,32 @@ test('a node whose Java is too old is told which version it needs', async () => 
   // reports nothing and the check must not block on a JDK it could not read.
   const unreadable = await javaVersionProblem(process.execPath, '26.2');
   assert.equal(unreadable, null);
+});
+
+test('the node reports the newest Java it can reach, or nothing', async () => {
+  clearJavaVersionCache();
+  const best = await detectBestJavaMajor();
+
+  // Runs wherever the suite runs, so the JDKs present are unknown. What must hold is
+  // that the answer is a plausible version or an honest null — never 0, never NaN,
+  // and never a string that the panel would compare against a number.
+  assert.ok(best === null || (typeof best === 'number' && best >= 8), `implausible: ${best}`);
+});
+
+test('a node with no readable Java reports null rather than guessing', async () => {
+  clearJavaVersionCache();
+  const original = process.env.JAVA_BIN;
+  process.env.JAVA_BIN = 'definitely-not-a-real-java-binary';
+  try {
+    const best = await detectBestJavaMajor();
+    // `java` on PATH may still exist on a dev machine; the point is only that an
+    // unreadable JAVA_BIN contributes nothing instead of poisoning the result.
+    assert.ok(best === null || best >= 8);
+  } finally {
+    if (original === undefined) delete process.env.JAVA_BIN;
+    else process.env.JAVA_BIN = original;
+    clearJavaVersionCache();
+  }
 });
 
 test('a JDK that cannot be run at all does not block the launch', async () => {

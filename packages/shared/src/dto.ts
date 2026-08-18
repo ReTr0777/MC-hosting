@@ -79,6 +79,17 @@ export interface DaemonHealthDto {
    * rather than as "this node hosts nothing".
    */
   enabledGames?: Game[];
+  /**
+   * Newest Java major version this node can run, or null if none could be read.
+   *
+   * A capability, not the JDK any particular server would get. The panel compares it
+   * against what a server needs before migrating one here, so that a move cannot
+   * strand a server on a node whose JVM is too old to start it.
+   *
+   * Optional for the same reason as enabledGames: an older daemon omits it, and the
+   * panel must read that as "unknown" rather than as "no Java".
+   */
+  javaMajor?: number | null;
 }
 
 export interface WsAuthPayload {

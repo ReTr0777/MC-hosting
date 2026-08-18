@@ -3,6 +3,7 @@ import si from 'systeminformation';
 import Docker from 'dockerode';
 import { DaemonHealthDto, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
 import { getConfig } from '../config';
+import { detectBestJavaMajor } from './runtime/java-version';
 
 const docker = new Docker();
 
@@ -154,13 +155,16 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
   const freeBytes = os.freemem();
   const uptimeSeconds = os.uptime();
 
-  const [cpuInfo, fsSize, osInfo, net, cpuTemp, swap] = await Promise.all([
+  const [cpuInfo, fsSize, osInfo, net, cpuTemp, swap, javaMajor] = await Promise.all([
     cpuInfoCached(),
     fsSizeCached(),
     osInfoCached(),
     netCached(),
     cpuTempCached(),
     swapCached(),
+    // Probed once for the life of the process and cached there, so this is free after
+    // the first health check. See detectBestJavaMajor.
+    detectBestJavaMajor(),
   ]);
   const { stats: netStats, ifaces: netIfaces } = net;
 
@@ -235,5 +239,6 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
     // Piggybacks on the existing 5s ping so the panel's node picker stays current
     // without a second round trip. See api/nodes/[id]/ping/route.ts.
     enabledGames: getConfig().enabledGames ?? [...DEFAULT_ENABLED_GAMES],
+    javaMajor,
   };
 }

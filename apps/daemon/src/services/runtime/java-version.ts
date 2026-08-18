@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { requiredJavaMajor } from '@mc-manager/shared';
 
 /*
  * What Java a server needs, and what Java this node actually has.
@@ -18,17 +19,12 @@ import { execFile } from 'child_process';
 /** class-file major -> Java major, for turning the JVM's own error back into a version. */
 const CLASS_FILE_BASE = 44;
 
-/** Java major version each Minecraft version needs. */
-export function requiredJavaMajor(mcVersion?: string): number {
-  const v = mcVersion || '26.2';
-
-  if (v.startsWith('26') || v.startsWith('25') || v.startsWith('1.22')) return 25;
-
-  const verMatch = v.match(/^1\.(\d+)/);
-  if (verMatch && parseInt(verMatch[1], 10) >= 21) return 21;
-
-  return 17;
-}
+/*
+ * The version -> Java mapping is shared with the panel, which asks the same question
+ * before migrating a server onto a node. Re-exported so callers here need not know
+ * where it lives.
+ */
+export { requiredJavaMajor };
 
 /**
  * Which JDKs to try for a given requirement, best first.
@@ -110,6 +106,39 @@ export function detectJavaMajor(javaCmd: string): Promise<number | null> {
 /** Forgets cached probes. Only useful when a JDK is installed while the node runs. */
 export function clearJavaVersionCache(): void {
   detected.clear();
+  bestJava = null;
+}
+
+/*
+ * The newest Java this node can reach, for the health report.
+ *
+ * This answers a different question from resolveJavaCmd. That one picks the JDK for
+ * one server; this one is a capability — "what is the highest version this machine
+ * could run, if asked" — which is what the panel needs to decide whether a server may
+ * be migrated here. Reporting the JDK a hypothetical server would get is not the same
+ * number and would refuse migrations that are perfectly fine.
+ *
+ * Every candidate is probed rather than trusting the directory name, because
+ * /opt/java/openjdk-21 containing something else is exactly the kind of thing that
+ * should not silently decide a migration.
+ */
+let bestJava: Promise<number | null> | null = null;
+
+export function detectBestJavaMajor(): Promise<number | null> {
+  if (bestJava) return bestJava;
+
+  const candidates = [
+    ...(process.env.JAVA_BIN ? [process.env.JAVA_BIN] : []),
+    ...Object.keys(JAVA_PREFERENCE).map((major) => `/opt/java/openjdk-${major}/bin/java`),
+    'java',
+  ];
+
+  bestJava = Promise.all(candidates.map((cmd) => detectJavaMajor(cmd))).then((found) => {
+    const known = found.filter((major): major is number => major !== null);
+    return known.length ? Math.max(...known) : null;
+  });
+
+  return bestJava;
 }
 
 /**
