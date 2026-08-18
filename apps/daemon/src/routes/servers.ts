@@ -29,6 +29,7 @@ import { CreateServerContainerDto, ExecutionMode, Game, GAME_CAPABILITIES, isGam
 import { getGame, isNonMinecraftGame } from '../games';
 import type { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
+import { dirStats } from '../utils/dir-stats';
 import { synthesizeForgeRunScript } from '../utils/forgeLaunchScript';
 import {
   searchModrinth,
@@ -1177,6 +1178,36 @@ router.delete('/:containerId', async (req: Request, res: Response) => {
   }
 });
 
+/*
+ * GET /api/v1/servers/:serverId/verify
+ *
+ * What this node actually holds for a server. Written for the end of a migration,
+ * where the panel has to answer one question before deleting the original: did the
+ * copy arrive, and has this node finished making it into a server?
+ *
+ * The import endpoint answers with 202 the moment extraction completes, and creates
+ * the container afterwards. That gap is real — provisioning can fail after the panel
+ * has been told the import succeeded — so "still provisioning" is reported here
+ * rather than inferred from silence.
+ */
+router.get('/:serverId/verify', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const serverDir = path.join(config.dataDir, serverId);
+  const exists = fs.existsSync(serverDir);
+
+  const outcome = provisioningManager.lastOutcome(serverId);
+
+  res.json({
+    exists,
+    provisioning: provisioningManager.isLocked(serverId),
+    // Undefined when this node has not provisioned the server since it started —
+    // which is the normal state for every server it did not just receive.
+    provisionOk: outcome?.ok,
+    provisionError: outcome?.error,
+    ...(exists ? dirStats(serverDir) : { files: 0, bytes: 0 }),
+  });
+});
+
 // GET /api/v1/servers/:serverId/export
 router.get('/:serverId/export', async (req: Request, res: Response) => {
   const { serverId } = req.params;
@@ -1193,10 +1224,19 @@ router.get('/:serverId/export', async (req: Request, res: Response) => {
     console.warn(`[Daemon API Export Sync Warning] ${syncErr.message}`);
   }
 
-  console.log(`[Daemon API] Streaming export for server ${serverId}...`);
+  /*
+   * Counted after the sync and before tar starts, so it describes exactly what is
+   * about to be streamed. The panel carries these to the destination and compares
+   * them against what actually landed, which is what lets it decide whether deleting
+   * this copy is safe. Headers rather than the body, because the body is the archive.
+   */
+  const stats = dirStats(serverDir);
+  console.log(`[Daemon API] Streaming export for server ${serverId} (${stats.files} files, ${stats.bytes} bytes)...`);
 
   res.setHeader('Content-Type', 'application/gzip');
   res.setHeader('Content-Disposition', `attachment; filename="${serverId}.tar.gz"`);
+  res.setHeader('X-Server-Files', String(stats.files));
+  res.setHeader('X-Server-Bytes', String(stats.bytes));
 
   // tar -czf - -C /path/to/server .
   const tar = spawn('tar', ['-czf', '-', '-C', serverDir, '.']);
@@ -1267,7 +1307,16 @@ router.post('/import', (req: Request, res: Response) => {
       return res.status(500).json({ error: `Import failed with code ${code}` });
     }
 
-    console.log(`[Daemon API] Import complete for ${serverId}. Proceeding to create container...`);
+    /*
+     * Measured here, in the gap between extraction finishing and container creation
+     * starting. A moment later is too late: provisioning writes its own files, and the
+     * count would no longer be comparable with what the source sent.
+     */
+    const received = dirStats(serverDir);
+    console.log(
+      `[Daemon API] Import complete for ${serverId} (${received.files} files, ${received.bytes} bytes). ` +
+        `Proceeding to create container...`
+    );
 
     // We expect the original CreateServerContainerDto to be passed in a header because the body is the stream
     const dtoHeader = req.headers['x-create-dto'];
@@ -1275,8 +1324,9 @@ router.post('/import', (req: Request, res: Response) => {
       try {
         const dto: CreateServerContainerDto = JSON.parse(dtoHeader);
 
-        // Immediately respond 202, build container asynchronously
-        res.status(202).json({ message: 'Import successful, creating container...', serverId });
+        // Immediately respond 202, build container asynchronously. The counts go with
+        // it so the panel can check the transfer before it trusts the move.
+        res.status(202).json({ message: 'Import successful, creating container...', serverId, received });
 
         provisioningManager.run(dto.serverId, async () => {
           const containerId = await createServerContainer(dto);
@@ -1291,7 +1341,7 @@ router.post('/import', (req: Request, res: Response) => {
         if (!res.headersSent) res.status(500).json({ error: 'Failed to create container post-import', details: err.message });
       }
     } else {
-      if (!res.headersSent) res.status(200).json({ message: 'Import successful, but no DTO provided to create container.' });
+      if (!res.headersSent) res.status(200).json({ message: 'Import successful, but no DTO provided to create container.', received });
     }
   });
 });

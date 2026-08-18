@@ -20,6 +20,97 @@ async function updateLimboTitle(title: string, subtitle: string) {
   }
 }
 
+/**
+ * A migration stopped on purpose, with the source copy still intact. Distinct from an
+ * unexpected throw only in what it says — both land in the same handler, which keeps
+ * the server on its original node either way.
+ */
+class MigrationAborted extends Error {}
+
+interface TransferStats {
+  files: number;
+  bytes: number;
+}
+
+/**
+ * The two counts from a daemon, or null when either is missing or nonsense.
+ *
+ * Null means "this end cannot tell me", which is what a daemon older than this feature
+ * reports, and it must stay distinguishable from zero — a server directory genuinely
+ * containing nothing is a different situation from one nobody counted.
+ */
+function readStats(files: unknown, bytes: unknown): TransferStats | null {
+  const f = Number(files);
+  const b = Number(bytes);
+  if (!Number.isFinite(f) || !Number.isFinite(b) || f < 0 || b < 0) return null;
+  return { files: f, bytes: b };
+}
+
+/** How long to let a destination provision before giving up on it. */
+const PROVISION_TIMEOUT_MS = 10 * 60_000;
+const PROVISION_POLL_MS = 3_000;
+
+/**
+ * Waits until the destination has finished turning the imported files into a server.
+ *
+ * Returns true when it confirmed success, false when the node is too old to have the
+ * endpoint — in which case the caller keeps the source copy rather than trusting a
+ * silence. Throws when provisioning actually failed, or when the directory is not
+ * there at all, since both mean the destination does not have a working server.
+ */
+async function waitForProvisioning(
+  node: { host: string; port: number; apiKey: string; name: string },
+  serverId: string
+): Promise<boolean> {
+  const url = `http://${node.host}:${node.port}/api/v1/servers/${serverId}/verify`;
+  const deadline = Date.now() + PROVISION_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    let state: any;
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${node.apiKey}` } });
+      // An older daemon has no such route. Nothing to wait for and nothing to trust.
+      if (res.status === 404) return false;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      state = await res.json();
+    } catch (e: any) {
+      // A node that drops out mid-provision has not finished, and the source copy is
+      // the only thing standing between that and a lost world.
+      throw new MigrationAborted(
+        `Destination node "${node.name}" stopped responding while provisioning (${e.message}). ` +
+          `The source copy has been left untouched.`
+      );
+    }
+
+    if (state?.provisioning) {
+      await new Promise((r) => setTimeout(r, PROVISION_POLL_MS));
+      continue;
+    }
+
+    if (state?.provisionOk === false) {
+      throw new MigrationAborted(
+        `Destination node "${node.name}" failed to provision the server: ${state.provisionError || 'no reason given'}. ` +
+          `The source copy has been left untouched.`
+      );
+    }
+    if (!state?.exists) {
+      throw new MigrationAborted(
+        `Destination node "${node.name}" has no data for this server after the import. ` +
+          `The source copy has been left untouched.`
+      );
+    }
+
+    // provisionOk undefined means the node never ran provisioning for this server —
+    // the import created no container, which the panel cannot call a success.
+    return state.provisionOk === true;
+  }
+
+  throw new MigrationAborted(
+    `Destination node "${node.name}" was still provisioning after ${PROVISION_TIMEOUT_MS / 60_000} minutes. ` +
+      `The source copy has been left untouched.`
+  );
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -147,7 +238,14 @@ export async function POST(
           throw new Error(`Source export failed: HTTP ${exportRes.status}`);
         }
 
-        console.log(`[Migration] Export stream established. Piping to destination...`);
+        /*
+         * What the source says it is about to send, counted on its disk after it synced
+         * the container out. Absent from a daemon older than this feature, which leaves
+         * the transfer unverifiable — see the comparison below.
+         */
+        const sent = readStats(exportRes.headers.get('x-server-files'), exportRes.headers.get('x-server-bytes'));
+
+        console.log(`[Migration] Export stream established${sent ? ` (${sent.files} files, ${sent.bytes} bytes)` : ''}. Piping to destination...`);
         await updateLimboTitle('<yellow>Transferring Data</yellow>', '<gray>Piping files to destination node...</gray>');
 
         // 3. Pipe to Destination Daemon import
@@ -184,7 +282,52 @@ export async function POST(
           throw new Error(`Destination import failed: HTTP ${importRes.status} ${errText}`);
         }
 
-        console.log(`[Migration] Stream transfer complete. Updating database...`);
+        /*
+         * 3a. Prove the copy arrived, before anything is switched over or deleted.
+         *
+         * The destination measures its own directory in the gap between extraction
+         * finishing and provisioning starting, so this compares like with like. A
+         * truncated gzip stream usually makes tar exit non-zero on its own, but
+         * "usually" is not the standard to apply to the only remaining copy of a
+         * world, and nothing at all used to catch an extraction that wrote less than
+         * was sent.
+         *
+         * >= rather than ==: tar restores what it was given, and a destination holding
+         * more than arrived is not evidence of loss. Holding less is.
+         */
+        const body = await importRes.json().catch(() => ({} as any));
+        const received = readStats(body?.received?.files, body?.received?.bytes);
+
+        if (sent && received) {
+          if (received.files < sent.files || received.bytes < sent.bytes) {
+            throw new MigrationAborted(
+              `Transfer incomplete: sent ${sent.files} files / ${sent.bytes} bytes, ` +
+                `destination has ${received.files} / ${received.bytes}. The source copy has been left untouched.`
+            );
+          }
+          console.log(`[Migration] Transfer verified: ${received.files} files, ${received.bytes} bytes.`);
+        } else {
+          // One end predates the counts. Say so rather than logging a verification that
+          // did not happen — this is the case where the old blind behaviour remains.
+          console.warn(
+            `[Migration] Transfer could not be verified (node daemons predate file counts). ` +
+              `Source data will be kept.`
+          );
+        }
+
+        // 3b. Wait for the destination to finish making it into a server.
+        //
+        // The import answers 202 as soon as extraction completes and provisions
+        // afterwards, so a success here is not yet a working server. Deleting the
+        // source during that window is what turns a failed provision into a lost world.
+        await updateLimboTitle('<yellow>Verifying</yellow>', '<gray>Waiting for destination to finish...</gray>');
+        const provisioned = await waitForProvisioning(destNode, server.id);
+
+        // Both halves must hold before the source may be deleted: the right bytes
+        // arrived, and the destination turned them into a server without failing.
+        const verified = !!(sent && received) && provisioned;
+
+        console.log(`[Migration] Stream transfer complete and verified. Updating database...`);
 
         // 4. Update Database
         await prisma.server.update({
@@ -213,15 +356,30 @@ export async function POST(
           console.warn(`[Migration] Failed to update Proxy routing:`, e);
         }
 
-        // 5. Cleanup Source Daemon
-        console.log(`[Migration] Cleaning up source daemon...`);
-        try {
-          await sourceClient.request(`/servers/${server.id}`, {
-            method: 'DELETE',
-            body: JSON.stringify({ deleteData: true, serverId: server.id })
-          });
-        } catch (e: any) {
-          console.warn(`[Migration Warning] Failed to cleanup source daemon: ${e.message}`);
+        /*
+         * 5. Delete the source copy — the only irreversible step in the whole flow, and
+         * the last one for that reason.
+         *
+         * Reached only once the destination has the same number of files and bytes and
+         * has finished provisioning them. When either could not be established the
+         * server is still moved, because the data demonstrably arrived, but the
+         * original is kept: disk on the old node is cheap and a world is not.
+         */
+        if (verified) {
+          console.log(`[Migration] Cleaning up source daemon...`);
+          try {
+            await sourceClient.request(`/servers/${server.id}`, {
+              method: 'DELETE',
+              body: JSON.stringify({ deleteData: true, serverId: server.id })
+            });
+          } catch (e: any) {
+            console.warn(`[Migration Warning] Failed to cleanup source daemon: ${e.message}`);
+          }
+        } else {
+          console.warn(
+            `[Migration] Source copy on node ${server.node.name} kept: the transfer could not be ` +
+              `fully verified. Delete it by hand once the server has started on ${destNode.name}.`
+          );
         }
 
         console.log(`[Migration] Migration of ${server.id} completed successfully!`);
@@ -229,11 +387,42 @@ export async function POST(
 
       } catch (err: any) {
         console.error(`[Migration Error] Background migration failed:`, err);
-        // Revert status on failure
+
+        /*
+         * Every failure path above happens before the database is switched over and
+         * before the source is deleted, so the server is still on its original node
+         * with its data intact — it is stopped, not broken. OFFLINE says that; ERROR
+         * would send someone looking for damage that is not there.
+         *
+         * The exception is a failure after the switch, where the destination owns the
+         * server now and ERROR is the honest state.
+         */
+        const movedAlready = await prisma.server
+          .findUnique({ where: { id: server.id }, select: { nodeId: true } })
+          .catch(() => null);
+        const onDestination = movedAlready?.nodeId === destNode.id;
+
         await prisma.server.update({
           where: { id: server.id },
-          data: { status: 'ERROR' }
+          data: { status: onDestination ? 'ERROR' : 'OFFLINE' }
         }).catch(() => {});
+
+        await writeAudit({
+          userId: user.userId,
+          action: 'SERVER_MIGRATE_FAILED',
+          details: {
+            serverId: server.id,
+            fromNodeId: server.nodeId,
+            toNodeId: destNode.id,
+            reason: err.message,
+            sourceDataKept: !onDestination,
+          },
+        });
+
+        await updateLimboTitle(
+          '<red>Migration Failed</red>',
+          onDestination ? '<gray>See the panel</gray>' : '<gray>Server is unchanged on its original node</gray>'
+        );
       }
     })();
 
