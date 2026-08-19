@@ -1,0 +1,65 @@
+# Typecheck and tests, run as a docker build.
+#
+# The Jenkins agent has Docker but no Node, and giving it one would mean maintaining a
+# toolchain on the controller that has to stay in step with what the images are built
+# with. Running the checks as a build instead means the only thing the agent ever needs
+# is the thing it already needs to publish images at all.
+#
+# It also sidesteps the bind-mount problem: Jenkins is itself in a container, so a
+# `-v $PWD:/app` here would mount a host path that does not exist and quietly test
+# nothing. A build context is sent to the daemon rather than mounted, so what gets
+# checked is what is actually in the workspace.
+#
+# There is no runtime stage on purpose. Nothing is shipped from this file — it either
+# builds, which means everything passed, or it fails the pipeline.
+
+# node:20 deliberately, because that is what every shipped image runs. Testing on the
+# newer Node installed for local development would mean the pipeline never exercises the
+# runtime the code is actually deployed on.
+FROM node:20-alpine
+
+# openssl: Prisma's engines are linked against it.
+# bash: see the script-shell note below.
+RUN apk add --no-cache openssl bash
+
+# The test scripts glob with `**`, which needs a shell that understands it.
+#
+# Alpine's default /bin/sh does not — it treats `**` as `*`, so `src/**/*.test.ts` matches
+# only one level down and the nested tests in the daemon and the panel are silently not
+# run. Not an error, just a smaller number in the summary that nobody would question.
+#
+# Node's own test runner can expand these patterns, but only from v21 on. Rather than move
+# the pipeline off the runtime being shipped, npm scripts run under bash, with globstar
+# turned on through BASHOPTS since a non-interactive bash starts without it.
+ENV npm_config_script_shell=/bin/bash
+ENV BASHOPTS=globstar
+
+# Only the types are needed to typecheck the desktop app, and the binary is 100+ MB of
+# download for a build that will never launch it.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
+# Prisma refuses to generate a client without one. Nothing connects during a typecheck
+# or a test, so any well-formed URL will do.
+ENV DATABASE_URL="postgresql://ci:ci@127.0.0.1:5432/ci?schema=public"
+
+WORKDIR /repo
+
+# Manifests first, so the install layer is reused whenever only source changed — which is
+# almost every build.
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY apps/web/package.json ./apps/web/
+COPY apps/daemon/package.json ./apps/daemon/
+COPY apps/daemon-desktop/package.json ./apps/daemon-desktop/
+COPY apps/discord-bot/package.json ./apps/discord-bot/
+RUN npm ci
+
+COPY . .
+
+# The panel and the daemon both import from the shared package's build output, and the
+# panel's types come out of Prisma's generated client. Neither exists until now.
+RUN npm run build:shared
+RUN npm run --prefix apps/web prisma:generate
+
+RUN npm run typecheck
+RUN npm test

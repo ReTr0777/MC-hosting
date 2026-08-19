@@ -14,9 +14,11 @@
  *                    so it is never written to a file on the array
  *   unraid-ssh       the key for root@unraid
  *
- * The agent needs Node 20+, npm and Docker with buildx. The Unraid box needs docker
- * compose (the Docker Compose Manager plugin) and a filled-in .env — both are checked
- * before anything is changed, so a missing one costs a failed deploy and nothing else.
+ * The agent needs Docker with buildx, and nothing else — no Node, no toolchain. Even the
+ * typecheck and the tests run as a docker build (deploy/Dockerfile.ci). The Unraid box
+ * needs docker compose (the Docker Compose Manager plugin) and a filled-in .env; both are
+ * checked before anything is changed, so a missing one costs a failed deploy and nothing
+ * else.
  *
  * FIRST RUN, READ THIS: the deploy stage manages the containers with compose, under the
  * same names the Unraid templates in deploy/ use (mc_web_panel and friends). Compose will
@@ -68,36 +70,42 @@ pipeline {
     }
 
     stages {
-        stage('Install') {
+        stage('Prepare') {
             steps {
-                sh 'npm ci'
-                // Both the panel and the daemon import from the shared package's build
-                // output, so nothing typechecks until it exists.
-                sh 'npm run build:shared'
+                // The container driver, needed for the registry cache the publish stage
+                // uses and for building without exporting an image in the verify stage.
+                // Created here so both get the same builder.
+                sh 'docker buildx create --name craftcontrol --use || docker buildx use craftcontrol'
+
+                // Logged in before anything pulls. Every Dockerfile here starts FROM an
+                // image on Docker Hub — the verify stage included — and the anonymous
+                // rate limit runs out partway through a six-image run.
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-creds',
+                    usernameVariable: 'DH_USER',
+                    passwordVariable: 'DH_PASS'
+                )]) {
+                    sh 'set +x; echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
+                }
             }
         }
 
         stage('Verify') {
             when { expression { !params.SKIP_TESTS } }
             steps {
-                sh 'npm run typecheck'
-                sh 'npm test'
+                // Typecheck and tests run as a docker build rather than on the agent, which
+                // has Docker but no Node — see deploy/Dockerfile.ci for why it is done this
+                // way round rather than by installing a toolchain on the controller.
+                //
+                // No tag and no --load: nothing is kept, so buildx never spends the minute
+                // it takes to export an image that exists only to have passed.
+                sh "docker buildx build --file deploy/Dockerfile.ci --progress plain ."
             }
         }
 
         stage('Publish images') {
             steps {
                 script {
-                    // Docker Hub first: every Dockerfile here starts FROM an image on it,
-                    // and anonymous pulls run out partway through a five-image build.
-                    withCredentials([usernamePassword(
-                        credentialsId: 'docker-hub-creds',
-                        usernameVariable: 'DH_USER',
-                        passwordVariable: 'DH_PASS'
-                    )]) {
-                        sh 'set +x; echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
-                    }
-
                     withCredentials([usernamePassword(
                         credentialsId: 'github-token',
                         usernameVariable: 'GH_USER',
@@ -105,8 +113,6 @@ pipeline {
                     )]) {
                         sh 'set +x; echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin'
                     }
-
-                    sh 'docker buildx create --name craftcontrol --use || docker buildx use craftcontrol'
 
                     [
                         ['web',         'apps/web/Dockerfile'],
