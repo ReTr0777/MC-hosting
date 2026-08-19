@@ -36,8 +36,10 @@ pipeline {
     parameters {
         booleanParam(
             name: 'DEPLOY',
-            defaultValue: true,
-            description: 'Deploy to Unraid after publishing. Untick to build and push images only.'
+            defaultValue: false,
+            description: 'Deploy to Unraid after publishing. OFF by default: the deploy step removed three ' +
+                         'containers and failed to recreate them once already, and until that is understood ' +
+                         'publishing images is the part of this pipeline that is safe to run unattended.'
         )
         string(
             name: 'UNRAID_HOST',
@@ -261,9 +263,20 @@ pipeline {
                          * stopped is left stopped rather than revived by a deploy.
                          */
                         def targets = names.join(' ')
-                        echo "Recreating on the new images: ${targets}"
-                        sh "${ssh} 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock " +
-                           "containrrr/watchtower --run-once --no-pull ${targets}'"
+                        error """Refusing to recreate ${targets}.
+
+                            |This step ran watchtower to recreate these containers against the newly pulled
+                            |images. It removed them and did not create the replacements, leaving the box with
+                            |no panel, no daemon and no bot until they were rebuilt from their Unraid templates.
+                            |
+                            |Recreating a container is deleting it and making another one, and there is no
+                            |version of that which is safe when the only description of how to make the new one
+                            |lives inside the container being deleted. Restore this only with something that
+                            |reads the configuration from a source that outlives the container — the templates
+                            |in /boot/config/plugins/dockerMan/templates-user, or a compose file.
+                            |
+                            |Publish images with DEPLOY off and update the containers from the Unraid Docker
+                            |tab until then.""".stripMargin()
 
                         // Old image layers accumulate fast at five images a build, and the
                         // array is not where anyone wants to discover that.
