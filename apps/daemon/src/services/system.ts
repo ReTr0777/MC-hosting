@@ -4,6 +4,7 @@ import Docker from 'dockerode';
 import { DaemonHealthDto, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
 import { getConfig } from '../config';
 import { detectBestJavaMajor } from './runtime/java-version';
+import { freeSpaceMb, diskSizeMb } from '../utils/disk';
 
 const docker = new Docker();
 
@@ -67,19 +68,13 @@ function cached<T>(ttlMs: number, load: () => Promise<T>) {
  * payload's.
  */
 async function dataDiskFree(): Promise<{ freeMb: number; totalMb: number } | null> {
-  try {
-    const fs = await import('fs/promises');
-    const stats = await fs.statfs(getConfig().dataDir);
-    return {
-      // bavail, not bfree: blocks reserved for root are not space we can write to.
-      freeMb: Math.floor((stats.bavail * stats.bsize) / (1024 * 1024)),
-      totalMb: Math.floor((stats.blocks * stats.bsize) / (1024 * 1024)),
-    };
-  } catch {
-    // Unsupported platform, or a data directory that does not exist yet. Reporting
-    // nothing is honest; inventing a figure the panel would schedule against is not.
-    return null;
-  }
+  const dir = getConfig().dataDir;
+  const [freeMb, totalMb] = await Promise.all([freeSpaceMb(dir), diskSizeMb(dir)]);
+
+  // Unsupported platform, or a data directory that does not exist yet. Reporting nothing
+  // is honest; inventing a figure the panel would schedule against is not.
+  if (freeMb === null || totalMb === null) return null;
+  return { freeMb, totalMb };
 }
 
 const cpuInfoCached = cached(STATIC_TTL_MS, () => si.cpu());

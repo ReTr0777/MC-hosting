@@ -106,9 +106,19 @@ export async function syncServerDirToContainer(containerId: string, serverId: st
 
   try {
 
+    // These rewrite the server directory itself, so they run either way — under a bind
+    // mount that directory is the live /data, and skipping them would leave a server
+    // starting with the mods that were meant to have been stripped out of it.
     validateAndCleanModJars(path.join(serverDir, 'mods'));
     recursivePurgeMods(path.join(serverDir, 'mods'));
     scrubIncompatibleConfigs(serverDir, serverId);
+
+    if (await isBindMounted(serverId)) {
+      // The container is already reading these files. Copying them in would mean packing
+      // a whole modpack through the Docker API to write it back over itself — and the
+      // volume wipe below would take a named volume this server does not use.
+      return;
+    }
 
     // Wipe residual old mods/overrides from container volume before extracting fresh archive
     try {
@@ -161,11 +171,114 @@ export async function syncServerDirToContainer(containerId: string, serverId: st
   }
 }
 
+/**
+ * Whether this server's `/data` is a bind mount onto the host rather than a named volume.
+ *
+ * The difference decides whether the two sync functions have anything to do. A bind
+ * mount means the container's `/data` and the daemon's own copy of it are the same
+ * directory on disk, so copying one into the other reads and rewrites every file in a
+ * world to arrive back where it started — and, during an export, needs a second copy's
+ * worth of free space to do it.
+ *
+ * Read from the container rather than from config, because the two can disagree: a
+ * server created before HOST_DATA_DIR was set still has its named volume, and will keep
+ * it until something recreates the container.
+ */
+/**
+ * Moves a server's world out of its named Docker volume and onto the host.
+ *
+ * Named volumes live under Docker's own storage — on Unraid, inside the docker vDisk,
+ * which is a fixed size shared with every image on the box. A modpack world in there is
+ * a slow way to fill it, and a full docker vDisk does not fail politely: Docker stops
+ * being able to write and everything on the machine that depends on it goes with it.
+ *
+ * Runs at container creation, which is the only moment the bind can change. Skipped
+ * entirely when there is no volume, or when the host directory already has something in
+ * it — copying over a populated directory could bury a newer world under an older one,
+ * and a wrong guess here costs somebody their save.
+ *
+ * The volume is deliberately left behind afterwards. Reclaiming that space means
+ * deleting a copy of a world, and that is a decision to take with the numbers in front
+ * of you rather than automatically, mid-start, on the word of a copy that just finished.
+ */
+async function migrateVolumeToHost(serverId: string): Promise<void> {
+  const config = getConfig();
+  const volumeName = `mc_data_${serverId}`;
+  const hostDir = path.join(config.hostDataDir!, serverId);
+  const localDir = path.resolve(config.dataDir, serverId);
+
+  try {
+    await docker.getVolume(volumeName).inspect();
+  } catch {
+    return; // Never had one, or it has already been dealt with.
+  }
+
+  // The daemon sees the same directory at its own mount point; the container it is about
+  // to launch sees it at the host path. Both names for one place.
+  const alreadyThere = fs.existsSync(localDir) && fs.readdirSync(localDir).length > 0;
+  if (alreadyThere) {
+    console.warn(
+      `[Docker] Volume '${volumeName}' still exists but '${localDir}' is not empty — ` +
+        'leaving both alone. Check which holds the current world before removing either.'
+    );
+    return;
+  }
+
+  fs.mkdirSync(localDir, { recursive: true });
+  console.log(`[Docker] Moving '${volumeName}' out of Docker storage and into '${hostDir}'...`);
+
+  await new Promise<void>((resolve, reject) => {
+    // cp -a rather than mv: nothing is removed from the volume, so a copy that fails
+    // half way leaves the original intact and the destination is simply retried.
+    const copy = require('child_process').spawn('docker', [
+      'run', '--rm',
+      '-v', `${volumeName}:/from:ro`,
+      '-v', `${hostDir}:/to`,
+      'alpine', 'sh', '-c', 'cp -a /from/. /to/',
+    ]);
+
+    let stderr = '';
+    copy.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    copy.on('error', reject);
+    copy.on('close', (code: number) => {
+      if (code === 0) return resolve();
+      reject(new Error(`copy out of volume '${volumeName}' failed with code ${code}: ${stderr.trim()}`));
+    });
+  });
+
+  const moved = fs.readdirSync(localDir).length;
+  console.log(
+    `[Docker] Moved ${moved} entries out of '${volumeName}'. The volume is untouched; ` +
+      'remove it once the server has started and its world looks right.'
+  );
+}
+
+export async function isBindMounted(serverId: string): Promise<boolean> {
+  try {
+    const container = await getContainerByIdOrName(`mc-server-${serverId}`);
+    const info = await container.inspect();
+    const dataMount = (info.Mounts || []).find((mount: any) => mount.Destination === '/data');
+    return dataMount?.Type === 'bind';
+  } catch {
+    // No container, or Docker is unreachable. The callers all treat this as "sync
+    // anyway", which is the behaviour that existed before this check.
+    return false;
+  }
+}
+
 export async function syncContainerToHost(serverId: string): Promise<void> {
   const config = getConfig();
   const baseDir = path.resolve(config.dataDir, serverId);
   if (!fs.existsSync(baseDir)) {
     fs.mkdirSync(baseDir, { recursive: true });
+  }
+
+  if (await isBindMounted(serverId)) {
+    // Already the same directory. This used to copy a multi-gigabyte world onto itself
+    // on every export and every backup.
+    return;
   }
 
   try {
@@ -405,6 +518,13 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
   const volumeBind = config.hostDataDir
     ? `${path.join(config.hostDataDir, dto.serverId)}:/data`
     : `mc_data_${dto.serverId}:/data`;
+
+  // A server that predates HOST_DATA_DIR has its world in a named volume. Recreating its
+  // container with a bind mount would point it at an empty directory, which looks exactly
+  // like a wiped world. Move the data across first.
+  if (config.hostDataDir) {
+    await migrateVolumeToHost(dto.serverId);
+  }
 
   const containerName = `mc-server-${dto.serverId}`;
 

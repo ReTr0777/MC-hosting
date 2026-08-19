@@ -50,6 +50,10 @@ services:
     environment:
       DAEMON_API_KEY: "local-daemon-testing-bearer-key"
       DAEMON_PORT: 3500
+      # HOST_DATA_DIR is deliberately unset here: this stack keeps the daemon's data in a
+      # named volume, so there is no host path to hand to the game containers, and they
+      # get named volumes of their own. That is fine for local testing and wrong for a
+      # real deployment — see deploy/docker-compose.prod.yml.
       FRP_SERVER_ADDR: "mc_frps"
       FRP_SERVER_PORT: 7000
       FRP_TOKEN: "craftcontrol-tunnel-secret"

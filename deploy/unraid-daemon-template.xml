@@ -37,6 +37,9 @@
   <!-- Daemon Port Variable -->
   <Config Name="Daemon Port Env" Target="DAEMON_PORT" Default="3500" Description="Internal environment variable for daemon server port" Type="Variable" Display="advanced" Required="false" Mask="false">3500</Config>
 
+  <!-- Host path for game server data. Must match the host side of the data directory mapping above. -->
+  <Config Name="Host Server Data Path" Target="HOST_DATA_DIR" Default="/mnt/user/appdata/craftcontrol-daemon/data" Description="The path on THIS machine where the Minecraft Server Data Directory above is mapped. Game server containers bind-mount it directly. Leave it matching that mapping. Without it every world is stored in a named Docker volume, which lives inside the Docker vDisk — a fixed-size file shared with all your container images. A modpack or two will fill it, and a full Docker vDisk stops Docker writing at all and takes the rest of the server down with it." Type="Variable" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol-daemon/data</Config>
+
   <!-- FRP Connection Settings -->
   <Config Name="FRP Server Address" Target="FRP_SERVER_ADDR" Default="IP_OF_MAIN_SERVER" Description="The IP address of the main server hosting the FRP Server" Type="Variable" Display="always" Required="true" Mask="false">IP_OF_MAIN_SERVER</Config>
   

@@ -21,6 +21,7 @@ import {
   ensureDockerImage,
   getContainerStats,
   getContainerStatsHistory,
+  isBindMounted,
 } from '../services/runtime/docker';
 import { provisioningManager } from '../services/content/provisioning';
 import { processManager } from '../services/runtime/process';
@@ -30,6 +31,17 @@ import { getGame, isNonMinecraftGame } from '../games';
 import type { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
 import { dirStats } from '../utils/dir-stats';
+import { freeSpaceMb } from '../utils/disk';
+
+/**
+ * Free space below which a server still kept in a Docker volume will not be exported.
+ *
+ * Exporting one stages a full second copy onto the host first, and the size of that copy
+ * cannot be known without reading the whole volume. So this is a floor rather than a
+ * measurement: enough that a export of an ordinary server has somewhere to go, and low
+ * enough not to refuse on a node that is merely well used.
+ */
+const EXPORT_MIN_FREE_MB = 5 * 1024;
 import { synthesizeForgeRunScript } from '../utils/forgeLaunchScript';
 import {
   searchModrinth,
@@ -1215,6 +1227,30 @@ router.get('/:serverId/export', async (req: Request, res: Response) => {
 
   if (!fs.existsSync(serverDir)) {
     return res.status(404).json({ error: 'Server directory not found' });
+  }
+
+  /*
+   * A server still on a named volume has to be staged onto the host before it can be
+   * tarred, which needs a second copy's worth of free space. Running out part way through
+   * does not just fail the export — it fills the disk the running servers are writing
+   * their worlds to, and on a machine where that disk is also Docker's own storage it
+   * takes everything down with it.
+   *
+   * The floor is a guard rail rather than a prediction: the size of the volume is not
+   * knowable here without reading all of it. Servers on a bind mount skip the staging
+   * altogether and need nothing.
+   */
+  if (!(await isBindMounted(serverId))) {
+    const free = await freeSpaceMb(config.dataDir);
+    if (free !== null && free < EXPORT_MIN_FREE_MB) {
+      return res.status(507).json({
+        error:
+          `Not enough free space to export safely: ${free} MB left where this node stores its ` +
+          `servers, and exporting a server still kept in a Docker volume needs room for a full ` +
+          `second copy of it. Free some space, or move this server onto host storage by setting ` +
+          `HOST_DATA_DIR on the node and restarting the server.`,
+      });
+    }
   }
 
   // Sync latest live container data to host directory before exporting
