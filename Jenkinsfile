@@ -72,6 +72,22 @@ pipeline {
     stages {
         stage('Prepare') {
             steps {
+                // The workspace arrives empty: this job hands over the Jenkinsfile without
+                // checking the repository out beside it, so there is no source for anything
+                // here to build. An explicit checkout costs nothing when the job already did
+                // one, and is the difference between a working pipeline and "lstat deploy: no
+                // such file or directory" when it did not.
+                script {
+                    if (!fileExists('deploy/Dockerfile.ci')) {
+                        echo 'No source in the workspace — checking out.'
+                        checkout scm
+                    }
+                    if (!fileExists('deploy/Dockerfile.ci')) {
+                        error 'Checked out, but deploy/Dockerfile.ci is still missing. Point the ' +
+                              'job at the root of the repository, on the branch you mean to build.'
+                    }
+                }
+
                 // Jenkins ships a plain docker CLI with no plugins, so buildx has to be put
                 // there. It goes in $HOME/.docker/cli-plugins, which on this agent is inside
                 // /var/jenkins_home and therefore survives the build — the download happens
