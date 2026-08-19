@@ -1,0 +1,90 @@
+# Production stack, as deployed to the Unraid box by Jenkinsfile.
+#
+# The difference from the repo-root docker-compose.yml is that nothing here builds. Every
+# image is pulled from ghcr.io, already built and tested by the pipeline, so the Unraid box
+# never needs a checkout, a toolchain or the time to compile anything.
+#
+# Postgres is deliberately absent. The database already exists on this network with real
+# data in it, and a compose file that brought up its own would either fight it for the port
+# or quietly start an empty one and make the panel look wiped. Point DB_HOST at the
+# existing server.
+#
+# Configuration comes from a `.env` file next to this one, on the Unraid box, which the
+# pipeline never writes to — see deploy/env.prod.example for what belongs in it. The one
+# exception is DB_PASSWORD, which Jenkins passes in the environment at deploy time so the
+# database password is not sitting in a file on the array.
+
+services:
+  web:
+    image: ghcr.io/retr0777/mc-hosting:web
+    container_name: mc_web_panel
+    restart: always
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: "postgresql://${DB_USER:-mcuser}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT:-5432}/${DB_NAME:-mcmanager}?schema=public"
+      APP_URL: "${APP_URL:-}"
+      JWT_SECRET: "${JWT_SECRET}"
+      # Changing this makes every stored secret — the Cloudflare token above all —
+      # undecryptable. It is not a value to rotate casually.
+      SECRET_ENCRYPTION_KEY: "${SECRET_ENCRYPTION_KEY}"
+      DISCORD_BOT_SECRET: "${DISCORD_BOT_SECRET:-}"
+      PORT: 3000
+
+  daemon:
+    image: ghcr.io/retr0777/mc-hosting:daemon
+    container_name: mc_daemon_node
+    restart: always
+    ports:
+      - "${DAEMON_PORT:-3500}:3500"
+      # The range game servers are allocated from. Published here rather than per server,
+      # since the daemon hands ports out at runtime and compose is not around to hear it.
+      - "${SERVER_PORT_RANGE:-25000-25050}:${SERVER_PORT_RANGE:-25000-25050}"
+    environment:
+      DAEMON_API_KEY: "${DAEMON_API_KEY}"
+      DAEMON_PORT: 3500
+      FRP_SERVER_ADDR: "mc_frps"
+      FRP_SERVER_PORT: 7000
+      FRP_TOKEN: "${FRP_TOKEN}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol/daemon}:/app/apps/daemon/data"
+
+  frps:
+    image: fatedier/frps:v0.58.0
+    container_name: mc_frps
+    restart: always
+    command: -c /etc/frp/frps.toml
+    ports:
+      - "7000:7000"
+      - "${TUNNEL_PORT_RANGE:-25000-25050}:${TUNNEL_PORT_RANGE:-25000-25050}"
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml
+
+  nanolimbo:
+    image: ghcr.io/retr0777/mc-hosting:nanolimbo
+    container_name: mc_nanolimbo
+    restart: always
+
+  proxy:
+    image: ghcr.io/retr0777/mc-hosting:proxy
+    container_name: mc_velocity_proxy
+    restart: always
+    ports:
+      - "${PROXY_PORT:-25565}:25565"
+      - "3001:3001"
+    depends_on:
+      - nanolimbo
+
+  discord-bot:
+    image: ghcr.io/retr0777/mc-hosting:discord-bot
+    container_name: mc_discord_bot
+    restart: always
+    environment:
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      DISCORD_CLIENT_ID: "${DISCORD_CLIENT_ID:-}"
+      DISCORD_GUILD_ID: "${DISCORD_GUILD_ID:-}"
+      WEB_API_URL: "http://web:3000"
+      DISCORD_BOT_SECRET: "${DISCORD_BOT_SECRET:-}"
+    depends_on:
+      - web

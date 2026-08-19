@@ -269,3 +269,10 @@ electron-builder would not find it to package.
 frps, Velocity, limbo, Discord bot). Images publish to
 `ghcr.io/retr0777/mc-hosting`. Unraid users can instead add the container
 templates in `deploy/`.
+
+`Jenkinsfile` builds, tests and publishes all five images, then deploys them to Unraid
+over SSH using `deploy/docker-compose.prod.yml`. That compose file pulls rather than
+builds and runs no database of its own — it expects the existing Postgres, reached
+through the settings in a `.env` on the Unraid box (`deploy/env.prod.example`). The
+pipeline never writes that file; the only secret it supplies is the database password,
+passed in at deploy time.
