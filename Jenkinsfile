@@ -57,6 +57,9 @@ pipeline {
     environment {
         IMAGE      = 'ghcr.io/retr0777/mc-hosting'
         DEPLOY_DIR = '/mnt/user/appdata/craftcontrol'
+        // Used only when the job itself has no repository attached — see the Prepare stage.
+        REPO_URL    = 'https://github.com/ReTr0777/MC-hosting.git'
+        REPO_BRANCH = 'main'
         // Tagged with the build number as well as the plain tag, so a bad deploy has
         // something specific to roll back to rather than "whatever :web used to be".
         BUILD_TAG_SUFFIX = "b${env.BUILD_NUMBER}"
@@ -79,13 +82,27 @@ pipeline {
                 // such file or directory" when it did not.
                 script {
                     if (!fileExists('deploy/Dockerfile.ci')) {
-                        echo 'No source in the workspace — checking out.'
-                        checkout scm
+                        // `checkout scm` is the right call when the job has a repository
+                        // attached and simply did not use it. A job defined by a pasted script
+                        // has no `scm` to check out at all, and throws rather than returning
+                        // anything, so the clone below is the fallback for that case.
+                        try {
+                            echo 'No source in the workspace — checking out the SCM attached to this job.'
+                            checkout scm
+                        } catch (err) {
+                            echo "No SCM attached to this job (${err.message}). Cloning ${REPO_URL} at ${REPO_BRANCH} instead."
+                            checkout([
+                                $class: 'GitSCM',
+                                branches: [[name: "*/${REPO_BRANCH}"]],
+                                userRemoteConfigs: [[url: REPO_URL, credentialsId: 'github-token']],
+                            ])
+                        }
                     }
                     if (!fileExists('deploy/Dockerfile.ci')) {
-                        error 'Checked out, but deploy/Dockerfile.ci is still missing. Point the ' +
-                              'job at the root of the repository, on the branch you mean to build.'
+                        error 'Still no deploy/Dockerfile.ci after checking out. The workspace is ' +
+                              'not the root of this repository — check the branch and the repo URL.'
                     }
+                    echo "Building ${sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()}."
                 }
 
                 // Jenkins ships a plain docker CLI with no plugins, so buildx has to be put
@@ -128,7 +145,7 @@ pipeline {
                 // The container driver, needed for the registry cache the publish stage
                 // uses and for building without exporting an image in the verify stage.
                 // Created here so both get the same builder.
-                sh 'docker buildx create --name craftcontrol --use || docker buildx use craftcontrol'
+                sh 'docker buildx create --name craftcontrol --use 2>/dev/null || docker buildx use craftcontrol'
 
                 // Logged in before anything pulls. Every Dockerfile here starts FROM an
                 // image on Docker Hub — the verify stage included — and the anonymous
