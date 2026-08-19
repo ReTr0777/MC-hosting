@@ -5,6 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { ServerType } from '@mc-manager/shared';
 import { writeAudit } from '@/lib/audit';
 import { serverStartBlock } from '@/lib/servers/suspension';
+import { registerServerWithProxy, unregisterServerFromProxy } from '@/lib/servers/proxy-sync';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -103,15 +104,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         }
       }
 
-      // Register with Velocity Proxy
-      try {
-        const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-        const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
-        velocity.setBaseUrl(velocityUrl);
-        await velocity.registerServer(server.id, server.node.host, server.serverPort);
-      } catch (velErr: any) {
-        console.warn(`[Web API] Failed to register server ${server.id} with Velocity: ${velErr.message}`);
-      }
+      await registerServerWithProxy(server.id);
 
       // STARTING, not RUNNING: all that happened here is that the daemon accepted the command.
       // A modpack can spend many minutes installing and loading before it opens its port, and
@@ -137,15 +130,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         console.warn(`[Web API] Stop warning: ${e.message}`);
       }
       
-      // Unregister from Velocity Proxy
-      try {
-        const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-        const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
-        velocity.setBaseUrl(velocityUrl);
-        await velocity.unregisterServer(server.id);
-      } catch (velErr: any) {
-        console.warn(`[Web API] Failed to unregister server ${server.id} with Velocity: ${velErr.message}`);
-      }
+      // Left registered with the proxy on purpose — see proxy-sync. A stopped server is
+      // precisely the one a player is trying to reach when they want it woken up.
 
       await prisma.server.update({
         where: { id: server.id },
@@ -162,15 +148,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         console.warn(`[Web API] Kill warning: ${e.message}`);
       }
       
-      // Unregister from Velocity Proxy
-      try {
-        const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-        const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
-        velocity.setBaseUrl(velocityUrl);
-        await velocity.unregisterServer(server.id);
-      } catch (velErr: any) {
-        console.warn(`[Web API] Failed to unregister server ${server.id} with Velocity: ${velErr.message}`);
-      }
+      // Still registered — a killed server is as wakeable as a stopped one.
 
       await prisma.server.update({
         where: { id: server.id },
@@ -191,6 +169,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       } catch (e) {
         // Record was already deleted
       }
+      // The one case that does unregister. Everything else leaves the server routable so
+      // the proxy can still wake it; a deleted one has nothing left to wake.
+      await unregisterServerFromProxy(server.id);
       await writeAudit({ userId: user.userId, action: 'SERVER_DELETE', details: { serverId: server.id, serverName: server.name } });
       return NextResponse.json({ message: 'Server instance deleted' });
     }

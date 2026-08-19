@@ -8,11 +8,14 @@ forwarding-secret-file = "forwarding.secret"
 force-key-authentication = false
 
 [servers]
+# Only limbo is static. Every game server is registered at runtime by the panel, under its
+# server id and with the hostnames it answers for — see VelocityRestPlugin.
 nanolimbo = "nanolimbo:25565"
-naggi = "192.168.50.129:25009"
 
-# Directly connect to naggi (Limbo loading screen disabled)
-try = ["naggi"]
+# Where a player goes when nothing claims the hostname they typed. Limbo, so an unknown
+# address is a world with an explanation in it rather than a refused connection. The plugin
+# overrides this for anyone whose hostname does resolve.
+try = ["nanolimbo"]
 
 [forced-hosts]
 "nanolimbo.local" = ["nanolimbo"]

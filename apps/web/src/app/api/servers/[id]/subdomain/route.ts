@@ -5,6 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { syncCloudflareDns } from '@/lib/services/cloudflare';
 import { encryptSecret, tryDecryptSecret } from '@/lib/auth/crypto';
 import { writeAudit } from '@/lib/audit';
+import { registerServerWithProxy } from '@/lib/servers/proxy-sync';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -109,6 +110,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         body: JSON.stringify({ subdomain: cleanSubdomain, domain: cleanDomain, port: server.serverPort }),
       }).catch(() => {});
     } catch (e) {}
+
+    // Tell the proxy about the new address now rather than waiting for the next monitor
+    // tick — the user has just typed it in and is about to try connecting on it.
+    await registerServerWithProxy(server.id);
 
     // Cloudflare Auto-DNS Provisioning
     let cloudflareResult = null;

@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { DaemonClient } from '@/lib/services/daemon-client';
+import { registerServerWithProxy } from '@/lib/servers/proxy-sync';
 import { ServerType } from '@mc-manager/shared';
 
 export type LifecycleAction = 'start' | 'stop' | 'restart';
@@ -16,28 +17,6 @@ export interface ActionableServer {
   eulaAccepted: boolean;
   executionMode: string;
   node: { host: string; port: number; apiKey: string };
-}
-
-async function registerWithVelocity(server: ActionableServer) {
-  try {
-    const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-    const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
-    velocity.setBaseUrl(velocityUrl);
-    await velocity.registerServer(server.id, server.node.host, server.serverPort);
-  } catch (err: any) {
-    console.warn(`[server-actions] Failed to register server ${server.id} with Velocity: ${err.message}`);
-  }
-}
-
-async function unregisterFromVelocity(serverId: string) {
-  try {
-    const velocityUrl = process.env.VELOCITY_URL || 'http://proxy:3001/api/v1';
-    const velocity = new (require('@/lib/services/velocity-client').VelocityClient)({ host: 'proxy', port: 3001 });
-    velocity.setBaseUrl(velocityUrl);
-    await velocity.unregisterServer(serverId);
-  } catch (err: any) {
-    console.warn(`[server-actions] Failed to unregister server ${serverId} with Velocity: ${err.message}`);
-  }
 }
 
 /**
@@ -74,7 +53,7 @@ export async function runServerAction(server: ActionableServer, action: Lifecycl
       await daemonClient.startServer(targetContainerId, serverMeta);
     }
 
-    await registerWithVelocity(server);
+    await registerServerWithProxy(server.id);
     await prisma.server.update({ where: { id: server.id }, data: { containerId: targetContainerId, status: 'RUNNING' } });
     return { message: 'Server start/restart command sent', status: 'RUNNING' };
   }
@@ -85,7 +64,8 @@ export async function runServerAction(server: ActionableServer, action: Lifecycl
   } catch (e: any) {
     console.warn(`[server-actions] Stop warning: ${e.message}`);
   }
-  await unregisterFromVelocity(server.id);
+  // Deliberately still registered with the proxy. A stopped server is the one people are
+  // trying to reach when they want it woken, and unregistering it removes that route.
   await prisma.server.update({ where: { id: server.id }, data: { containerId: targetContainerId, status: 'STOPPING' } });
   return { message: 'Server stop command sent', status: 'STOPPING' };
 }

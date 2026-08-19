@@ -9,6 +9,7 @@ import { evaluateSleep, requestSleep } from '@/lib/servers/sleep';
 import { evaluateCrashRestart, attemptAutoRestart } from '@/lib/servers/crash-restart';
 import { serverStartBlock } from '@/lib/servers/suspension';
 import { pruneBackupsForServer } from '@/lib/servers/backup-retention';
+import { syncProxyServers } from '@/lib/servers/proxy-sync';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,6 +109,7 @@ export async function POST(request: NextRequest) {
     serversChecked: 0,
     events: [] as string[],
     schedulesRun: [] as string[],
+    proxyServers: 0,
   };
 
   try {
@@ -509,6 +511,12 @@ export async function POST(request: NextRequest) {
         }
       }
     }
+
+    // ── Proxy routing ──
+    // Re-registers every server with Velocity. The proxy keeps this only in memory, so a
+    // proxy that restarted has forgotten every route until something tells it again, and
+    // this is that something.
+    summary.proxyServers = await syncProxyServers();
 
     // ── Scheduled tasks ──
     // Runs last so a schedule acting on a server sees state this tick already reconciled.

@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
 import { CreateServerContainerDto, javaSupportViolation } from '@mc-manager/shared';
-import { VelocityClient } from '@/lib/services/velocity-client';
+import { registerServerWithProxy } from '@/lib/servers/proxy-sync';
 import { writeAudit } from '@/lib/audit';
 import { nodeCapacity, capacityViolation, diskSpaceViolation } from '@/lib/servers/node-capacity';
 
@@ -390,15 +390,9 @@ export async function POST(
 
         await updateLimboTitle('<green>Migration Complete</green>', '<gray>Cleaning up old node...</gray>');
         
-        // Update proxy with new node routing
-        try {
-          const velocity = new VelocityClient({ host: '127.0.0.1', port: 3001 });
-          velocity.setBaseUrl(process.env.PROXY_API_URL || 'http://proxy:3001');
-          await velocity.registerServer(server.id, destNode.host, server.serverPort);
-          console.log(`[Migration] Proxy updated for server ${server.id}`);
-        } catch(e) {
-          console.warn(`[Migration] Failed to update Proxy routing:`, e);
-        }
+        // Point the proxy at the new node. Re-registering under the same id replaces the
+        // address, so anyone connecting by hostname follows the server across.
+        await registerServerWithProxy(server.id);
 
         /*
          * 5. Delete the source copy — the only irreversible step in the whole flow, and

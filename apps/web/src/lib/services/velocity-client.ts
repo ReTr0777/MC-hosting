@@ -15,12 +15,22 @@ export class VelocityClient {
     this.baseUrl = url;
   }
 
-  public async registerServer(name: string, address: string, port: number): Promise<void> {
+  /**
+   * @param hostnames Addresses this backend answers for, e.g. `survival.example.com`. The
+   *   proxy registers servers under their id, which nobody types, so without these there is
+   *   nothing to turn a player's address into a destination.
+   */
+  public async registerServer(
+    name: string,
+    address: string,
+    port: number,
+    hostnames: string[] = []
+  ): Promise<void> {
     const url = `${this.baseUrl}/api/servers`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, address, port }),
+      body: JSON.stringify({ name, address, port, hostnames }),
     });
 
     if (!res.ok) {
