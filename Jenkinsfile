@@ -10,22 +10,24 @@
  *   github-token     ghcr.io login (username + personal access token, packages:write)
  *   docker-hub-creds Docker Hub login, purely to lift the anonymous pull rate limit on
  *                    the base images. Nothing is pushed there.
- *   DB_PASSWORD      the production database password, passed to compose at deploy time
- *                    so it is never written to a file on the array
  *   unraid-ssh       the key for root@unraid
  *
- * The agent needs Docker with buildx, and nothing else — no Node, no toolchain. Even the
- * typecheck and the tests run as a docker build (deploy/Dockerfile.ci). The Unraid box
- * needs docker compose (the Docker Compose Manager plugin) and a filled-in .env; both are
- * checked before anything is changed, so a missing one costs a failed deploy and nothing
- * else.
+ * No database password is needed any more: the containers keep the environment they were
+ * created with, so nothing here has to know what is in it.
  *
- * FIRST RUN, READ THIS: the deploy stage manages the containers with compose, under the
- * same names the Unraid templates in deploy/ use (mc_web_panel and friends). Compose will
- * refuse to start if containers with those names exist but were created by the Unraid
- * Docker Manager rather than by compose. Remove them once from the Unraid UI — the data
- * lives in the appdata paths and the database, not in the containers — and every run
- * after that is unattended. Until then, run with DEPLOY unticked to publish images only.
+ * The agent needs Docker with buildx, and nothing else — no Node, no toolchain. Even the
+ * typecheck and the tests run as a docker build (deploy/Dockerfile.ci). Buildx is
+ * installed on the agent by the Prepare stage if it is not already there.
+ *
+ * The box needs nothing installed. The deploy pulls the new images and recreates the
+ * containers named by the CONTAINERS parameter against them, keeping the configuration
+ * each one already has — so the Unraid templates remain the single description of how a
+ * container is run, and no container is ever deleted. deploy/docker-compose.prod.yml is
+ * kept for anyone running this stack somewhere other than that box; this pipeline does
+ * not use it.
+ *
+ * Recreating the daemon restarts it, which stops any game server it is running. Deploy
+ * when nobody is playing.
  */
 
 pipeline {
@@ -47,6 +49,14 @@ pipeline {
             defaultValue: 'linux/amd64',
             description: 'Image platforms. Unraid is amd64; widen to linux/amd64,linux/arm64 for ARM nodes, at the cost of a much slower build.'
         )
+        string(
+            name: 'CONTAINERS',
+            defaultValue: 'CraftControl-WebPanel,craftcontrol-daemon,craftcontrol-discord-bot',
+            description: 'Containers to recreate on the newly published images, by their names on the box. ' +
+                         'These are the Unraid template names, not the compose ones. Leave out anything ' +
+                         'running an image this pipeline does not build — the FRP server runs a pinned ' +
+                         'upstream frps and has nothing to pick up from a build.'
+        )
         booleanParam(
             name: 'SKIP_TESTS',
             defaultValue: false,
@@ -56,7 +66,6 @@ pipeline {
 
     environment {
         IMAGE      = 'ghcr.io/retr0777/mc-hosting'
-        DEPLOY_DIR = '/mnt/user/appdata/craftcontrol'
         // Used only when the job itself has no repository attached — see the Prepare stage.
         REPO_URL    = 'https://github.com/ReTr0777/MC-hosting.git'
         REPO_BRANCH = 'main'
@@ -222,59 +231,51 @@ pipeline {
                     script {
                         def target = "root@${params.UNRAID_HOST}"
                         def ssh = "ssh -o StrictHostKeyChecking=no ${target}"
+                        def names = params.CONTAINERS.split(',').collect { it.trim() }.findAll { it }
 
-                        // Unraid does not ship compose as standard — it arrives with the
-                        // Docker Compose Manager plugin, which depending on its version
-                        // leaves either a `docker compose` subcommand or a standalone
-                        // `docker-compose` binary. Find whichever is there and use that,
-                        // rather than assuming the subcommand and failing on a box that
-                        // does in fact have compose installed.
-                        def compose = sh(
-                            script: "${ssh} 'if docker compose version >/dev/null 2>&1; then echo \"docker compose\"; " +
-                                    "elif docker-compose version >/dev/null 2>&1; then echo docker-compose; fi'",
-                            returnStdout: true
-                        ).trim()
-
-                        if (!compose) {
-                            error "No compose on ${params.UNRAID_HOST}: neither 'docker compose' nor 'docker-compose' runs there. " +
-                                  'Install the Docker Compose Manager plugin from Community Applications, then re-run.'
+                        if (!names) {
+                            error 'CONTAINERS is empty — nothing to deploy to.'
                         }
-                        echo "Using '${compose}' on ${params.UNRAID_HOST}."
 
-                        sh "${ssh} 'mkdir -p ${DEPLOY_DIR}'"
-
-                        // The compose file and the tunnel config are the only things the
-                        // box needs from the repo. Its .env is its own and is never touched.
-                        sh """
-                            scp -o StrictHostKeyChecking=no \
-                                deploy/docker-compose.prod.yml deploy/frps.toml \
-                                ${target}:${DEPLOY_DIR}/
-                        """
-
-                        sh "${ssh} 'test -f ${DEPLOY_DIR}/.env' " +
-                           "|| (echo 'No ${DEPLOY_DIR}/.env on the host — copy deploy/env.prod.example there and fill it in.' && exit 1)"
-
-                        withCredentials([string(credentialsId: 'DB_PASSWORD', variable: 'DB_PASSWORD')]) {
-                            // set +x so the password is not echoed by the shell. Jenkins
-                            // masks it in the console too; neither alone is enough.
-                            sh """
-                                set +x
-                                ${ssh} "cd ${DEPLOY_DIR} \
-                                    && DB_PASSWORD='\$DB_PASSWORD' ${compose} -f docker-compose.prod.yml pull \
-                                    && DB_PASSWORD='\$DB_PASSWORD' ${compose} -f docker-compose.prod.yml up -d --remove-orphans"
-                            """
+                        // Pull on the host rather than letting watchtower do it. The host is
+                        // already able to pull these; watchtower would need its own registry
+                        // credentials, and giving a throwaway container the ghcr token to
+                        // repeat a job docker has just done is not worth the extra secret.
+                        // It runs with --no-pull below for exactly this reason.
+                        ['web', 'daemon', 'proxy', 'nanolimbo', 'discord-bot'].each { name ->
+                            sh "${ssh} 'docker pull ${IMAGE}:${name}'"
                         }
+
+                        /*
+                         * Recreate each container on the image just pulled, keeping the
+                         * configuration it already has.
+                         *
+                         * The alternative is writing every port, mount and environment
+                         * variable of every container into this file, where it would be a
+                         * second copy of what the Unraid templates already hold — and the
+                         * copy that silently goes stale. Watchtower reads the running
+                         * container's own config and recreates it against the new image, so
+                         * the template stays the one description of how a container is run.
+                         *
+                         * Only containers that are running are considered. One deliberately
+                         * stopped is left stopped rather than revived by a deploy.
+                         */
+                        def targets = names.join(' ')
+                        echo "Recreating on the new images: ${targets}"
+                        sh "${ssh} 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock " +
+                           "containrrr/watchtower --run-once --no-pull ${targets}'"
 
                         // Old image layers accumulate fast at five images a build, and the
                         // array is not where anyone wants to discover that.
                         sh "${ssh} 'docker image prune -f'"
 
-                        sh "${ssh} 'cd ${DEPLOY_DIR} && ${compose} -f docker-compose.prod.yml ps'"
+                        sh "${ssh} 'docker ps --filter name=${names[0]} " +
+                           names.tail().collect { "--filter name=${it} " }.join('') +
+                           "--format \"table {{.Names}}\t{{.Image}}\t{{.Status}}\"'"
                     }
                 }
             }
         }
-    }
 
     post {
         always {
@@ -283,7 +284,7 @@ pipeline {
         }
         success {
             echo "Published ${IMAGE}:*-${BUILD_TAG_SUFFIX}" +
-                 (params.DEPLOY ? " and deployed to ${params.UNRAID_HOST}" : ' (deploy skipped)')
+                 (params.DEPLOY ? " and recreated ${params.CONTAINERS} on ${params.UNRAID_HOST}" : ' (deploy skipped)')
         }
         failure {
             echo 'Build failed — nothing was deployed. The running stack is untouched.'
