@@ -190,7 +190,14 @@ pipeline {
                         ['proxy',       'apps/proxy/Dockerfile'],
                         ['nanolimbo',   'apps/nanolimbo/Dockerfile'],
                         ['discord-bot', 'apps/discord-bot/Dockerfile'],
-                    ].each { name, dockerfile ->
+                    ].each { entry ->
+                        // Indexed rather than destructured in the closure signature: Jenkins
+                        // runs this through its CPS interpreter, which hands a one-element
+                        // list the whole pair as the first parameter and leaves the second
+                        // null. That produced `--file null` and an image tagged with the
+                        // literal text of the pair.
+                        def name = entry[0]
+                        def dockerfile = entry[1]
                         sh """
                             docker buildx build \
                                 --platform '${params.PLATFORMS}' \
