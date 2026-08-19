@@ -49,9 +49,12 @@ services:
       # with every image on the machine. Filling it stops Docker writing at all, and
       # takes the rest of the box with it.
       #
-      # Must be the same host path as the volume mounted at /app/apps/daemon/data below;
-      # the daemon and the containers it launches are naming one directory.
-      HOST_DATA_DIR: "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol/daemon}"
+      # Must be the host path that shows up inside the daemon as its own data directory —
+      # the volume mounted at /app/apps/daemon/data below, plus the `servers` subdirectory
+      # the daemon keeps them in. Get this wrong and the daemon and the game container are
+      # each looking at a different directory: exports tar an empty one, and installed mods
+      # are written somewhere the server never reads.
+      HOST_DATA_DIR: "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol/daemon}/servers"
       FRP_SERVER_ADDR: "mc_frps"
       FRP_SERVER_PORT: 7000
       FRP_TOKEN: "${FRP_TOKEN}"

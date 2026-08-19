@@ -29,7 +29,13 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV DAEMON_PORT=3500
-ENV DAEMON_DATA_DIR=/app/data/servers
+# Must sit under the directory every deployment mounts a host volume at
+# (/app/apps/daemon/data). It did not, and so the daemon's config.json, its frpc.toml
+# and its copy of every server directory were being written to a path nothing persisted.
+# That was survivable only while the worlds themselves lived in named volumes; with
+# HOST_DATA_DIR the daemon and the game container have to be naming one directory, and
+# they cannot if this points somewhere the host never mounted.
+ENV DAEMON_DATA_DIR=/app/apps/daemon/data/servers
 ENV SERVERPACKCREATOR_JAR=/opt/serverpackcreator/serverpackcreator.jar
 
 # Install required system packages
