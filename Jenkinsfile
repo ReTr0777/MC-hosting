@@ -72,6 +72,43 @@ pipeline {
     stages {
         stage('Prepare') {
             steps {
+                // Jenkins ships a plain docker CLI with no plugins, so buildx has to be put
+                // there. It goes in $HOME/.docker/cli-plugins, which on this agent is inside
+                // /var/jenkins_home and therefore survives the build — the download happens
+                // once, and every run after this one finds it already in place.
+                //
+                // The tag comes from the redirect on /releases/latest rather than the API,
+                // which rate-limits unauthenticated callers and would fail a build for no
+                // reason it could explain. The pin is only the fallback for a GitHub that is
+                // not answering; bump it whenever, nothing depends on it being current.
+                sh '''
+                    set -e
+                    if docker buildx version >/dev/null 2>&1; then
+                        echo "buildx already present: $(docker buildx version)"
+                        exit 0
+                    fi
+
+                    case "$(uname -m)" in
+                        x86_64)  arch=amd64 ;;
+                        aarch64) arch=arm64 ;;
+                        *) echo "no buildx build published for $(uname -m)" >&2; exit 1 ;;
+                    esac
+
+                    latest=https://github.com/docker/buildx/releases/latest
+                    tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$latest" 2>/dev/null | sed 's#.*/tag/##')
+                    case "$tag" in
+                        v*) ;;
+                        *) tag=v0.17.1; echo "could not resolve the latest buildx; falling back to $tag" ;;
+                    esac
+
+                    echo "Installing buildx $tag for linux/$arch..."
+                    mkdir -p "$HOME/.docker/cli-plugins"
+                    asset="https://github.com/docker/buildx/releases/download/$tag/buildx-$tag.linux-$arch"
+                    curl -fsSL -o "$HOME/.docker/cli-plugins/docker-buildx" "$asset"
+                    chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+                    docker buildx version
+                '''
+
                 // The container driver, needed for the registry cache the publish stage
                 // uses and for building without exporting an image in the verify stage.
                 // Created here so both get the same builder.
