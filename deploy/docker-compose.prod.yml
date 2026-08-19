@@ -49,18 +49,21 @@ services:
       # with every image on the machine. Filling it stops Docker writing at all, and
       # takes the rest of the box with it.
       #
-      # Must be the host path that shows up inside the daemon as its own data directory —
-      # the volume mounted at /app/apps/daemon/data below, plus the `servers` subdirectory
-      # the daemon keeps them in. Get this wrong and the daemon and the game container are
-      # each looking at a different directory: exports tar an empty one, and installed mods
-      # are written somewhere the server never reads.
-      HOST_DATA_DIR: "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol/daemon}/servers"
+      # The host path that appears inside the daemon as its own server directory: the
+      # volume mounted at /app/data below, plus the `servers` subdirectory the daemon
+      # keeps them in (DAEMON_DATA_DIR=/app/data/servers in the image). Get this wrong and
+      # the daemon and the game container are each looking at a different directory:
+      # exports tar an empty one, and installed mods are written where nothing reads them.
+      HOST_DATA_DIR: "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol}/servers"
       FRP_SERVER_ADDR: "mc_frps"
       FRP_SERVER_PORT: 7000
       FRP_TOKEN: "${FRP_TOKEN}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol/daemon}:/app/apps/daemon/data"
+      # /app/data, not /app/apps/daemon/data: the latter is not where the daemon looks,
+      # and mounting there persists nothing while leaving the running node apparently fine
+      # until the first restart.
+      - "${DAEMON_DATA:-/mnt/user/appdata/craftcontrol}:/app/data"
 
   frps:
     image: fatedier/frps:v0.58.0

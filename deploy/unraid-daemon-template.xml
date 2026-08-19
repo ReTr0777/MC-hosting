@@ -29,7 +29,7 @@
   <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw" Description="Mount host Docker socket to enable Minecraft server container management" Type="Path" Display="always" Required="true" Mask="false">/var/run/docker.sock</Config>
 
   <!-- Persistent Data Volume Mapping -->
-  <Config Name="Minecraft Server Data Directory" Target="/app/apps/daemon/data" Default="/mnt/user/appdata/craftcontrol-daemon/data" Mode="rw" Description="Host directory for persistent Minecraft server worlds, configs, and modpack files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol-daemon/data</Config>
+  <Config Name="Minecraft Server Data Directory" Target="/app/data" Default="/mnt/user/appdata/craftcontrol" Mode="rw" Description="Host directory for persistent Minecraft server worlds, configs, and modpack files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol</Config>
 
   <!-- Daemon Secret API Key -->
   <Config Name="Daemon Bearer API Key" Target="DAEMON_API_KEY" Default="change-me-secret-bearer-key" Description="Bearer Token Key for Web Panel authentication" Type="Variable" Display="always" Required="true" Mask="true">change-me-secret-bearer-key</Config>
@@ -38,7 +38,7 @@
   <Config Name="Daemon Port Env" Target="DAEMON_PORT" Default="3500" Description="Internal environment variable for daemon server port" Type="Variable" Display="advanced" Required="false" Mask="false">3500</Config>
 
   <!-- Host path for game server data. The host side of the data directory mapping above, plus /servers. -->
-  <Config Name="Host Server Data Path" Target="HOST_DATA_DIR" Default="/mnt/user/appdata/craftcontrol-daemon/data/servers" Description="The path on THIS machine where the Minecraft Server Data Directory above is mapped, with /servers on the end — that subdirectory is where the daemon keeps them, so both it and the game containers name one directory. Game server containers bind-mount it directly. Without it every world is stored in a named Docker volume, which lives inside the Docker vDisk — a fixed-size file shared with all your container images. A modpack or two will fill it, and a full Docker vDisk stops Docker writing at all and takes the rest of the server down with it." Type="Variable" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol-daemon/data/servers</Config>
+  <Config Name="Host Server Data Path" Target="HOST_DATA_DIR" Default="/mnt/user/appdata/craftcontrol/servers" Description="The path on THIS machine where the Minecraft Server Data Directory above is mapped, with /servers on the end — that subdirectory is where the daemon keeps them, so both it and the game containers name one directory. Game server containers bind-mount it directly. Without it every world is stored in a named Docker volume, which lives inside the Docker vDisk — a fixed-size file shared with all your container images. A modpack or two will fill it, and a full Docker vDisk stops Docker writing at all and takes the rest of the server down with it." Type="Variable" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol/servers</Config>
 
   <!-- FRP Connection Settings -->
   <Config Name="FRP Server Address" Target="FRP_SERVER_ADDR" Default="IP_OF_MAIN_SERVER" Description="The IP address of the main server hosting the FRP Server" Type="Variable" Display="always" Required="true" Mask="false">IP_OF_MAIN_SERVER</Config>
