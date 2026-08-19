@@ -81,22 +81,23 @@ pipeline {
                 // one, and is the difference between a working pipeline and "lstat deploy: no
                 // such file or directory" when it did not.
                 script {
-                    if (!fileExists('deploy/Dockerfile.ci')) {
-                        // `checkout scm` is the right call when the job has a repository
-                        // attached and simply did not use it. A job defined by a pasted script
-                        // has no `scm` to check out at all, and throws rather than returning
-                        // anything, so the clone below is the fallback for that case.
-                        try {
-                            echo 'No source in the workspace — checking out the SCM attached to this job.'
-                            checkout scm
-                        } catch (err) {
-                            echo "No SCM attached to this job (${err.message}). Cloning ${REPO_URL} at ${REPO_BRANCH} instead."
-                            checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: "*/${REPO_BRANCH}"]],
-                                userRemoteConfigs: [[url: REPO_URL, credentialsId: 'github-token']],
-                            ])
-                        }
+                    // Unconditionally, every build. Guarding this on the workspace being empty
+                    // meant the first build cloned and every build after it silently reused
+                    // that same commit — five images were published from a revision three
+                    // commits stale before the `Building <sha>` line below gave it away.
+                    //
+                    // `checkout scm` is the right call when the job has a repository attached.
+                    // A job defined by a pasted script has no `scm` to check out at all and
+                    // throws rather than returning anything, so the clone is the fallback.
+                    try {
+                        checkout scm
+                    } catch (err) {
+                        echo "No SCM attached to this job (${err.message}). Cloning ${REPO_URL} at ${REPO_BRANCH} instead."
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${REPO_BRANCH}"]],
+                            userRemoteConfigs: [[url: REPO_URL, credentialsId: 'github-token']],
+                        ])
                     }
                     if (!fileExists('deploy/Dockerfile.ci')) {
                         error 'Still no deploy/Dockerfile.ci after checking out. The workspace is ' +
@@ -223,11 +224,22 @@ pipeline {
                         def ssh = "ssh -o StrictHostKeyChecking=no ${target}"
 
                         // Unraid does not ship compose as standard — it arrives with the
-                        // Docker Compose Manager plugin. Say so here rather than letting
-                        // the deploy fail on an unexplained "docker: 'compose' is not a
-                        // command" three steps later.
-                        sh "${ssh} 'docker compose version >/dev/null 2>&1' " +
-                           "|| (echo 'docker compose is not available on ${params.UNRAID_HOST} — install the Docker Compose Manager plugin from Community Applications.' && exit 1)"
+                        // Docker Compose Manager plugin, which depending on its version
+                        // leaves either a `docker compose` subcommand or a standalone
+                        // `docker-compose` binary. Find whichever is there and use that,
+                        // rather than assuming the subcommand and failing on a box that
+                        // does in fact have compose installed.
+                        def compose = sh(
+                            script: "${ssh} 'if docker compose version >/dev/null 2>&1; then echo \"docker compose\"; " +
+                                    "elif docker-compose version >/dev/null 2>&1; then echo docker-compose; fi'",
+                            returnStdout: true
+                        ).trim()
+
+                        if (!compose) {
+                            error "No compose on ${params.UNRAID_HOST}: neither 'docker compose' nor 'docker-compose' runs there. " +
+                                  'Install the Docker Compose Manager plugin from Community Applications, then re-run.'
+                        }
+                        echo "Using '${compose}' on ${params.UNRAID_HOST}."
 
                         sh "${ssh} 'mkdir -p ${DEPLOY_DIR}'"
 
@@ -248,8 +260,8 @@ pipeline {
                             sh """
                                 set +x
                                 ${ssh} "cd ${DEPLOY_DIR} \
-                                    && DB_PASSWORD='\$DB_PASSWORD' docker compose -f docker-compose.prod.yml pull \
-                                    && DB_PASSWORD='\$DB_PASSWORD' docker compose -f docker-compose.prod.yml up -d --remove-orphans"
+                                    && DB_PASSWORD='\$DB_PASSWORD' ${compose} -f docker-compose.prod.yml pull \
+                                    && DB_PASSWORD='\$DB_PASSWORD' ${compose} -f docker-compose.prod.yml up -d --remove-orphans"
                             """
                         }
 
@@ -257,7 +269,7 @@ pipeline {
                         // array is not where anyone wants to discover that.
                         sh "${ssh} 'docker image prune -f'"
 
-                        sh "${ssh} 'cd ${DEPLOY_DIR} && docker compose -f docker-compose.prod.yml ps'"
+                        sh "${ssh} 'cd ${DEPLOY_DIR} && ${compose} -f docker-compose.prod.yml ps'"
                     }
                 }
             }
