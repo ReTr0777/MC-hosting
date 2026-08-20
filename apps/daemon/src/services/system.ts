@@ -1,4 +1,6 @@
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
 import si from 'systeminformation';
 import Docker from 'dockerode';
 import { DaemonHealthDto, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
@@ -265,5 +267,43 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
     javaMajor,
     dataDiskFreeMb: dataDisk?.freeMb ?? null,
     dataDiskTotalMb: dataDisk?.totalMb ?? null,
+    version: daemonVersion(),
   };
+}
+
+/**
+ * This daemon's package version, or undefined if it cannot be read.
+ *
+ * Read from package.json rather than baked into a constant so it cannot drift from the
+ * version the release was actually cut at. Two candidate paths because the file sits one
+ * level above the compiled entry point in the image (dist/ -> ../package.json) and the
+ * same distance above the source tree when running from ts-node.
+ *
+ * Cached: the panel polls health every few seconds and this never changes while the
+ * process lives.
+ */
+let cachedVersion: string | undefined;
+let versionResolved = false;
+
+function daemonVersion(): string | undefined {
+  if (versionResolved) return cachedVersion;
+  versionResolved = true;
+
+  for (const candidate of ['../../package.json', '../package.json']) {
+    try {
+      const raw = fs.readFileSync(path.join(__dirname, candidate), 'utf-8');
+      const parsed = JSON.parse(raw);
+      // The name is checked too: '../package.json' resolves to the workspace root in some
+      // layouts, and reporting the monorepo's version as the daemon's would be worse than
+      // reporting nothing — it would look current while the daemon was years old.
+      if (parsed?.name === '@mc-manager/daemon' && typeof parsed.version === 'string') {
+        cachedVersion = parsed.version;
+        return cachedVersion;
+      }
+    } catch {
+      // Try the next path. A daemon that cannot read its own version still reports health.
+    }
+  }
+
+  return undefined;
 }

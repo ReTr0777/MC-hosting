@@ -99,6 +99,13 @@ export interface DaemonHealthDto {
    */
   dataDiskFreeMb?: number | null;
   dataDiskTotalMb?: number | null;
+  /**
+   * The daemon's own package version, e.g. "1.2.15".
+   *
+   * Optional because a daemon predating this field omits it, and the panel has to read
+   * that as "too old to say" rather than as "no version" — see daemonVersionState.
+   */
+  version?: string;
 }
 
 export interface WsAuthPayload {
