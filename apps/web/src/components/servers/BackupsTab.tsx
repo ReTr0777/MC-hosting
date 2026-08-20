@@ -21,13 +21,22 @@ interface Retention {
   maxTotalMb: number | null;
 }
 
+/** A backup the node is writing right now. Absent once the archive is in the list. */
+interface BackupJob {
+  name: string;
+  startedAt: string;
+  state: 'running' | 'failed';
+  error?: string;
+}
+
 interface BackupsPayload {
   backups: Backup[];
+  job: BackupJob | null;
   retention: Retention;
 }
 
 /** Module-level so the polling hook's fallback identity is stable between renders. */
-const EMPTY_PAYLOAD: BackupsPayload = { backups: [], retention: { count: null, days: null, maxTotalMb: null } };
+const EMPTY_PAYLOAD: BackupsPayload = { backups: [], job: null, retention: { count: null, days: null, maxTotalMb: null } };
 
 type RetentionForm = { count: string; days: string; maxTotalMb: string };
 
@@ -50,11 +59,14 @@ export default function BackupsTab({ serverId, canManage = true }: { serverId: s
     {
       select: (raw) => ({
         backups: raw?.backups ?? [],
+        job: raw?.job ?? null,
         retention: { count: raw?.retention?.count ?? null, days: raw?.retention?.days ?? null, maxTotalMb: raw?.retention?.maxTotalMb ?? null },
       }),
     }
   );
   const backups = data.backups;
+  // The daemon writes the archive in the background, so the poll is what reports progress.
+  const job = data.job;
 
   // The retention inputs are seeded from the server once and then left alone: this endpoint
   // polls, and re-syncing on every poll would yank a half-typed number out from under the user.
@@ -100,15 +112,19 @@ export default function BackupsTab({ serverId, canManage = true }: { serverId: s
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreating(true);
-    // Archiving a big world takes a while; a sticky toast beats a button that just sits there.
-    const toastId = toast.toast('info', 'Creating backup…', 'Archiving the world and configs.', { sticky: true });
     try {
       await apiPost(`/api/servers/${serverId}/backups`, { name: backupName.trim() });
-      toast.toast('success', 'Backup created', undefined, { id: toastId });
+      /*
+       * "Started", not "created". The request returns as soon as the node has begun — it
+       * has to, because Cloudflare abandons an origin after 100 seconds and a large world
+       * takes longer than that. Claiming success here would be claiming something this
+       * response cannot know, and the list below reports the truth as it happens.
+       */
+      toast.success('Backup started', 'The list updates when the archive is finished.');
       setBackupName('');
       await refresh();
     } catch (err) {
-      toast.toast('error', 'Backup failed', errorMessage(err), { id: toastId });
+      toast.error('Could not start the backup', errorMessage(err));
     } finally {
       setCreating(false);
     }
@@ -259,6 +275,23 @@ export default function BackupsTab({ serverId, canManage = true }: { serverId: s
               {savingRetention ? 'Saving…' : 'Save retention policy'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/*
+        A backup in flight has nothing in the list to represent it, and on a large world it
+        can be several minutes before it does. Without this the page looks like the button
+        did nothing.
+      */}
+      {job?.state === 'running' && (
+        <div style={{ fontSize: '0.78rem', color: 'var(--accent)', background: 'var(--accent-dim)', border: '1px solid var(--accent-border)', padding: '10px 12px', borderRadius: '6px', lineHeight: 1.55 }}>
+          <strong>Archiving {job.name}…</strong> Started {formatDateTime(job.startedAt)}. A large world takes
+          several minutes; it appears in the list below when it is finished. You can leave this page.
+        </div>
+      )}
+      {job?.state === 'failed' && (
+        <div style={{ fontSize: '0.78rem', color: 'var(--danger)', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.25)', padding: '10px 12px', borderRadius: '6px', lineHeight: 1.55 }}>
+          <strong>The last backup failed.</strong> {job.error || 'The node did not say why.'}
         </div>
       )}
 

@@ -57,6 +57,46 @@ function gameOfBackupZip(zipPath: string): Game {
 }
 
 /** Never worth archiving: derived, huge, or the backups themselves. */
+/**
+ * Backups currently being written, by server id.
+ *
+ * Compressing a multi-gigabyte world takes minutes, and a request held open that long
+ * cannot survive the trip: Cloudflare abandons an origin after 100 seconds and answers 524,
+ * regardless of what the panel or the daemon are willing to wait. No timeout on either side
+ * can change that, so the request has to return before the work is done.
+ *
+ * That means the work needs somewhere to live and something to report it. This is that:
+ * the daemon starts the archive, answers immediately, and the panel watches this instead of
+ * a connection.
+ */
+const running = new Map<string, BackupJob>();
+
+export interface BackupJob {
+  serverId: string;
+  /** The file being written. Known up front, since the name is chosen before the work. */
+  name: string;
+  startedAt: string;
+  state: 'running' | 'failed';
+  /** Set only when state is 'failed'. A finished job is removed rather than kept. */
+  error?: string;
+}
+
+/** The backup in flight for a server, if any. */
+export function backupJobFor(serverId: string): BackupJob | null {
+  return running.get(serverId) ?? null;
+}
+
+/**
+ * Clears a failed job once it has been reported.
+ *
+ * Failures are kept until somebody asks, because a background job that fails silently is
+ * worse than one that fails loudly — nothing else would ever mention it.
+ */
+export function clearBackupJob(serverId: string): void {
+  const job = running.get(serverId);
+  if (job && job.state === 'failed') running.delete(serverId);
+}
+
 export const EXCLUDED_FROM_BACKUP = ['backups', 'logs', 'crash-reports', '.cache', '.version_mismatch_rescue', '.tmp_uploads'];
 
 /**
@@ -169,7 +209,45 @@ export class BackupManager {
     return Array.from(byName.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
-  public async createBackup(serverId: string, customName?: string): Promise<BackupInfo> {
+  /**
+   * Starts a backup and returns as soon as it is under way.
+   *
+   * The caller gets the filename immediately and watches `backupJobFor` for the outcome.
+   * Nothing is awaited here on purpose — see the note on `running` for why holding the
+   * request open is not an option once a world is large enough to matter.
+   */
+  public startBackup(serverId: string, customName?: string): BackupJob {
+    const existing = running.get(serverId);
+    if (existing?.state === 'running') {
+      throw new Error(`A backup of this server is already running (${existing.name}).`);
+    }
+
+    const name = this.backupFileName(customName);
+    const job: BackupJob = { serverId, name, startedAt: new Date().toISOString(), state: 'running' };
+    running.set(serverId, job);
+
+    void this.createBackup(serverId, customName, name)
+      .then(() => {
+        // Removed rather than marked done: the finished archive is in the listing, which
+        // is a better source of truth than a job record that would have to be expired.
+        running.delete(serverId);
+      })
+      .catch((err: any) => {
+        console.error(`[BackupManager] Backup of '${serverId}' failed:`, err.message);
+        running.set(serverId, { ...job, state: 'failed', error: err.message });
+      });
+
+    return job;
+  }
+
+  /** The archive filename for a backup taken now. Chosen up front so a job can name it. */
+  private backupFileName(customName?: string): string {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeCustomName = customName ? customName.replace(/[^a-zA-Z0-9_-]/g, '_') : 'snapshot';
+    return `backup_${timestamp}_${safeCustomName}.zip`;
+  }
+
+  public async createBackup(serverId: string, customName?: string, presetFileName?: string): Promise<BackupInfo> {
     const dataDir = getConfig().dataDir;
     const serverDir = path.join(dataDir, serverId);
     const backupDir = this.getBackupDir(serverId);
@@ -178,9 +256,8 @@ export class BackupManager {
       throw new Error(`Server directory for '${serverId}' does not exist`);
     }
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const safeCustomName = customName ? customName.replace(/[^a-zA-Z0-9_-]/g, '_') : 'snapshot';
-    const fileName = `backup_${timestamp}_${safeCustomName}.zip`;
+    // The name may already have been chosen by startBackup, so the job and the file agree.
+    const fileName = presetFileName ?? this.backupFileName(customName);
     const targetZipPath = path.join(backupDir, fileName);
 
     const items = fs.readdirSync(serverDir).filter((item) => !EXCLUDED_FROM_BACKUP.includes(item));

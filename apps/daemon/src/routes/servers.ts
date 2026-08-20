@@ -25,7 +25,7 @@ import {
 } from '../services/runtime/docker';
 import { provisioningManager } from '../services/content/provisioning';
 import { processManager } from '../services/runtime/process';
-import { backupManager, gameOfServerDir } from '../services/backup/backup';
+import { backupManager, backupJobFor, clearBackupJob, gameOfServerDir } from '../services/backup/backup';
 import { CreateServerContainerDto, ExecutionMode, Game, GAME_CAPABILITIES, isGame } from '@mc-manager/shared';
 import { getGame, isNonMinecraftGame } from '../games';
 import type { PrismaClient } from '@prisma/client';
@@ -2472,7 +2472,14 @@ router.get('/:serverId/backups', async (req: Request, res: Response) => {
   const targetId = serverId.replace('process-', '');
   try {
     const backups = await backupManager.listBackups(targetId);
-    res.json({ backups });
+    /*
+     * The in-flight job travels with the listing rather than on its own endpoint: the panel
+     * is already polling this to see a new archive appear, and a backup that is still being
+     * written has nothing in the list to represent it.
+     */
+    const job = backupJobFor(targetId);
+    if (job?.state === 'failed') clearBackupJob(targetId);
+    res.json({ backups, job });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to list backups', details: err.message });
   }
@@ -2510,8 +2517,16 @@ router.post('/:serverId/backups', async (req: Request, res: Response) => {
       }
     }
 
-    const backup = await backupManager.createBackup(targetId, name);
-    res.json({ success: true, backup });
+    /*
+     * Started, not awaited.
+     *
+     * Compressing a large world takes minutes, and Cloudflare abandons an origin request
+     * after 100 seconds no matter what timeouts the panel and daemon agree on — a backup
+     * that worked perfectly reported HTTP 524 and looked like a failure. The archive is
+     * written in the background and the caller watches the job instead.
+     */
+    const job = backupManager.startBackup(targetId, name);
+    res.status(202).json({ success: true, started: true, job });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to create backup', details: err.message });
   }

@@ -171,26 +171,28 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     // Default action = create
     try {
-      const data = await daemonClient.request<{ success: boolean; backup: any }>(
+      /*
+       * The daemon starts the archive and answers straight away. It cannot do otherwise:
+       * Cloudflare abandons an origin request after 100 seconds and returns 524, so a
+       * backup of any size reported as a failure while it was quietly succeeding.
+       */
+      const data = await daemonClient.request<{ started: boolean; job: { name: string } }>(
         `/servers/${targetContainerId}/backups`,
         { method: 'POST', body: JSON.stringify({ name: body.name }) },
-        DaemonClient.BACKUP_TIMEOUT_MS
+        DaemonClient.DEFAULT_TIMEOUT_MS
       );
 
-      await dispatchNotification({
-        type: 'BACKUP_COMPLETED',
-        title: `💾 Backup created for "${server.name}"`,
-        body: `Backup "${data.backup?.name || body.name || 'unnamed'}" completed successfully.`,
-        fields: [{ name: 'Node', value: server.node.name }],
+      await writeAudit({
+        userId: user.userId,
+        action: 'BACKUP_CREATE',
+        details: { serverId: server.id, serverName: server.name, name: data.job?.name || body.name },
       });
 
-      await writeAudit({ userId: user.userId, action: 'BACKUP_CREATE', details: { serverId: server.id, serverName: server.name, name: data.backup?.name || body.name } });
+      // Notifying and pruning belong to the finished archive, not to the request that
+      // asked for it, so they follow the job rather than the response.
+      void awaitBackupThenFinish(server, daemonClient, targetContainerId, data.job?.name, user.userId);
 
-      // Retention is applied against the set including the backup just taken, so "keep 5"
-      // means the user ends up looking at five, not six.
-      const pruned = await pruneBackupsForServer(server.id, { actorUserId: user.userId }).catch(() => null);
-
-      return NextResponse.json({ ...data, pruned: pruned?.deleted ?? [] });
+      return NextResponse.json({ ...data, pending: true });
     } catch (backupErr: any) {
       await dispatchNotification({
         type: 'BACKUP_FAILED',
@@ -202,5 +204,66 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     }
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Backup operation failed' }, { status: 500 });
+  }
+}
+
+/**
+ * Waits for a background backup to finish, then notifies and prunes.
+ *
+ * These used to happen inline, which worked only while the request stayed open for the
+ * whole compression. It cannot: Cloudflare gives an origin 100 seconds. So the request
+ * returns as soon as the daemon has started, and this follows the job instead.
+ *
+ * The daemon is the source of truth throughout — this only watches. If the panel restarts
+ * mid-backup the archive still completes and still appears in the listing; what is lost is
+ * the notification and that round of pruning, which the next backup will do anyway. Losing
+ * a notification is an acceptable price for not losing the backup.
+ */
+async function awaitBackupThenFinish(
+  server: { id: string; name: string; node: { name: string } },
+  daemonClient: DaemonClient,
+  target: string,
+  jobName: string | undefined,
+  actorUserId: string
+): Promise<void> {
+  const deadline = Date.now() + DaemonClient.BACKUP_TIMEOUT_MS;
+  const POLL_MS = 10_000;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+
+    let listing: { job?: { state: string; error?: string } | null };
+    try {
+      listing = await daemonClient.request(`/servers/${target}/backups`, {}, 30_000);
+    } catch {
+      // A poll that fails says nothing about the backup — the daemon may simply be busy
+      // writing it. Keep watching until the deadline rather than declaring anything.
+      continue;
+    }
+
+    if (listing.job?.state === 'running') continue;
+
+    if (listing.job?.state === 'failed') {
+      await dispatchNotification({
+        type: 'BACKUP_COMPLETED',
+        title: `⚠️ Backup failed for "${server.name}"`,
+        body: listing.job.error || 'The node reported a failure while writing the archive.',
+        fields: [{ name: 'Node', value: server.node.name }],
+      }).catch(() => {});
+      return;
+    }
+
+    // No job left: the archive is written and in the listing.
+    await dispatchNotification({
+      type: 'BACKUP_COMPLETED',
+      title: `💾 Backup created for "${server.name}"`,
+      body: `Backup "${jobName || 'unnamed'}" completed successfully.`,
+      fields: [{ name: 'Node', value: server.node.name }],
+    }).catch(() => {});
+
+    // Retention is applied against the set including the backup just taken, so "keep 5"
+    // means the user ends up looking at five, not six.
+    await pruneBackupsForServer(server.id, { actorUserId }).catch(() => null);
+    return;
   }
 }
