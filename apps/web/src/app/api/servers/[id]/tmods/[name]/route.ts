@@ -16,6 +16,21 @@ import { Game, parseTerrariaConfig, terrariaSupportsMods } from '@mc-manager/sha
  */
 
 async function resolve(req: NextRequest, id: string) {
+  try {
+    return await resolveOrThrow(req, id);
+  } catch (err: any) {
+    // See the note in ../route.ts: an escaping throw becomes an HTML error page, which the
+    // caller can only report as a JSON parse failure.
+    return {
+      error: NextResponse.json(
+        { error: `Could not load this server: ${err?.message ?? 'unknown error'}` },
+        { status: 500 }
+      ),
+    };
+  }
+}
+
+async function resolveOrThrow(req: NextRequest, id: string) {
   const user = await getUserFromRequest(req);
   if (!user) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
 

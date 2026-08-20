@@ -20,6 +20,25 @@ import { Game, parseTerrariaConfig, terrariaSupportsMods } from '@mc-manager/sha
  * failing here says why instead.
  */
 async function resolve(req: NextRequest, id: string, needWrite: boolean) {
+  try {
+    return await resolveOrThrow(req, id, needWrite);
+  } catch (err: any) {
+    /*
+     * Anything unexpected here — the database refusing a connection, a malformed record —
+     * would otherwise escape the handler and be served as Next's HTML error page. The
+     * caller is a fetch expecting JSON, so it reports "Unexpected token '<'" and the real
+     * cause never reaches anyone.
+     */
+    return {
+      error: NextResponse.json(
+        { error: `Could not load this server: ${err?.message ?? 'unknown error'}` },
+        { status: 500 }
+      ),
+    };
+  }
+}
+
+async function resolveOrThrow(req: NextRequest, id: string, needWrite: boolean) {
   const user = await getUserFromRequest(req);
   if (!user) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
 
