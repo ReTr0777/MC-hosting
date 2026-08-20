@@ -283,15 +283,37 @@ export class BackupManager {
 
     console.log(`[BackupManager] Backup created successfully: ${fileName} (${stats.size} bytes)`);
 
-    if (isS3Configured()) {
+    /*
+     * Both branches say something.
+     *
+     * This block used to be silent when off-site storage was not configured and silent
+     * about starting when it was, so a backup that never left the node looked identical in
+     * the log to one still uploading — and identical again to one whose upload had failed
+     * before the error line was reached. "Local only" in the panel meant all three.
+     */
+    if (!isS3Configured()) {
+      console.log(
+        `[BackupManager] '${fileName}' stays local: no off-site storage is configured on this node.`
+      );
+    } else {
+      const startedAt = Date.now();
+      console.log(
+        `[BackupManager] Uploading '${fileName}' (${(stats.size / 1024 / 1024).toFixed(0)} MB) off-site…`
+      );
       try {
         await uploadBackup(serverId, fileName, targetZipPath);
-        console.log(`[BackupManager] Uploaded backup '${fileName}' to off-site storage.`);
+        console.log(
+          `[BackupManager] Uploaded '${fileName}' off-site in ${Math.round((Date.now() - startedAt) / 1000)}s.`
+        );
         if (getConfig().s3RetainLocal === false) {
           fs.unlinkSync(targetZipPath);
         }
       } catch (err: any) {
         console.error(`[BackupManager] Off-site upload failed for '${fileName}' (local copy retained):`, err.message);
+        // Re-thrown so the job records it. Swallowing meant an off-site backup could stop
+        // happening entirely and nothing outside this log would ever mention it — which is
+        // the same failure as a backup that is never taken, only quieter.
+        throw new Error(`The archive was written locally, but the off-site upload failed: ${err.message}`);
       }
     }
 
