@@ -152,10 +152,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     const targetContainerId = server.containerId || `process-${server.id}`;
 
     if (action === 'restore') {
-      const data = await daemonClient.request<{ success: boolean; message: string }>(`/servers/${targetContainerId}/backups/restore`, {
-        method: 'POST',
-        body: JSON.stringify({ name: body.name }),
-      });
+      const data = await daemonClient.request<{ success: boolean; message: string }>(
+        `/servers/${targetContainerId}/backups/restore`,
+        { method: 'POST', body: JSON.stringify({ name: body.name }) },
+        DaemonClient.BACKUP_TIMEOUT_MS
+      );
       await writeAudit({ userId: user.userId, action: 'BACKUP_RESTORE', details: { serverId: server.id, serverName: server.name, name: body.name } });
       return NextResponse.json(data);
     }
@@ -170,10 +171,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     // Default action = create
     try {
-      const data = await daemonClient.request<{ success: boolean; backup: any }>(`/servers/${targetContainerId}/backups`, {
-        method: 'POST',
-        body: JSON.stringify({ name: body.name }),
-      });
+      const data = await daemonClient.request<{ success: boolean; backup: any }>(
+        `/servers/${targetContainerId}/backups`,
+        { method: 'POST', body: JSON.stringify({ name: body.name }) },
+        DaemonClient.BACKUP_TIMEOUT_MS
+      );
 
       await dispatchNotification({
         type: 'BACKUP_COMPLETED',

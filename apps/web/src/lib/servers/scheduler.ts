@@ -58,10 +58,16 @@ export async function executeSchedule(schedule: ScheduleWithServer): Promise<str
     case 'BACKUP': {
       const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
       const name = `auto_${schedule.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_${stamp}`;
+      /*
+       * The same allowance a hand-taken backup gets. Five minutes was enough until a
+       * server grew past a few gigabytes; after that the nightly run timed out and was
+       * recorded as failed while the daemon carried on and finished the archive, so the
+       * schedule looked broken and the backups directory disagreed.
+       */
       await client.request(`/servers/${target}/backups`, {
         method: 'POST',
         body: JSON.stringify({ name }),
-      }, 300_000);
+      }, DaemonClient.BACKUP_TIMEOUT_MS);
 
       // Pruning is what stops a nightly schedule from filling the node's disk. It runs after
       // the new backup exists, so the retention count is measured against the set the user

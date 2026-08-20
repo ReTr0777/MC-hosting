@@ -10,6 +10,16 @@ export class DaemonClient {
   /** Applies to every call that does not ask for something longer. */
   static readonly DEFAULT_TIMEOUT_MS = 15000;
   static readonly HEALTH_TIMEOUT_MS = DaemonClient.DEFAULT_TIMEOUT_MS;
+  /**
+   * Creating or restoring a backup, which compresses or unpacks the whole server.
+   *
+   * The daemon does this inside the request, so the call is open for as long as the work
+   * takes: minutes for a multi-gigabyte world on array storage. At the default 15 seconds
+   * every such backup reported "connection timed out — check if daemon is running", while
+   * the daemon was neither timing out nor stopped, and the archive it went on to finish
+   * appeared later with nothing to say it had worked.
+   */
+  static readonly BACKUP_TIMEOUT_MS = 45 * 60 * 1000;
 
   private baseUrl: string;
   private apiKey: string;
