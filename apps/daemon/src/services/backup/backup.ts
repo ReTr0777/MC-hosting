@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
+import { spawn } from 'child_process';
 import { Game, GAME_LABELS, isGame } from '@mc-manager/shared';
 import { getConfig } from '../../config';
 import { getGame } from '../../games';
@@ -53,6 +54,80 @@ function gameOfBackupZip(zipPath: string): Game {
   } catch {
     return Game.MINECRAFT;
   }
+}
+
+/** Never worth archiving: derived, huge, or the backups themselves. */
+export const EXCLUDED_FROM_BACKUP = ['backups', 'logs', 'crash-reports', '.cache', '.version_mismatch_rescue', '.tmp_uploads'];
+
+/**
+ * Writes a zip of `items` from `serverDir`, without blocking the daemon.
+ *
+ * This used to be adm-zip: `addLocalFolder` then `writeZip`, both entirely synchronous and
+ * entirely in memory. On a small world nobody noticed. On an 8 GB one the event loop froze
+ * for the whole compression — the daemon answered no health checks, so the panel recorded
+ * the node as offline, every console websocket dropped, and the scheduler skipped a node
+ * that was in fact working. Holding a multi-gigabyte archive in a Node heap is also how a
+ * backup ends up as a zero-byte file: it fails part-way and leaves the empty target behind.
+ *
+ * An external archiver fixes both. It runs in its own process, so the event loop stays
+ * free, and it streams to disk rather than buffering. `zip` first because its output is the
+ * most conventional, then `7z`, which p7zip-full already provides in this image. adm-zip
+ * remains as a last resort so a node with neither still takes backups, badly, rather than
+ * not at all.
+ */
+export async function archiveDirectory(serverDir: string, targetZipPath: string, items: string[]): Promise<void> {
+  const candidates: Array<{ cmd: string; args: string[] }> = [
+    // -r recurse, -q quiet, -y store symlinks as links rather than following them into a
+    // loop, -X drop platform metadata that only bloats the archive.
+    { cmd: 'zip', args: ['-r', '-q', '-y', '-X', targetZipPath, ...items] },
+    // -bd no progress indicator: it writes control codes that would flood the console.
+    { cmd: '7z', args: ['a', '-tzip', '-bd', '-y', targetZipPath, ...items] },
+  ];
+
+  for (const { cmd, args } of candidates) {
+    try {
+      await runArchiver(cmd, args, serverDir);
+      return;
+    } catch (err: any) {
+      // A partial archive must never be left where the next attempt or a restore can find
+      // it looking finished.
+      fs.rmSync(targetZipPath, { force: true });
+      if (err?.code === 'ENOENT') continue; // Not installed; try the next one.
+      throw err;
+    }
+  }
+
+  console.warn(
+    '[BackupManager] Neither zip nor 7z is available on this node; falling back to in-process ' +
+    'compression, which blocks the daemon for the duration and may fail on a large server.'
+  );
+
+  const zip = new AdmZip();
+  for (const item of items) {
+    const itemPath = path.join(serverDir, item);
+    if (fs.statSync(itemPath).isDirectory()) zip.addLocalFolder(itemPath, item);
+    else zip.addLocalFile(itemPath);
+  }
+  zip.writeZip(targetZipPath);
+}
+
+function runArchiver(cmd: string, args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+
+    // Kept but capped: the reason a backup failed belongs in the error, and an archiver
+    // complaining about thousands of files should not itself become a memory problem.
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length < 4000) stderr += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) return resolve();
+      reject(new Error(`${cmd} failed with exit code ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+    });
+  });
 }
 
 export class BackupManager {
@@ -108,24 +183,27 @@ export class BackupManager {
     const fileName = `backup_${timestamp}_${safeCustomName}.zip`;
     const targetZipPath = path.join(backupDir, fileName);
 
-    const zip = new AdmZip();
-    const items = fs.readdirSync(serverDir);
-
-    for (const item of items) {
-      if (item === 'backups' || item === 'logs' || item === 'crash-reports' || item === '.cache' || item === '.version_mismatch_rescue') {
-        continue;
-      }
-      const itemPath = path.join(serverDir, item);
-      const stat = fs.statSync(itemPath);
-      if (stat.isDirectory()) {
-        zip.addLocalFolder(itemPath, item);
-      } else {
-        zip.addLocalFile(itemPath);
-      }
+    const items = fs.readdirSync(serverDir).filter((item) => !EXCLUDED_FROM_BACKUP.includes(item));
+    if (items.length === 0) {
+      throw new Error(`There is nothing to back up in '${serverId}'.`);
     }
 
-    zip.writeZip(targetZipPath);
+    await archiveDirectory(serverDir, targetZipPath, items);
+
+    /*
+     * An archive of zero bytes is not a backup, and it is worse than no backup at all: it
+     * sorts newest, it is what a restore offers first, and it looks exactly like a real one
+     * in the list. One is sitting in this very server's backup directory from 18 August,
+     * created by the synchronous path this replaced.
+     */
     const stats = fs.statSync(targetZipPath);
+    if (stats.size === 0) {
+      fs.rmSync(targetZipPath, { force: true });
+      throw new Error(
+        'The backup archive came out empty and was discarded. Check free space on the node and its log.'
+      );
+    }
+
     console.log(`[BackupManager] Backup created successfully: ${fileName} (${stats.size} bytes)`);
 
     if (isS3Configured()) {

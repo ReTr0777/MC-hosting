@@ -36,7 +36,7 @@ ENV SERVERPACKCREATOR_JAR=/opt/serverpackcreator/serverpackcreator.jar
 
 # Install required system packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip unrar-free p7zip-full bash ca-certificates psmisc procps lsof iproute2 net-tools \
+    curl zip unzip unrar-free p7zip-full bash ca-certificates psmisc procps lsof iproute2 net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the real RARLAB `unrar` binary. `unrar-free` (installed above) is a clean-room
