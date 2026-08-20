@@ -36,7 +36,19 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
     setOpts(null);
   }, []);
 
-  const unlocked = !opts?.requireText || typed.trim() === opts.requireText;
+  /*
+   * Both sides are trimmed, not just what was typed.
+   *
+   * Trimming one side made a confirmation unmatchable whenever the required text carried
+   * surrounding whitespace — a server named "modtest " could never be deleted, because the
+   * input was trimmed to "modtest" and the target still held its trailing space. The user
+   * could not type their way out of it either: adding the space back was trimmed away too,
+   * and the prompt renders it invisibly, so nothing on screen explained the refusal.
+   *
+   * Case is still significant. The point of the gate is deliberate typing, and someone who
+   * has entered the right characters in the wrong case has read the name.
+   */
+  const unlocked = !opts?.requireText || typed.trim() === opts.requireText.trim();
 
   useEffect(() => {
     if (!opts) return;
@@ -63,9 +75,9 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
             {opts.requireText && (
               <div style={{ marginTop: '16px' }}>
                 <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '6px', fontWeight: 600 }}>
-                  Type <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{opts.requireText}</code> to confirm
+                  Type <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{opts.requireText.trim()}</code> to confirm
                 </label>
-                <input autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} className="cc-input" placeholder={opts.requireText} />
+                <input autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} className="cc-input" placeholder={opts.requireText.trim()} />
               </div>
             )}
 
