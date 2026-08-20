@@ -7,6 +7,11 @@ import {
   TERRARIA_MAX_PLAYERS,
   TERRARIA_SECRET_SEEDS,
   terrariaSupportsMods,
+  TERRARIA_VERSIONS,
+  TMODLOADER_BUILDS,
+  DEFAULT_TERRARIA_VERSION,
+  DEFAULT_TMODLOADER_VERSION,
+  terrariaVersionForTmodloader,
   TERRARIA_WORLD_EVILS,
   parseTerrariaConfig,
 } from './index';
@@ -167,4 +172,55 @@ test('Terraria keeps its ban list in a flat file, which is why the tab shows one
   assert.equal(tr.bans, true, 'a ban list exists');
   assert.equal(tr.banFile, 'banlist.txt', 'and it is this file');
   assert.equal(tr.playerBan, true, 'and players can be banned into it');
+});
+
+/*
+ * Versions decide which binary is downloaded and, for a modded server, which binary
+ * generates the world. Both failures are quiet: a bad version is a 404 at first start, and
+ * a mismatched pairing is a world in a format the server may or may not open, discovered
+ * long after the choice that caused it.
+ */
+
+test('every tModLoader build names the Terraria version it targets', () => {
+  // The pairing is the whole reason this table exists rather than a bare list. tModLoader
+  // tracks an older Terraria than vanilla ships, so worldgen has to follow the build.
+  for (const build of TMODLOADER_BUILDS) {
+    assert.match(build.version, /^\d{4}\.\d{2}\.\d+(\.\d+)?$/, `${build.version} is date-based`);
+    assert.match(build.terraria, /^\d+(\.\d+){1,3}$/, `${build.terraria} is a Terraria version`);
+    assert.ok(build.label.includes(build.terraria), 'the label says which Terraria it is');
+  }
+});
+
+test('an unknown tModLoader build falls back to a paired version, never to newest vanilla', () => {
+  assert.equal(terrariaVersionForTmodloader(TMODLOADER_BUILDS[0].version), TMODLOADER_BUILDS[0].terraria);
+  // The point of the fallback: an unrecognised build is far likelier to be near the ones
+  // listed than to match whatever vanilla has moved on to.
+  assert.equal(terrariaVersionForTmodloader('9999.99.9'), TMODLOADER_BUILDS[0].terraria);
+  assert.equal(terrariaVersionForTmodloader(undefined), TMODLOADER_BUILDS[0].terraria);
+});
+
+test('the defaults are the first entry of their list', () => {
+  assert.equal(DEFAULT_TERRARIA_VERSION, TERRARIA_VERSIONS[0]);
+  assert.equal(DEFAULT_TMODLOADER_VERSION, TMODLOADER_BUILDS[0].version);
+});
+
+test('only version-shaped values survive parsing', () => {
+  // These are pasted into a download URL. Anything else must be dropped so the server
+  // falls back to a default rather than requesting nonsense and failing at first start.
+  const good = parseTerrariaConfig({ terrariaVersion: '1.4.5.6', tmodloaderVersion: '2026.06.3.6' });
+  assert.equal(good.terrariaVersion, '1.4.5.6');
+  assert.equal(good.tmodloaderVersion, '2026.06.3.6');
+
+  for (const bad of ['latest', '', '../../etc/passwd', 'v1.4.5.6', 1456, null, {}]) {
+    const cfg = parseTerrariaConfig({ terrariaVersion: bad, tmodloaderVersion: bad });
+    assert.equal(cfg.terrariaVersion, undefined, `terrariaVersion ${JSON.stringify(bad)} dropped`);
+    assert.equal(cfg.tmodloaderVersion, undefined, `tmodloaderVersion ${JSON.stringify(bad)} dropped`);
+  }
+});
+
+test('a config with no version set is left unset, so the default applies', () => {
+  // Every server created before the picker existed is in this state.
+  const cfg = parseTerrariaConfig({ worldName: 'old' });
+  assert.equal(cfg.terrariaVersion, undefined);
+  assert.equal(cfg.tmodloaderVersion, undefined);
 });

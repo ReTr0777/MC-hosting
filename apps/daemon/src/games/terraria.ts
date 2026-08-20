@@ -5,11 +5,12 @@ import AdmZip from 'adm-zip';
 import {
   Game, GAME_CAPABILITIES, parseTerrariaConfig,
   TERRARIA_SECRET_SEEDS, TERRARIA_WORLD_EVILS,
+  DEFAULT_TERRARIA_VERSION, DEFAULT_TMODLOADER_VERSION, terrariaVersionForTmodloader,
 } from '@mc-manager/shared';
 import { getConfig } from '../config';
 import { GameDefinition, GameServerSpec, LaunchSpec, PresenceEvent } from './types';
 import {
-  TMODLOADER_VERSION, ensureTmodloaderBinary, buildTmodloaderLaunch,
+  ensureTmodloaderBinary, buildTmodloaderLaunch,
   modsDir, enabledJsonPath, writeEnabledMods,
 } from './tmodloader';
 
@@ -23,8 +24,11 @@ import {
  *
  * Bumping this is a one-line change, but re-run that spike first: the step from
  * 1.4.4.9 to 1.4.5.6 already shifted two of the four findings it records.
+ *
+ * The value itself lives in shared, because the panel offers the same list in its version
+ * picker and two copies of it would drift the moment either side was bumped alone.
  */
-export const TERRARIA_VERSION = '1.4.5.6';
+export const TERRARIA_VERSION = DEFAULT_TERRARIA_VERSION;
 
 /** `1.4.5.6` → `.../terraria-server-1456.zip`. The dots are simply stripped. */
 export function terrariaDownloadUrl(version: string): string {
@@ -491,10 +495,11 @@ export const terraria: GameDefinition = {
   label: 'Terraria',
 
   async ensureBinary(_serverDir: string, spec: GameServerSpec): Promise<string> {
-    if (parseTerrariaConfig(spec.gameConfig).variant === 'TMODLOADER') {
-      return ensureTmodloaderBinary(TMODLOADER_VERSION);
+    const cfg = parseTerrariaConfig(spec.gameConfig);
+    if (cfg.variant === 'TMODLOADER') {
+      return ensureTmodloaderBinary(cfg.tmodloaderVersion || DEFAULT_TMODLOADER_VERSION);
     }
-    return ensureTerrariaBinary(TERRARIA_VERSION);
+    return ensureTerrariaBinary(cfg.terrariaVersion || DEFAULT_TERRARIA_VERSION);
   },
 
   async prepareWorld(serverDir, binaryPath, spec, log) {
@@ -517,8 +522,17 @@ export const terraria: GameDefinition = {
      * normal way people start a modded server, and mods add their content when the
      * world is first loaded with them enabled, not when it is generated.
      */
-    const worldgenBinary = parseTerrariaConfig(spec.gameConfig).variant === 'TMODLOADER'
-      ? await ensureTerrariaBinary(TERRARIA_VERSION)
+    const cfg = parseTerrariaConfig(spec.gameConfig);
+    /*
+     * And with the Terraria version tModLoader is *built against*, not the newest one.
+     *
+     * tModLoader tracks an older Terraria than vanilla ships — the 2026.06 series is
+     * Terraria 1.4.4.9 while vanilla is on 1.4.5.6 — so generating with the newest binary
+     * hands tModLoader a world in a format from the future. It may open it, and it may
+     * not; either way the failure would appear much later than the choice that caused it.
+     */
+    const worldgenBinary = cfg.variant === 'TMODLOADER'
+      ? await ensureTerrariaBinary(terrariaVersionForTmodloader(cfg.tmodloaderVersion))
       : binaryPath;
 
     log('Generating world — this takes about 15 seconds for a small world, longer for a large one.');

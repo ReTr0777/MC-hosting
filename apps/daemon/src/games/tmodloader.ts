@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
+import { DEFAULT_TMODLOADER_VERSION } from '@mc-manager/shared';
 import { getConfig } from '../config';
 import { LaunchSpec } from './types';
 
@@ -24,8 +25,11 @@ import { LaunchSpec } from './types';
  * tModLoader versions are date-based: v2026.06.3.6 is the 2026.06 series. Bumping this is
  * a one-line change, but it invalidates every installed `.tmod` built for the old series,
  * so treat it as a migration rather than an upgrade.
+ *
+ * Defined in shared alongside the Terraria version each build targets, because worldgen
+ * needs that pairing and the panel needs the list.
  */
-export const TMODLOADER_VERSION = '2026.06.3.6';
+export const TMODLOADER_VERSION = DEFAULT_TMODLOADER_VERSION;
 
 /** `2026.06.3.6` → the GitHub release asset for that tag. */
 export function tmodloaderDownloadUrl(version: string): string {

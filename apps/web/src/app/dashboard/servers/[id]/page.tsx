@@ -1018,6 +1018,8 @@ export default function ServerConsolePage() {
                 serverId={server.id}
                 canManage={canManage}
                 variant={parseTerrariaConfig(server.gameConfig).variant}
+                terrariaVersion={parseTerrariaConfig(server.gameConfig).terrariaVersion}
+                tmodloaderVersion={parseTerrariaConfig(server.gameConfig).tmodloaderVersion}
                 serverStatus={server.status}
                 onVariantChanged={fetchServerDetails}
               />

@@ -5,6 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { writeAudit } from '@/lib/audit';
 import {
   Game, parseTerrariaConfig, TERRARIA_VARIANTS, TerrariaVariant, terrariaSupportsMods,
+  TERRARIA_VERSIONS, TMODLOADER_BUILDS,
 } from '@mc-manager/shared';
 
 /**
@@ -57,8 +58,28 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     );
   }
 
+  /*
+   * A version change goes through here too, rather than through the settings-file route
+   * beside it. Both swap the binary a world will next be opened by, so both need the same
+   * guards: the server stopped, and a backup taken first. Only the reason differs.
+   */
+  const version: string | undefined = body?.version;
+  if (version !== undefined) {
+    const allowed: readonly string[] =
+      variant === 'TMODLOADER' ? TMODLOADER_BUILDS.map((b) => b.version) : TERRARIA_VERSIONS;
+    if (!allowed.includes(version)) {
+      return NextResponse.json(
+        { error: `version must be one the panel offers for ${variant}: ${allowed.join(', ')}` },
+        { status: 400 }
+      );
+    }
+  }
+
   const current = parseTerrariaConfig(server.gameConfig);
-  if (current.variant === variant) {
+  const currentVersion =
+    variant === 'TMODLOADER' ? current.tmodloaderVersion : current.terrariaVersion;
+
+  if (current.variant === variant && (version === undefined || version === currentVersion)) {
     return NextResponse.json({ message: 'Already running that variant.', variant });
   }
 
@@ -114,19 +135,36 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const updated = await prisma.server.update({
     where: { id: server.id },
-    data: { gameConfig: { ...current, variant } as any },
+    data: {
+      gameConfig: {
+        ...current,
+        variant,
+        ...(version !== undefined
+          ? variant === 'TMODLOADER'
+            ? { tmodloaderVersion: version }
+            : { terrariaVersion: version }
+          : {}),
+      } as any,
+    },
     select: { id: true, name: true, gameConfig: true },
   });
 
   await writeAudit({
     userId: user.userId,
     action: 'SERVER_VARIANT_CHANGE',
-    details: { serverId: server.id, name: server.name, from: current.variant, to: variant, backupName },
+    details: {
+      serverId: server.id, name: server.name,
+      from: current.variant, to: variant,
+      fromVersion: currentVersion, toVersion: version,
+      backupName,
+    },
   });
 
+  const label = variant === 'TMODLOADER' ? 'tModLoader' : 'vanilla Terraria';
   return NextResponse.json({
-    message: `${server.name} will now run ${variant === 'TMODLOADER' ? 'tModLoader' : 'vanilla Terraria'}.`,
+    message: `${server.name} will now run ${label}${version ? ` ${version}` : ''}.`,
     variant,
+    version,
     backupName,
     modsEnabled: terrariaSupportsMods(variant),
     // The download happens on the next start, not now, and the first one is slow: the
