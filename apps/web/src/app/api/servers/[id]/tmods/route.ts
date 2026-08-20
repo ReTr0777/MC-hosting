@@ -94,6 +94,23 @@ async function resolveOrThrow(req: NextRequest, id: string, needWrite: boolean) 
   return { server, daemon, target: server.containerId || `process-${server.id}` };
 }
 
+/**
+ * The status to answer with when a call to the daemon fails.
+ *
+ * Not always 502, even though "the upstream call failed" is what 502 means. Cloudflare
+ * replaces an origin 5xx with its own branded error page, so a 502 carrying "No such
+ * server on this node" reached the browser as several kilobytes of HTML saying nothing —
+ * the daemon's diagnosis was thrown away by infrastructure the panel does not control.
+ *
+ * So a daemon that answered, and simply answered "no", is reported as a 4xx and keeps its
+ * message. 502 is reserved for a daemon that could not be reached at all, where there is
+ * no message worth preserving anyway.
+ */
+function daemonFailureStatus(message: string): number {
+  const unreachable = /cannot connect to daemon|connection timed out|fetch failed/i.test(message);
+  return unreachable ? 502 : 400;
+}
+
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const ctx = await resolve(req, params.id, false);
   if ('error' in ctx) return ctx.error;
@@ -101,7 +118,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   try {
     return NextResponse.json(await ctx.daemon.request(`/servers/${ctx.target}/tmods`));
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to list mods' }, { status: 502 });
+    const message = err.message || 'Failed to list mods';
+    return NextResponse.json({ error: message }, { status: daemonFailureStatus(message) });
   }
 }
 
@@ -140,6 +158,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     );
     return NextResponse.json(data);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to upload the mod' }, { status: 502 });
+    const message = err.message || 'Failed to upload the mod';
+    return NextResponse.json({ error: message }, { status: daemonFailureStatus(message) });
   }
 }

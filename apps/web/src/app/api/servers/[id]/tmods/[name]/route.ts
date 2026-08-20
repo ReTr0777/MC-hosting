@@ -70,6 +70,11 @@ async function resolveOrThrow(req: NextRequest, id: string) {
   };
 }
 
+/** See ../route.ts: a 5xx from here is replaced by Cloudflare's own page, message and all. */
+function daemonFailureStatus(message: string): number {
+  return /cannot connect to daemon|connection timed out|fetch failed/i.test(message) ? 502 : 400;
+}
+
 /** Enable or disable a mod, by its internal name. */
 export async function PATCH(req: NextRequest, { params }: { params: { id: string; name: string } }) {
   const ctx = await resolve(req, params.id);
@@ -87,7 +92,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     );
     return NextResponse.json(data);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to change the mod' }, { status: 502 });
+    const message = err.message || 'Failed to change the mod';
+    return NextResponse.json({ error: message }, { status: daemonFailureStatus(message) });
   }
 }
 
@@ -103,6 +109,7 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
     );
     return NextResponse.json(data);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to remove the mod' }, { status: 502 });
+    const message = err.message || 'Failed to remove the mod';
+    return NextResponse.json({ error: message }, { status: daemonFailureStatus(message) });
   }
 }

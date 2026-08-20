@@ -5,6 +5,7 @@ import { getConfig } from '../config';
 import {
   modsDir, readEnabledMods, writeEnabledMods, readModInternalName,
 } from '../games/tmodloader';
+import { bareServerId } from '../services/runtime/lifecycle';
 
 /**
  * `.tmod` management for tModLoader servers.
@@ -33,8 +34,19 @@ interface ModEntry {
   nameGuessed: boolean;
 }
 
-function serverDirFor(serverId: string): string {
-  return path.join(getConfig().dataDir, serverId);
+/**
+ * The server's directory on disk.
+ *
+ * The panel addresses a server by its *target* — `process-<id>` or `mc-server-<id>` —
+ * because that is what identifies a running process or container. The directory is named
+ * by the bare id, so the prefix has to come off first. Every other route that touches the
+ * filesystem does this (see servers.ts); missing it here made the daemon look in a path
+ * that never exists, which failed in the worst possible way: uploads returned 404 while
+ * the listing happily returned 200 and an empty array, because "no directory" and "no
+ * mods" are indistinguishable to a read.
+ */
+function serverDirFor(target: string): string {
+  return path.join(getConfig().dataDir, bareServerId(target));
 }
 
 /**
