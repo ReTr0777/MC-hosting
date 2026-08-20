@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { pickNewestTmods } from '@/lib/servers/tmod-select';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
 
@@ -29,6 +30,12 @@ interface Props {
   canManage: boolean;
 }
 
+function Mono({ children }: { children: React.ReactNode }) {
+  return (
+    <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.95em', wordBreak: 'break-all' }}>{children}</code>
+  );
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -44,7 +51,10 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [busyName, setBusyName] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -65,28 +75,47 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
     load();
   }, [load]);
 
-  const upload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  const upload = async (selected: FileList | File[] | null) => {
+    if (!selected) return;
+
+    const chosen = pickNewestTmods(Array.from(selected));
+    if (chosen.length === 0) {
+      toast.error(
+        'No mods in that selection',
+        'Nothing there was a .tmod file. If you picked your Steam workshop folder, make sure it was ' +
+          'the one named 1281930.'
+      );
+      return;
+    }
 
     setUploading(true);
+    setProgress({ done: 0, total: chosen.length });
+
+    /*
+     * Failures are collected rather than thrown, so one bad file out of thirty does not
+     * abandon the twenty-nine after it. Picking a whole workshop folder makes that a real
+     * case: it can easily contain a mod whose header this cannot read.
+     */
+    const failed: string[] = [];
     let installed = 0;
+
     try {
       // Sequential rather than parallel: each upload streams a whole file through the
-      // panel to the node, and a handful at once on a home connection is how you get a
-      // timeout partway through and no way to tell which ones landed.
-      for (const file of Array.from(files)) {
-        if (!file.name.toLowerCase().endsWith('.tmod')) {
-          toast.error('Not a mod file', `${file.name} is not a .tmod file, so it was skipped.`);
-          continue;
+      // panel to the node, and a folder's worth at once on a home connection is how you
+      // get a timeout partway through and no way to tell which ones landed.
+      for (const file of chosen) {
+        try {
+          const res = await fetch(
+            `/api/servers/${serverId}/tmods?fileName=${encodeURIComponent(file.name)}`,
+            { method: 'POST', body: file }
+          );
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'upload failed');
+          installed++;
+        } catch (err: any) {
+          failed.push(`${file.name} (${err.message})`);
         }
-
-        const res = await fetch(
-          `/api/servers/${serverId}/tmods?fileName=${encodeURIComponent(file.name)}`,
-          { method: 'POST', body: file }
-        );
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Failed to upload ${file.name}`);
-        installed++;
+        setProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
       }
 
       if (installed > 0) {
@@ -95,13 +124,18 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
           'Switch each one on below, then restart the server — mods are read once, at boot.'
         );
       }
-      load();
-    } catch (err: any) {
-      toast.error('Upload failed', err.message);
+      if (failed.length > 0) {
+        toast.error(
+          `${failed.length} file${failed.length === 1 ? '' : 's'} could not be installed`,
+          failed.slice(0, 3).join('; ') + (failed.length > 3 ? `, and ${failed.length - 3} more` : '')
+        );
+      }
       load();
     } finally {
       setUploading(false);
+      setProgress(null);
       if (fileInput.current) fileInput.current.value = '';
+      if (folderInput.current) folderInput.current.value = '';
     }
   };
 
@@ -180,7 +214,22 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
       )}
 
       {canManage && (
-        <div>
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (!uploading) upload(e.dataTransfer.files);
+          }}
+          style={{
+            border: `1px dashed ${dragging ? 'var(--accent)' : 'var(--border-2)'}`,
+            background: dragging ? 'var(--accent-dim)' : 'transparent',
+            borderRadius: '10px',
+            padding: '16px',
+            transition: 'background 0.15s ease, border-color 0.15s ease',
+          }}
+        >
           <input
             ref={fileInput}
             type="file"
@@ -189,9 +238,41 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
             style={{ display: 'none' }}
             onChange={(e) => upload(e.target.files)}
           />
-          <button className="cc-btn-primary" disabled={uploading} onClick={() => fileInput.current?.click()}>
-            {uploading ? 'Uploading…' : '+ Upload .tmod files'}
-          </button>
+          {/*
+            webkitdirectory is not in React's HTML typings, hence the spread. It is
+            supported in every browser this panel is usable in, and a browser without it
+            simply falls back to the file picker beside it.
+          */}
+          <input
+            ref={folderInput}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => upload(e.target.files)}
+            {...({ webkitdirectory: '', directory: '' } as any)}
+          />
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="cc-btn-primary" disabled={uploading} onClick={() => folderInput.current?.click()}>
+              Import from Steam workshop folder
+            </button>
+            <button className="cc-btn-ghost" disabled={uploading} onClick={() => fileInput.current?.click()}>
+              Pick .tmod files
+            </button>
+            {uploading && progress && (
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Uploading {progress.done + 1} of {progress.total}…
+              </span>
+            )}
+          </div>
+
+          <p className="cc-help" style={{ marginBottom: 0 }}>
+            Subscribe to the mods you want in tModLoader on your own PC, then import the folder Steam keeps
+            them in — <Mono>{'steamapps\\workshop\\content\\1281930'}</Mono>. The panel finds every{' '}
+            <code style={{ fontFamily: 'var(--font-mono)' }}>.tmod</code> inside it, keeps the newest build of
+            each, and skips everything else, so there is no need to dig through the numbered folders. You can
+            also drag files straight onto this box.
+          </p>
         </div>
       )}
 
