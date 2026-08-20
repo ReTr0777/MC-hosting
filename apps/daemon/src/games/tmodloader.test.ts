@@ -145,7 +145,8 @@ test('the launch keeps worlds and mods inside the server directory', () => {
   const launch = buildTmodloaderLaunch(
     serverDir,
     '/cache/tmodloader/2026.06.3.6/LaunchUtils/ScriptCaller.sh',
-    '/data/servers/abc123/serverconfig.txt'
+    '/data/servers/abc123/serverconfig.txt',
+    '/data/servers/abc123/worlds/modtest.wld'
   );
 
   assert.equal(launch.command, '/cache/tmodloader/2026.06.3.6/LaunchUtils/ScriptCaller.sh');
@@ -157,7 +158,23 @@ test('the launch keeps worlds and mods inside the server directory', () => {
   const modpath = launch.args[launch.args.indexOf('-modpath') + 1];
   assert.equal(modpath, modsDir(serverDir));
 
+  // Without -world the server lists the world and then waits at "Choose World:" for a
+  // keypress that never comes, looking hung rather than blocked.
+  assert.equal(launch.args[launch.args.indexOf('-world') + 1], '/data/servers/abc123/worlds/modtest.wld');
+
   // HOME points at the build root so the .NET runtime the launcher downloads lands in the
   // daemon's data directory, not in root's home where no backup would ever cover it.
   assert.equal(launch.env?.HOME, '/cache/tmodloader/2026.06.3.6');
+});
+
+test('a server with no world yet is launched without -world', () => {
+  // Pointing -world at a file that does not exist brings the prompt straight back, so the
+  // flag is omitted until generation has produced something.
+  const launch = buildTmodloaderLaunch(
+    '/data/servers/abc123',
+    '/cache/tmodloader/2026.06.3.6/LaunchUtils/ScriptCaller.sh',
+    '/data/servers/abc123/serverconfig.txt',
+    null
+  );
+  assert.equal(launch.args.includes('-world'), false);
 });

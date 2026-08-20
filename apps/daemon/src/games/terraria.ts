@@ -530,7 +530,12 @@ export const terraria: GameDefinition = {
 
   buildLaunch(serverDir: string, binaryPath: string, spec: GameServerSpec): LaunchSpec {
     if (parseTerrariaConfig(spec.gameConfig).variant === 'TMODLOADER') {
-      return buildTmodloaderLaunch(serverDir, binaryPath, serverConfigPath(serverDir));
+      return buildTmodloaderLaunch(
+        serverDir,
+        binaryPath,
+        serverConfigPath(serverDir),
+        existingWorldFile(serverDir)
+      );
     }
     return {
       command: binaryPath,

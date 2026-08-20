@@ -271,12 +271,31 @@ function readDotNetString(buf: Buffer, offset: number): { value: string; next: n
  * the node, which would make two servers overwrite each other's saves and make a restored
  * backup start with the wrong world.
  */
-export function buildTmodloaderLaunch(serverDir: string, launcherPath: string, configPath: string): LaunchSpec {
+export function buildTmodloaderLaunch(
+  serverDir: string,
+  launcherPath: string,
+  configPath: string,
+  worldFile: string | null
+): LaunchSpec {
   return {
     command: launcherPath,
     args: [
       '-server',
       '-config', configPath,
+      /*
+       * The world is named on the command line, not left to `world=` in serverconfig.txt.
+       *
+       * Vanilla honours that key, and tModLoader reads the same file — but with
+       * -tmlsavedirectory in play it resolves worlds against its own save directory and
+       * ignored the configured path, listing the world in its menu and then waiting at
+       * `Choose World:` for a keypress no daemon is going to send. That prompt emits no
+       * newline, so the server looks hung rather than blocked, which is the exact failure
+       * plan.md §6 records for vanilla launched without a complete config.
+       *
+       * -world removes the decision entirely. Omitted when no world exists yet, because
+       * pointing it at a missing file is how you get the same prompt back.
+       */
+      ...(worldFile ? ['-world', worldFile] : []),
       '-tmlsavedirectory', serverDir,
       '-modpath', modsDir(serverDir),
     ],
