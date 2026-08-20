@@ -184,7 +184,10 @@ export async function POST(req: NextRequest) {
       console.log(`[Web API /servers POST] Starting smart node scheduler...`);
       try {
         const allOnlineNodes = await prisma.node.findMany({
-          where: { isOnline: true },
+          // A draining node is deliberately excluded here and nowhere else: it keeps
+          // running, keeps answering, and keeps hosting everything it already has. The
+          // only thing it stops receiving is new work.
+          where: { isOnline: true, drainedAt: null },
           include: {
             servers: {
               select: { id: true, memoryMb: true, cpuLimit: true, status: true },
@@ -195,7 +198,11 @@ export async function POST(req: NextRequest) {
         if (allOnlineNodes.length === 0) {
           console.error('[Web API /servers POST] ❌ No online nodes found');
           return NextResponse.json(
-            { error: 'Smart Scheduler Error: No online daemon worker nodes are registered or reachable.' },
+            {
+              error:
+                'Smart Scheduler Error: no node is available to place this server on. ' +
+                'Every registered node is either offline or in maintenance mode.',
+            },
             { status: 503 }
           );
         }
@@ -309,6 +316,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Target node not found' }, { status: 404 });
       }
       console.log(`[Web API /servers POST] ✓ Found node: ${node.name}`);
+
+      // Drain is checked here as well as in the scheduler above, because most creates
+      // arrive with an explicit nodeId from the wizard's dropdown and would otherwise
+      // walk straight past it — a node held back for an image update would keep taking
+      // new servers all the way through.
+      if (node.drainedAt) {
+        return NextResponse.json(
+          {
+            error: `Node '${node.name}' is in maintenance mode and is not accepting new servers. ` +
+                   'Pick another node, or take it out of maintenance first.',
+          },
+          { status: 409 }
+        );
+      }
 
       // The create wizard's dropdown already hides nodes that cannot host this game, but a
       // dropdown is not a security boundary — the Discord bot and any direct API caller

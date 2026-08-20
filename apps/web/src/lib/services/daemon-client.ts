@@ -1,4 +1,4 @@
-import { CreateServerContainerDto, DaemonHealthDto } from '@mc-manager/shared';
+import { CreateServerContainerDto, DaemonHealthDto, Game } from '@mc-manager/shared';
 
 export interface NodeCredentials {
   host: string;
@@ -80,6 +80,21 @@ export class DaemonClient {
    */
   async getHealth(timeoutMs?: number): Promise<DaemonHealthDto> {
     return this.request<DaemonHealthDto>('/system/health', {}, timeoutMs);
+  }
+
+  /**
+   * Sets which games this node will host.
+   *
+   * The node's own config is the source of truth — the panel's copy is refreshed from
+   * every health poll — so this writes there rather than to the database. A daemon
+   * predating the endpoint answers 404, which the caller must present as "update the
+   * node" rather than as a failed save, since nothing was saved either way.
+   */
+  async setEnabledGames(enabledGames: Game[]): Promise<{ success: boolean; enabledGames: Game[] }> {
+    return this.request<{ success: boolean; enabledGames: Game[] }>('/system/games', {
+      method: 'POST',
+      body: JSON.stringify({ enabledGames }),
+    });
   }
 
   async createServer(dto: CreateServerContainerDto): Promise<{ message: string; containerId: string }> {

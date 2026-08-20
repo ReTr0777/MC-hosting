@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Game, GAME_LABELS, ALL_GAMES, DEFAULT_ENABLED_GAMES, isGame,
   TerrariaConfig, DEFAULT_TERRARIA_CONFIG, TERRARIA_MAX_PLAYERS, TERRARIA_SECRET_SEEDS, TERRARIA_WORLD_EVILS,
@@ -14,8 +15,8 @@ import AdvancedModeToggle, { AdvancedBadge } from '@/components/common/AdvancedM
 import { uploadFileInChunks } from '@/lib/utils/chunked-upload';
 import GlobalSearch from '@/components/common/GlobalSearch';
 import DiscordLinkButton from '@/components/account/DiscordLinkButton';
-import NodeBackupStorageModal from '@/components/admin/NodeBackupStorageModal';
 import QuotaUsageBadge from '@/components/account/QuotaUsageBadge';
+import DashboardSidebar from '@/components/common/DashboardSidebar';
 
 interface NodeItem {
   id: string;
@@ -513,7 +514,20 @@ function ServerCardIcon({ serverId, serverType, serverTypeMeta, game = Game.MINE
   );
 }
 
+/*
+ * Wrapped because the game filter reads useSearchParams, and Next refuses to prerender a
+ * page that does without a boundary to fall back to — `next build` fails outright, which
+ * neither the typecheck nor the tests would have caught.
+ */
 export default function DashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <Dashboard />
+    </Suspense>
+  );
+}
+
+function Dashboard() {
   const { user, logout, loading } = useAuth();
   const { advanced } = useUIPrefs();
   const toast = useToast();
@@ -523,15 +537,11 @@ export default function DashboardPage() {
 
   // Node Form State
   const [showNodeModal, setShowNodeModal] = useState(false);
-  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
-  const [backupStorageNode, setBackupStorageNode] = useState<NodeItem | null>(null);
   const [nodeName, setNodeName] = useState('');
   const [nodeHost, setNodeHost] = useState('');
   const [nodePort, setNodePort] = useState(3500);
   const [nodeApiKey, setNodeApiKey] = useState('');
   const [nodeOffloadPriority, setNodeOffloadPriority] = useState(0);
-  const [nodeOvercommit, setNodeOvercommit] = useState('1');
-  const [nodeCpuOvercommit, setNodeCpuOvercommit] = useState('4');
   // Blank on a new node: the daemon reports its own RAM and cores on registration, and guessing
   // here would only overwrite the truth with a number typed before the machine was ever contacted.
   const [nodeTotalMemory, setNodeTotalMemory] = useState('');
@@ -639,9 +649,25 @@ export default function DashboardPage() {
   }, [gameCapableNodes, selectedNodeId]);
 
   // ── Dashboard game filter ──
-  // null means "all". Kept as state rather than a URL param to match how the rest
-  // of this page behaves.
-  const [gameFilter, setGameFilter] = useState<Game | null>(null);
+  /*
+   * Held in the URL rather than in state, because the sidebar drives it and a sidebar
+   * whose entries are links is worth more than one whose entries are buttons: the view
+   * becomes shareable, survives a reload, and the back button steps through filters.
+   * `?game=` absent means "all".
+   */
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const gameParam = searchParams.get('game');
+  const gameFilter: Game | null = isGame(gameParam) ? gameParam : null;
+  const setGameFilter = (g: Game | null) =>
+    router.replace(g === null ? '/dashboard' : `/dashboard?game=${g}`, { scroll: false });
+
+  /** How many servers each game has, for the sidebar's counts. */
+  const serverCountByGame = useMemo(() => {
+    const counts: Partial<Record<Game, number>> = {};
+    for (const g of ALL_GAMES) counts[g] = servers.filter((s) => gameOf(s) === g).length;
+    return counts;
+  }, [servers]);
 
   /** Games that actually have a server, in the enum's order. */
   const gamesInUse = useMemo(
@@ -654,11 +680,17 @@ export default function DashboardPage() {
     [servers, gameFilter]
   );
 
-  // A filter pinned to a game whose last server was just deleted would show an
-  // empty grid with no obvious way back.
+  /*
+   * A filter pinned to a game whose last server was just deleted would show an empty grid
+   * with no obvious way back. `servers.length > 0` guards the first render, where the
+   * list has not loaded yet and every game looks empty — without it, a shared link with
+   * ?game= set would rewrite itself away before the data it names arrives.
+   */
   useEffect(() => {
-    if (gameFilter !== null && !gamesInUse.includes(gameFilter)) setGameFilter(null);
-  }, [gamesInUse, gameFilter]);
+    if (servers.length > 0 && gameFilter !== null && !gamesInUse.includes(gameFilter)) {
+      setGameFilter(null);
+    }
+  }, [gamesInUse, gameFilter, servers.length]);
 
   // Switching game re-seeds RAM: Minecraft's 8 GB default would be six times what a
   // Terraria world needs, and a user who never opens the Resources step should not be
@@ -752,13 +784,23 @@ export default function DashboardPage() {
     }
   }, [serverType, showServerModal]);
 
+  /** Opens the register-node modal with a clean form. Called from the sidebar. */
+  const openRegisterNodeModal = () => {
+    setNodeName('');
+    setNodeHost('');
+    setNodePort(3500);
+    setNodeApiKey('');
+    setNodeOffloadPriority(0);
+    setNodeTotalMemory('');
+    setNodeTotalCpu('');
+    setNodeDetected({ ramMb: null, cores: null });
+    setShowNodeModal(true);
+  };
+
   const handleRegisterNode = async (e: React.FormEvent) => {
     e.preventDefault();
     setActionError('');
     try {
-      const url = editingNodeId ? `/api/nodes/${editingNodeId}` : '/api/nodes';
-      const method = editingNodeId ? 'PUT' : 'POST';
-      
       const payload: any = {
         name: nodeName,
         host: nodeHost,
@@ -766,25 +808,16 @@ export default function DashboardPage() {
         offloadPriority: nodeOffloadPriority,
       };
 
-      // Only meaningful on an existing node; a new one starts at 1.0 (no overcommit).
-      if (editingNodeId && nodeOvercommit !== '') {
-        payload.overcommitRatio = nodeOvercommit;
-      }
-      if (editingNodeId && nodeCpuOvercommit !== '') {
-        payload.cpuOvercommitRatio = nodeCpuOvercommit;
-      }
-
+      // Overcommit is not offered at registration: a node starts at 1.0 (no overcommit),
+      // and tuning it is a decision to make once the node has servers on it to measure.
       if (nodeTotalMemory !== '') payload.totalMemory = Number(nodeTotalMemory);
       if (nodeTotalCpu !== '') payload.totalCpu = Number(nodeTotalCpu);
 
-      if (nodeApiKey) {
-        payload.apiKey = nodeApiKey;
-      } else if (!editingNodeId) {
-        throw new Error('API Key is required for new nodes');
-      }
+      if (!nodeApiKey) throw new Error('API Key is required for new nodes');
+      payload.apiKey = nodeApiKey;
 
-      const res = await fetch(url, {
-        method,
+      const res = await fetch('/api/nodes', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
@@ -793,7 +826,6 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error(data.error || 'Failed to save node');
 
       setShowNodeModal(false);
-      setEditingNodeId(null);
       setNodeName('');
       setNodeHost('');
       setNodeApiKey('');
@@ -803,77 +835,6 @@ export default function DashboardPage() {
     }
   };
 
-  /**
-   * Downloads a node's settings for the desktop node app to import.
-   *
-   * The file carries the daemon's bearer token, so it is fetched rather than built
-   * client-side (the browser never holds the key otherwise) and the user is told
-   * plainly what they have just saved.
-   */
-  const handleExportNodeConfig = async (node: NodeItem) => {
-    try {
-      const res = await fetch(`/api/nodes/${node.id}/config`);
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Export failed');
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${node.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'node'}-node-config.json`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-
-      toast.success(
-        'Config exported',
-        `Import it in the MC Hosting Node app on ${node.name}. It contains the daemon key — share it privately.`
-      );
-    } catch (err: any) {
-      toast.error('Could not export the config', err.message);
-    }
-  };
-
-  const openEditNodeModal = (node: NodeItem) => {
-    setEditingNodeId(node.id);
-    setNodeName(node.name);
-    setNodeHost(node.host);
-    setNodePort(node.port);
-    setNodeOffloadPriority(node.offloadPriority);
-    setNodeOvercommit(String(node.overcommitRatio ?? 1));
-    setNodeCpuOvercommit(String(node.cpuOvercommitRatio ?? 4));
-    setNodeTotalMemory(String(node.totalMemory ?? ''));
-    setNodeTotalCpu(String(node.totalCpu ?? ''));
-    setNodeDetected({ ramMb: node.liveRamTotal ?? null, cores: node.liveCpuCores ?? null });
-    setNodeApiKey(''); // Leave empty for edit
-    setShowNodeModal(true);
-  };
-
-  const handleDeleteNode = async (node: NodeItem) => {
-    const ok = await confirm({
-      title: `Remove the node "${node.name}"?`,
-      message: node._count.servers > 0
-        ? `This node still hosts ${node._count.servers} server(s). Removing it unregisters the machine from the panel — move those servers to another node first if you still need them.`
-        : 'This unregisters the machine from the panel. The daemon itself keeps running and can be re-added later.',
-      confirmLabel: 'Remove node',
-      danger: true,
-    });
-    if (!ok) return;
-
-    try {
-      const res = await fetch(`/api/nodes/${node.id}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to delete node');
-
-      toast.success('Node removed', `${node.name} is no longer registered.`);
-      fetchData();
-    } catch (err: any) {
-      toast.error('Could not remove the node', err.message);
-    }
-  };
 
   const handleDeleteServer = async (server: ServerItem) => {
     const ok = await confirm({
@@ -1203,27 +1164,6 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
             <AdvancedModeToggle />
             <QuotaUsageBadge />
-            {/* Node registration is infrastructure work, so it hides in simple mode — unless there
-                are no nodes at all, in which case hiding it would leave the panel unusable. */}
-            {user?.globalRole === 'GLOBAL_ADMIN' && (advanced || nodes.length === 0) && (
-              <button
-                onClick={() => {
-                  setEditingNodeId(null);
-                  setNodeName('');
-                  setNodeHost('');
-                  setNodePort(3500);
-                  setNodeApiKey('');
-                  setNodeOffloadPriority(0);
-                  setNodeTotalMemory('');
-                  setNodeTotalCpu('');
-                  setNodeDetected({ ramMb: null, cores: null });
-                  setShowNodeModal(true);
-                }}
-                className="cc-btn-ghost flex-1 sm:flex-initial text-center justify-center"
-              >
-                + Register Node
-              </button>
-            )}
             <button
               onClick={() => {
                 const usedPorts = new Set((servers || []).map((s) => s.serverPort));
@@ -1246,164 +1186,13 @@ export default function DashboardPage() {
       {/* ── Main Layout ── */}
       <main className="flex-1 flex flex-col lg:flex-row w-full">
 
-        {/* LEFT: Active Nodes panel */}
-        <aside className="w-full lg:w-72 lg:min-w-[288px] p-4 lg:p-6 space-y-3 cc-side-divider">
-          <div className="cc-section-title" style={{ marginBottom: '8px' }}>Active nodes</div>
-
-          {nodes.length === 0 ? (
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>
-              No daemon nodes registered yet.
-            </div>
-          ) : (
-            nodes.map(node => {
-              const cpuPct = node.liveCpuUsage ?? 0;
-              const ramUsed = node.liveRamUsed ?? 0;
-              const ramTotal = node.liveRamTotal ?? node.totalMemory ?? 1;
-              const ramPct = ramTotal > 0 ? Math.round((ramUsed / ramTotal) * 100) : 0;
-              const diskUsed = node.liveDiskUsed ?? 0;
-              const diskTotal = node.liveDiskTotal ?? 1;
-              const diskPct = diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 100) : 0;
-              const cpuBarColor = cpuPct > 85 ? '#f87171' : cpuPct > 60 ? '#fb923c' : '#34d399';
-              const ramBarColor = ramPct > 85 ? '#f87171' : ramPct > 60 ? '#fb923c' : '#60a5fa';
-              const diskBarColor = diskPct > 85 ? '#f87171' : diskPct > 60 ? '#fb923c' : '#a78bfa';
-
-              return (
-                <div key={node.id} className="cc-card" style={{ padding: '14px' }}>
-                  {/* Node Header */}
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--text-primary)', marginBottom: '2px' }}>{node.name}</div>
-                      <div style={{ fontSize: '0.68rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-                        {node.host}:{node.port}
-                      </div>
-                    </div>
-                    <span className={node.isOnline ? 'cc-badge-online' : 'cc-badge-offline'}>
-                      {node.isOnline ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-
-                  {/* CPU Model + OS */}
-                  {(node.liveCpuModel || node.liveOsDistro) && (
-                    <div style={{ fontSize: '0.67rem', color: 'var(--text-muted)', marginBottom: '8px', lineHeight: 1.4 }}>
-                      {node.liveCpuModel && (
-                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={node.liveCpuModel}>
-                          {node.liveCpuModel}{node.liveCpuCores ? ` · ${node.liveCpuCores}C` : ''}
-                        </div>
-                      )}
-                      {node.liveOsDistro && <div>{node.liveOsDistro}</div>}
-                    </div>
-                  )}
-
-                  {/* Live Hardware Bars */}
-                  {node.isOnline && node.liveCpuUsage !== null && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
-                      {/* CPU */}
-                      <div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
-                          <span>CPU</span>
-                          <span style={{ color: cpuBarColor, fontWeight: 700 }}>{cpuPct.toFixed(1)}%{node.liveCpuTemp ? ` · ${node.liveCpuTemp}°C` : ''}</span>
-                        </div>
-                        <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
-                          <div style={{ height: '100%', width: `${Math.min(cpuPct, 100)}%`, background: cpuBarColor, borderRadius: '2px', transition: 'width 0.5s ease' }} />
-                        </div>
-                      </div>
-                      {/* RAM */}
-                      <div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
-                          <span>RAM</span>
-                          <span style={{ color: ramBarColor, fontWeight: 700 }}>{(ramUsed / 1024).toFixed(1)} / {(ramTotal / 1024).toFixed(1)} GB</span>
-                        </div>
-                        <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
-                          <div style={{ height: '100%', width: `${Math.min(ramPct, 100)}%`, background: ramBarColor, borderRadius: '2px', transition: 'width 0.5s ease' }} />
-                        </div>
-                      </div>
-                      {/* Disk */}
-                      {diskTotal > 0 && (
-                        <div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
-                            <span>Disk</span>
-                            <span style={{ color: diskBarColor, fontWeight: 700 }}>{diskUsed.toFixed(0)} / {diskTotal.toFixed(0)} GB</span>
-                          </div>
-                          <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
-                            <div style={{ height: '100%', width: `${Math.min(diskPct, 100)}%`, background: diskBarColor, borderRadius: '2px', transition: 'width 0.5s ease' }} />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Allocation, which is a different question from live usage: this is what the
-                      node has *promised* its servers, and it is what decides whether the next
-                      one fits. A node can sit at 10% CPU and still be full. */}
-                  {node.capacity && node.capacity.memoryBudgetMb != null && (
-                    <div style={{ marginBottom: '8px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '3px' }}>
-                        <span title="Total RAM promised to the servers on this node, running or not">
-                          Allocated{node.capacity.overcommitRatio > 1 ? ` · ${node.capacity.overcommitRatio}× overcommit` : ''}
-                        </span>
-                        <span style={{ color: allocColor(node), fontWeight: 700 }}>
-                          {(node.capacity.allocatedMemoryMb / 1024).toFixed(1)} / {(node.capacity.memoryBudgetMb / 1024).toFixed(1)} GB
-                        </span>
-                      </div>
-                      <div style={{ height: '4px', background: 'var(--border-2)', borderRadius: '2px', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: `${Math.min(allocPct(node), 100)}%`, background: allocColor(node), borderRadius: '2px', transition: 'width 0.5s ease' }} />
-                      </div>
-                      <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-                        {node.capacity.freeMemoryMb === 0
-                          ? 'Full — no room for another server'
-                          : `${((node.capacity.freeMemoryMb ?? 0) / 1024).toFixed(1)} GB free for new servers`}
-                        {node.capacity.cpuBudget != null && ` · ${node.capacity.allocatedCpu}/${node.capacity.cpuBudget} cores`}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Footer: server count + admin buttons */}
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '8px', marginTop: '2px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>{node._count.servers} Active Servers</span>
-                    {user?.globalRole === 'GLOBAL_ADMIN' && (
-                      <div style={{ display: 'flex', gap: '4px' }}>
-                        <button
-                          onClick={() => openEditNodeModal(node)}
-                          title="Edit Node"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
-                          onMouseOver={e => (e.currentTarget.style.color = '#60a5fa')}
-                          onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
-                        >
-                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                        </button>
-                        <button
-                          onClick={() => setBackupStorageNode(node)}
-                          title="Off-Site Backup Storage"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
-                          onMouseOver={e => (e.currentTarget.style.color = '#34d399')}
-                          onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
-                        >
-                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 8a4 4 0 014-4h6a4 4 0 014 4v8a4 4 0 01-4 4H9a4 4 0 01-4-4V8zm4-1v1m6-1v1M8 12h8m-8 4h5" /></svg>
-                        </button>
-                        <button
-                          onClick={() => handleExportNodeConfig(node)}
-                          title="Export config for the desktop node app"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
-                          onMouseOver={e => (e.currentTarget.style.color = '#fbbf24')}
-                          onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}
-                        >
-                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" /></svg>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteNode(node)}
-                          title="Delete Node"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--danger)' }}
-                        >
-                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </aside>
+        <DashboardSidebar
+          nodes={nodes}
+          serverCountByGame={serverCountByGame}
+          activeGame={gameFilter}
+          isAdmin={user?.globalRole === 'GLOBAL_ADMIN'}
+          onRegisterNode={openRegisterNodeModal}
+        />
 
         {/* RIGHT: Server grid */}
         <section className="flex-1 p-4 lg:p-6">
@@ -1415,27 +1204,6 @@ export default function DashboardPage() {
               </span>
             )}
 
-            {/* Only worth showing once there is actually a mix — a single-game panel
-                does not need a filter that can only ever hide everything. */}
-            {gamesInUse.length > 1 && (
-              <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto', flexWrap: 'wrap' }}>
-                {[null, ...gamesInUse].map((g) => {
-                  const active = gameFilter === g;
-                  const label = g === null ? 'All' : GAME_LABELS[g];
-                  const count = g === null ? servers.length : servers.filter((s) => gameOf(s) === g).length;
-                  return (
-                    <button
-                      key={label}
-                      onClick={() => setGameFilter(g)}
-                      className={active ? 'cc-btn-primary' : 'cc-btn-ghost'}
-                      style={{ padding: '3px 10px', fontSize: '0.72rem' }}
-                    >
-                      {label} <span style={{ opacity: 0.7 }}>{count}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
           {visibleServers.length === 0 ? (
@@ -1573,7 +1341,7 @@ export default function DashboardPage() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(13,17,23,0.85)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', zIndex: 50 }}>
           <div className="cc-card" style={{ width: '100%', maxWidth: '420px', padding: '24px', boxShadow: '0 24px 48px rgba(0,0,0,0.5)' }}>
             <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              {editingNodeId ? 'Edit Remote Daemon Node' : 'Register Remote Daemon Node'}
+              Register Remote Daemon Node
             </h3>
             <p style={{ fontSize: '0.75rem', color: 'var(--warning)', background: 'rgba(240,136,62,0.08)', border: '1px solid rgba(240,136,62,0.2)', padding: '8px 12px', borderRadius: '6px', marginBottom: '18px' }}>
               Note: Daemon Port is <code style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>3500</code> (Not 25565, which is for Minecraft player connections).
@@ -1595,8 +1363,8 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Daemon API Secret Key {editingNodeId && '(Leave blank to keep unchanged)'}</label>
-                <input type="password" required={!editingNodeId} value={nodeApiKey} onChange={e => setNodeApiKey(e.target.value)} placeholder={editingNodeId ? 'Leave blank to keep current key' : 'Bearer key...'} className="cc-input" />
+                <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Daemon API Secret Key</label>
+                <input type="password" required value={nodeApiKey} onChange={e => setNodeApiKey(e.target.value)} placeholder="Bearer key..." className="cc-input" />
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Smart Offload Priority (0-10)</label>
@@ -1611,7 +1379,7 @@ export default function DashboardPage() {
                       min="0"
                       value={nodeTotalMemory}
                       onChange={e => setNodeTotalMemory(e.target.value)}
-                      placeholder={editingNodeId ? '' : 'Detected from the daemon'}
+                      placeholder="Detected from the daemon"
                       className="cc-input"
                     />
                   </div>
@@ -1622,7 +1390,7 @@ export default function DashboardPage() {
                       min="0"
                       value={nodeTotalCpu}
                       onChange={e => setNodeTotalCpu(e.target.value)}
-                      placeholder={editingNodeId ? '' : 'Detected from the daemon'}
+                      placeholder="Detected from the daemon"
                       className="cc-input"
                     />
                   </div>
@@ -1649,59 +1417,13 @@ export default function DashboardPage() {
                   )}
                 </p>
               </div>
-              {editingNodeId && (
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>Overcommit ratio (1.0 – 4.0)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="1"
-                    max="4"
-                    value={nodeOvercommit}
-                    onChange={e => setNodeOvercommit(e.target.value)}
-                    className="cc-input"
-                  />
-                  <p className="cc-help">
-                    How much RAM this node may promise beyond what it physically has. 1.0 never oversubscribes;
-                    1.5 allows 150% allocated, which is usually safe because Minecraft servers rarely hold their full
-                    heap at once. New servers are refused once the budget is used up.
-                  </p>
-                </div>
-              )}
-              {editingNodeId && (
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>CPU overcommit ratio (1.0 – 16.0)</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="1"
-                    max="16"
-                    value={nodeCpuOvercommit}
-                    onChange={e => setNodeCpuOvercommit(e.target.value)}
-                    className="cc-input"
-                  />
-                  <p className="cc-help">
-                    Separate from RAM, and looser on purpose: a server&apos;s CPU limit is a ceiling on bursts, not a
-                    reserved core, and an idle or sleeping server uses almost none of it. 4.0 lets a 4-core node hand
-                    out 16 cores&apos; worth of ceilings. Lower it only if servers are genuinely starving each other.
-                  </p>
-                </div>
-              )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '4px' }}>
                 <button type="button" onClick={() => setShowNodeModal(false)} className="cc-btn-ghost">Cancel</button>
-                <button type="submit" className="cc-btn-primary">{editingNodeId ? 'Update Node' : 'Register Node'}</button>
+                <button type="submit" className="cc-btn-primary">Register Node</button>
               </div>
             </form>
           </div>
         </div>
-      )}
-
-      {backupStorageNode && (
-        <NodeBackupStorageModal
-          nodeId={backupStorageNode.id}
-          nodeName={backupStorageNode.name}
-          onClose={() => setBackupStorageNode(null)}
-        />
       )}
 
       {/* â”€â”€ Modal: Create Server Wizard â”€â”€ */}

@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
       overcommitRatio: true,
       cpuOvercommitRatio: true,
       enabledGames: true,
+      drainedAt: true,
       liveCpuUsage: true,
       liveRamUsed: true,
       liveRamTotal: true,

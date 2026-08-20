@@ -190,6 +190,12 @@ model Node {
   // and so a daemon too old to report the field never reads as "hosts nothing".
   enabledGames    String[] @default(["MINECRAFT"])
 
+  // Set while the node is draining: it keeps running everything it already has, but the
+  // scheduler stops placing new servers on it. Deliberately a timestamp rather than a
+  // boolean so the panel can say how long a node has been held back — a node quietly
+  // taking no work for a week is a fault, and "drained" alone would never reveal it.
+  drainedAt       DateTime?
+
   // Live hardware stats (updated on each ping)
   liveCpuUsage    Float?   // Current CPU load percentage (0-100)
   liveRamUsed     Int?     // Currently used RAM in MB
@@ -206,6 +212,9 @@ model Node {
   // Free space on the filesystem holding the daemon's data directory, in MB. Distinct
   // from liveDiskTotal, which describes the largest mount and may be another disk.
   liveDataDiskFreeMb Int?
+  // Daemon package version as of the last successful ping. Null for a daemon too old to
+  // report one, which is itself a signal — see daemonVersionState in shared.
+  liveDaemonVersion String?
   liveLastSeenAt  DateTime? // Last time a successful hardware check was received
 
   createdAt       DateTime @default(now())
