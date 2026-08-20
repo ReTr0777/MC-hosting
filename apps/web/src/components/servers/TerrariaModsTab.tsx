@@ -107,9 +107,24 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
       // get a timeout partway through and no way to tell which ones landed.
       for (const file of chosen) {
         try {
+          /*
+           * Sent as an ArrayBuffer with an explicit content type, mirroring
+           * uploadFileInChunks — which is the one upload path in this panel already proven
+           * to cross a Cloudflare-fronted deployment.
+           *
+           * Handing `fetch` the File directly instead lets the browser derive the content
+           * type from the file, and `.tmod` is not a type any browser knows, so the POST
+           * goes out carrying a body and no Content-Type header at all. A proxy is entitled
+           * to refuse that, and one did: every upload came back as an HTML 502 the origin
+           * never saw.
+           */
           await apiRequest(
             `/api/servers/${serverId}/tmods?fileName=${encodeURIComponent(file.name)}`,
-            { method: 'POST', body: file }
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: await file.arrayBuffer(),
+            }
           );
           installed++;
         } catch (err) {
