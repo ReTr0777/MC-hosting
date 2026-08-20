@@ -37,6 +37,19 @@ export interface GameCapabilities {
   banFile: string | null;
   /** Mod/plugin management: Modrinth, CurseForge, mrpack, ServerPackCreator. */
   mods: boolean;
+  /**
+   * `.tmod` mod management: upload, enable/disable, delete.
+   *
+   * Deliberately not the `mods` flag above. That one means Minecraft's whole
+   * content stack — a Modrinth search, version resolution, pack health — and
+   * turning it on for Terraria would light up UI backed by nothing. tModLoader
+   * shares none of it: mods are files you place, and the browser is Steam's.
+   *
+   * True means "this game has a .tmod system at all", which is a property of the
+   * game. Whether a *given server* has one depends on its variant, since only
+   * tModLoader loads mods — see terrariaSupportsMods.
+   */
+  tmodMods: boolean;
   /** Filename of the editable `key=value` server config, or null if there is none. */
   configFile: string | null;
   /** BlueMap-style live world map. */
@@ -62,6 +75,7 @@ export const GAME_CAPABILITIES: Record<Game, GameCapabilities> = {
     bans: true,
     banFile: null,
     mods: true,
+    tmodMods: false,
     configFile: 'server.properties',
     worldMap: true,
     sleepWake: true,
@@ -83,6 +97,7 @@ export const GAME_CAPABILITIES: Record<Game, GameCapabilities> = {
     bans: true,
     banFile: 'banlist.txt',
     mods: false,
+    tmodMods: true,
     configFile: 'serverconfig.txt',
     worldMap: false,
     sleepWake: false,
@@ -157,9 +172,29 @@ const SECRET_SEED_IDS: string[] = TERRARIA_SECRET_SEEDS.map((s) => s.id);
  * parsing reads Terraria's localized join/leave strings, and a user-chosen
  * language would silently break the player list.
  */
+export const TERRARIA_VARIANTS = ['VANILLA', 'TSHOCK', 'TMODLOADER'] as const;
+export type TerrariaVariant = (typeof TERRARIA_VARIANTS)[number];
+
+/**
+ * Whether a Terraria server of this variant can load mods.
+ *
+ * Vanilla ignores a Mods folder entirely, so offering mod management on one would
+ * be a tab where every upload does nothing — which reads as a broken panel rather
+ * than as an unsupported variant.
+ */
+export function terrariaSupportsMods(variant: TerrariaVariant | undefined | null): boolean {
+  return variant === 'TMODLOADER';
+}
+
 export interface TerrariaConfig {
-  /** v1 ships VANILLA only; TSHOCK is reserved so adding it is not a migration. */
-  variant: 'VANILLA' | 'TSHOCK';
+  /**
+   * Which Terraria server to run.
+   *
+   * TMODLOADER is a different server binary, not a flag on the vanilla one, and
+   * it is the only variant that loads mods. TSHOCK is still reserved and not yet
+   * implemented.
+   */
+  variant: TerrariaVariant;
   worldName: string;
   /** World size: 1 small, 2 medium, 3 large. Fixed at generation. */
   autocreate: 1 | 2 | 3;
@@ -222,7 +257,12 @@ export function parseTerrariaConfig(value: unknown): TerrariaConfig {
     : [];
 
   return {
-    variant: raw.variant === 'TSHOCK' ? 'TSHOCK' : 'VANILLA',
+    // Unrecognised falls back to VANILLA rather than throwing: a config written by a
+    // newer panel must not make an older one refuse to read the server at all.
+    variant:
+      typeof raw.variant === 'string' && (TERRARIA_VARIANTS as readonly string[]).includes(raw.variant)
+        ? (raw.variant as TerrariaVariant)
+        : 'VANILLA',
     worldName: worldName || DEFAULT_TERRARIA_CONFIG.worldName,
     autocreate: ([1, 2, 3] as number[]).includes(autocreate)
       ? (autocreate as 1 | 2 | 3)

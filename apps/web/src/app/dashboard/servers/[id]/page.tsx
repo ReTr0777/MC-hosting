@@ -3,7 +3,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { Game, GAME_CAPABILITIES, GAME_LABELS, GameCapabilities, isGame } from '@mc-manager/shared';
+import {
+  Game, GAME_CAPABILITIES, GAME_LABELS, GameCapabilities, isGame,
+  parseTerrariaConfig, terrariaSupportsMods,
+} from '@mc-manager/shared';
 import { useAuth } from '@/context/AuthContext';
 import { useUIPrefs } from '@/context/UIPrefsContext';
 import { useToast } from '@/context/ToastContext';
@@ -21,6 +24,7 @@ import MapTab from '@/components/servers/MapTab';
 import SleepTab from '@/components/servers/SleepTab';
 import PropertiesTab from '@/components/servers/PropertiesTab';
 import TerrariaSettingsTab from '@/components/servers/TerrariaSettingsTab';
+import TerrariaModsTab from '@/components/servers/TerrariaModsTab';
 import BackupsTab from '@/components/servers/BackupsTab';
 import SubdomainTab from '@/components/servers/SubdomainTab';
 import UpdateCenterTab from '@/components/servers/UpdateCenterTab';
@@ -102,6 +106,11 @@ const TABS = [
   { key: 'mods', label: 'Mods', advanced: false, hint: 'Search Modrinth and install or remove mods for this server.', requires: 'mods' },
   { key: 'integrations', label: 'Integrations', advanced: false, hint: 'Dedicated setup for popular mods and plugins like Simple Voice Chat, Geyser, and LuckPerms.', requires: 'mods' },
   {
+    key: 'tmods', label: 'Mods', advanced: false,
+    hint: 'Upload .tmod files and choose which ones this server loads.',
+    requires: 'tmodMods',
+  },
+  {
     key: 'backups', label: 'Backups', advanced: false, hint: 'Take a snapshot before risky changes, and restore one if something breaks.',
     labelByGame: { TERRARIA: 'World Backups' },
     hintByGame: { TERRARIA: 'Take a snapshot of your world before risky changes, and restore one if something breaks.' },
@@ -130,9 +139,17 @@ type TabDef = typeof TABS[number];
  * A tab with no `requires` is game-neutral and always shows. Otherwise the capability
  * decides — `configFile` is a filename rather than a boolean, so truthiness is the test.
  */
-function tabIsSupported(tab: TabDef, caps: GameCapabilities): boolean {
+function tabIsSupported(tab: TabDef, caps: GameCapabilities, modsUsable: boolean): boolean {
   const requires = (tab as { requires?: keyof GameCapabilities }).requires;
-  return !requires || Boolean(caps[requires]);
+  if (!requires) return true;
+  /*
+   * `tmodMods` is the only capability that is not settled by the game alone. Terraria has
+   * a mod system, but only a tModLoader server can load anything — vanilla ignores a Mods
+   * folder rather than rejecting it, so the tab would be one where every upload silently
+   * does nothing.
+   */
+  if (requires === 'tmodMods') return Boolean(caps.tmodMods) && modsUsable;
+  return Boolean(caps[requires]);
 }
 
 function tabLabel(tab: TabDef, game: Game): string {
@@ -195,7 +212,12 @@ export default function ServerConsolePage() {
 
   // Capability filtering runs first and is not overridable: a tab the game cannot support has
   // nothing behind it, so unlike `advanced` it must not be reachable by direct link either.
-  const supportedTabs = TABS.filter((t) => tabIsSupported(t, capabilities));
+  // Terraria only; parseTerrariaConfig defaults an absent or foreign config to VANILLA,
+  // which is the safe reading — a Minecraft server must never grow a .tmod tab.
+  const tmodUsable =
+    serverGame === Game.TERRARIA && terrariaSupportsMods(parseTerrariaConfig(server?.gameConfig).variant);
+
+  const supportedTabs = TABS.filter((t) => tabIsSupported(t, capabilities, tmodUsable));
 
   // A tab reached by direct link stays reachable even in simple mode, rather than vanishing mid-visit.
   const visibleTabs = supportedTabs.filter((t) => !t.advanced || advanced || t.key === activeTab);
@@ -992,7 +1014,13 @@ export default function ServerConsolePage() {
         )}
         {activeTab === 'properties' && (
           serverGame === Game.TERRARIA
-            ? <TerrariaSettingsTab serverId={server.id} canManage={canManage} />
+            ? <TerrariaSettingsTab
+                serverId={server.id}
+                canManage={canManage}
+                variant={parseTerrariaConfig(server.gameConfig).variant}
+                serverStatus={server.status}
+                onVariantChanged={fetchServerDetails}
+              />
             : <PropertiesTab serverId={server.id} canManage={canManage} />
         )}
         {activeTab === 'resources' && <ResourcesTab serverId={server.id} onResized={fetchServerDetails} />}
@@ -1036,6 +1064,9 @@ export default function ServerConsolePage() {
           </div>
         )}
 
+        {activeTab === 'tmods' && (
+          <TerrariaModsTab serverId={server.id} serverName={server.name} canManage={canManage} />
+        )}
         {activeTab === 'integrations' && (
           <div className="animate-fadeIn">
             <IntegrationsTab

@@ -4,7 +4,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiPost, apiRequest, errorMessage } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
 import { InlineError, LoadingLine, Mono, Notice, PanelHeader } from '@/components/ui';
-import { TERRARIA_SECRET_SEEDS, TERRARIA_WORLD_EVILS } from '@mc-manager/shared';
+import { TERRARIA_SECRET_SEEDS, TERRARIA_WORLD_EVILS, TerrariaVariant } from '@mc-manager/shared';
+import { useConfirm } from '@/context/ConfirmContext';
 
 /**
  * Terraria's `serverconfig.txt` editor.
@@ -23,6 +24,11 @@ import { TERRARIA_SECRET_SEEDS, TERRARIA_WORLD_EVILS } from '@mc-manager/shared'
 interface TerrariaSettingsTabProps {
   serverId: string;
   canManage?: boolean;
+  /** Current variant, so the panel can offer the other one. Absent reads as vanilla. */
+  variant?: TerrariaVariant;
+  serverStatus?: string;
+  /** Refetches the server after a conversion, so the Mods tab appears without a reload. */
+  onVariantChanged?: () => void;
 }
 
 type Props = Record<string, string>;
@@ -100,7 +106,9 @@ const JOURNEY_LEVELS: Array<{ value: string; label: string }> = [
   { value: '2', label: 'Everyone' },
 ];
 
-export default function TerrariaSettingsTab({ serverId, canManage = true }: TerrariaSettingsTabProps) {
+export default function TerrariaSettingsTab({
+  serverId, canManage = true, variant = 'VANILLA', serverStatus, onVariantChanged,
+}: TerrariaSettingsTabProps) {
   const toast = useToast();
 
   const [properties, setProperties] = useState<Props>({});
@@ -196,6 +204,14 @@ export default function TerrariaSettingsTab({ serverId, canManage = true }: Terr
       />
 
       {loadError && <InlineError message={loadError} onRetry={load} />}
+
+      <VariantPanel
+        serverId={serverId}
+        variant={variant}
+        serverStatus={serverStatus}
+        canManage={canManage}
+        onChanged={onVariantChanged}
+      />
 
       <section className="cc-panel">
         <h3 className="cc-section-title" style={{ marginBottom: '14px' }}>Players &amp; access</h3>
@@ -367,6 +383,101 @@ export default function TerrariaSettingsTab({ serverId, canManage = true }: Terr
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * Switch between vanilla Terraria and tModLoader.
+ *
+ * Unlike everything else on this tab, this does not edit `serverconfig.txt` — it changes
+ * which binary the server runs, so it goes through its own route, which takes a backup
+ * first and refuses while the server is up.
+ *
+ * The two directions are not equally safe, and the warning says so rather than being
+ * symmetrical: tModLoader reads a vanilla world happily, but vanilla cannot read modded
+ * content and drops it silently instead of refusing to load.
+ */
+function VariantPanel({
+  serverId, variant, serverStatus, canManage, onChanged,
+}: {
+  serverId: string;
+  variant: TerrariaVariant;
+  serverStatus?: string;
+  canManage: boolean;
+  onChanged?: () => void;
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+
+  const isModded = variant === 'TMODLOADER';
+  const target: TerrariaVariant = isModded ? 'VANILLA' : 'TMODLOADER';
+  // SLEEPING counts as running: the next player to connect starts it.
+  const stopped = serverStatus === 'OFFLINE' || serverStatus === 'ERROR';
+
+  const convert = async () => {
+    const ok = await confirm({
+      title: isModded ? 'Switch back to vanilla Terraria?' : 'Switch to tModLoader?',
+      message: isModded
+        ? 'Vanilla cannot read modded content. Any blocks, items or NPCs your mods added are removed the ' +
+          'first time vanilla loads this world, permanently and without warning. A backup is taken before ' +
+          'the switch, and it is the only way back.'
+        : 'The world carries over — this is the normal way to start a modded server. The next start will be ' +
+          'slow while the node downloads tModLoader and its .NET runtime, and every player needs tModLoader ' +
+          'and the same mods to join. A backup is taken first.',
+      confirmLabel: isModded ? 'Switch to vanilla' : 'Switch to tModLoader',
+      danger: isModded,
+      ...(isModded ? { requireText: 'vanilla' } : {}),
+    });
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      const data = await apiPost<{ message: string; backupName?: string }>(
+        `/api/servers/${serverId}/variant`,
+        { variant: target }
+      );
+      toast.success(
+        data.message,
+        data.backupName ? `Backed up as "${data.backupName}" first.` : undefined
+      );
+      onChanged?.();
+    } catch (err) {
+      toast.error('Could not change the server type', errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="cc-panel">
+      <h3 className="cc-section-title" style={{ marginBottom: '6px' }}>Server type</h3>
+      <p className="cc-help" style={{ marginTop: 0 }}>
+        Currently running <strong>{isModded ? 'tModLoader' : 'vanilla Terraria'}</strong>.
+        {isModded
+          ? ' Mods are managed on the Mods tab.'
+          : ' Vanilla has no mod system — switch to tModLoader to use mods.'}
+      </p>
+
+      {canManage && (
+        <>
+          <button
+            onClick={convert}
+            disabled={busy || !stopped}
+            className={isModded ? 'cc-btn-ghost' : 'cc-btn-primary'}
+            style={{ opacity: stopped ? 1 : 0.5 }}
+          >
+            {busy ? 'Switching…' : isModded ? 'Switch to vanilla' : 'Switch to tModLoader'}
+          </button>
+          {!stopped && (
+            <p className="cc-help">
+              Stop the server first. A sleeping server counts as running, because the next player to connect
+              will start it.
+            </p>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

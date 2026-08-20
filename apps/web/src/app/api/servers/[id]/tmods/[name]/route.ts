@@ -1,0 +1,93 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { getUserFromRequest } from '@/lib/auth';
+import { DaemonClient } from '@/lib/services/daemon-client';
+import { Game, parseTerrariaConfig, terrariaSupportsMods } from '@mc-manager/shared';
+
+/**
+ * One installed `.tmod`: enable, disable, or remove.
+ *
+ * The two verbs key on different things, and deliberately so. PATCH is a change to
+ * `enabled.json`, which holds mods' **internal** names; DELETE removes a file, which is
+ * identified by its **filename**. Those are regularly not the same string — a mod shipped
+ * as `Calamity Mod v2.0.tmod` calls itself `CalamityMod` — so collapsing them to one
+ * identifier would make one of the two operations silently target nothing. The mod list
+ * returns both values for exactly this reason.
+ */
+
+async function resolve(req: NextRequest, id: string) {
+  const user = await getUserFromRequest(req);
+  if (!user) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
+
+  const server = await prisma.server.findUnique({
+    where: { id },
+    include: { node: true, permissions: { where: { userId: user.userId } } },
+  });
+  if (!server) return { error: NextResponse.json({ error: 'Server not found' }, { status: 404 }) };
+
+  const isGlobalAdmin = user.globalRole === 'GLOBAL_ADMIN';
+  const role = server.permissions[0]?.role;
+  if (!isGlobalAdmin && (!role || role === 'VIEWER')) {
+    return {
+      error: NextResponse.json(
+        { error: 'Forbidden: OPERATOR or ADMIN role required to change mods' },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (server.game !== Game.TERRARIA || !terrariaSupportsMods(parseTerrariaConfig(server.gameConfig).variant)) {
+    return {
+      error: NextResponse.json(
+        { error: 'This server does not run tModLoader.' },
+        { status: 409 }
+      ),
+    };
+  }
+
+  return {
+    daemon: new DaemonClient({
+      host: server.node.host,
+      port: server.node.port,
+      apiKey: server.node.apiKey,
+    }),
+    target: server.containerId || `process-${server.id}`,
+  };
+}
+
+/** Enable or disable a mod, by its internal name. */
+export async function PATCH(req: NextRequest, { params }: { params: { id: string; name: string } }) {
+  const ctx = await resolve(req, params.id);
+  if ('error' in ctx) return ctx.error;
+
+  try {
+    const { enabled } = await req.json();
+    if (typeof enabled !== 'boolean') {
+      return NextResponse.json({ error: 'enabled must be true or false' }, { status: 400 });
+    }
+
+    const data = await ctx.daemon.request(
+      `/servers/${ctx.target}/tmods/${encodeURIComponent(params.name)}`,
+      { method: 'PATCH', body: JSON.stringify({ enabled }) }
+    );
+    return NextResponse.json(data);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Failed to change the mod' }, { status: 502 });
+  }
+}
+
+/** Remove a mod, by its filename. */
+export async function DELETE(req: NextRequest, { params }: { params: { id: string; name: string } }) {
+  const ctx = await resolve(req, params.id);
+  if ('error' in ctx) return ctx.error;
+
+  try {
+    const data = await ctx.daemon.request(
+      `/servers/${ctx.target}/tmods/${encodeURIComponent(params.name)}`,
+      { method: 'DELETE' }
+    );
+    return NextResponse.json(data);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Failed to remove the mod' }, { status: 502 });
+  }
+}

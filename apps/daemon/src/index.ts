@@ -11,6 +11,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig } from './config';
 import { authenticateDaemonKey } from './middleware/auth';
 import systemRoutes from './routes/system';
+import tmodRoutes from './routes/tmods';
 import serverRoutes from './routes/servers';
 import setupRoutes from './routes/setup';
 import { handleConsoleWebSocket } from './services/runtime/console';
@@ -58,6 +59,10 @@ app.get('/ping', (req, res) => res.send('pong'));
 
 // Authenticated REST routes
 app.use('/api/v1/system', authenticateDaemonKey, systemRoutes);
+// Mounted before serverRoutes so its own :serverId routes are matched first. Express
+// tries routers in order, and servers.ts has broad patterns that would otherwise claim
+// these paths.
+app.use('/api/v1/servers', authenticateDaemonKey, tmodRoutes);
 app.use('/api/v1/servers', authenticateDaemonKey, serverRoutes);
 
 // WebSocket upgrade handling for console streaming

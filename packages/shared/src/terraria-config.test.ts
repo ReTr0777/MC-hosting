@@ -6,6 +6,7 @@ import {
   DEFAULT_TERRARIA_CONFIG,
   TERRARIA_MAX_PLAYERS,
   TERRARIA_SECRET_SEEDS,
+  terrariaSupportsMods,
   TERRARIA_WORLD_EVILS,
   parseTerrariaConfig,
 } from './index';
@@ -131,14 +132,34 @@ test("Minecraft's capabilities still describe everything the panel offers today"
   const mc = GAME_CAPABILITIES[Game.MINECRAFT];
   // Two entries are filenames rather than switches, and are asserted separately.
   const fileFields = ['configFile', 'banFile'];
+  /*
+   * Capabilities that describe another game's system, where `false` for Minecraft is the
+   * correct answer rather than a gap. `tmodMods` is tModLoader's `.tmod` files; Minecraft
+   * has no such thing, and claiming it did would be the bug this test is meant to catch.
+   */
+  const notMinecraftConcepts = ['tmodMods'];
   for (const [flag, value] of Object.entries(mc)) {
     if (fileFields.includes(flag)) continue;
+    if (notMinecraftConcepts.includes(flag)) {
+      assert.equal(value, false, `Minecraft should not claim ${flag}`);
+      continue;
+    }
     assert.equal(value, true, `Minecraft should still support ${flag}`);
   }
   assert.equal(mc.configFile, 'server.properties');
   // Null on purpose: Minecraft's bans live in structured JSON with their own
   // routes, not in a flat file the line editor would rewrite.
   assert.equal(mc.banFile, null);
+});
+
+test('only tModLoader loads mods, so only it gets the mods tab', () => {
+  // Vanilla ignores a Mods folder entirely. Offering the tab there would be a page where
+  // every upload silently does nothing, which reads as a broken panel.
+  assert.equal(GAME_CAPABILITIES[Game.TERRARIA].tmodMods, true, 'the game has a mod system');
+  assert.equal(terrariaSupportsMods('TMODLOADER'), true);
+  assert.equal(terrariaSupportsMods('VANILLA'), false);
+  assert.equal(terrariaSupportsMods('TSHOCK'), false);
+  assert.equal(terrariaSupportsMods(undefined), false, 'a config predating the field is vanilla');
 });
 
 test('Terraria keeps its ban list in a flat file, which is why the tab shows one', () => {
