@@ -112,6 +112,109 @@ router.get('/:serverId/tmods', (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Validates a freshly-written file and moves it into Mods/.
+ *
+ * Shared by the direct and chunked uploads so both reject the same things. Returns the
+ * mod's internal name, or null when the file is not a readable `.tmod` — in which case
+ * the temporary file is removed rather than left to appear in the mod list as something
+ * the server will refuse to load for reasons that point at the wrong place.
+ */
+function installTmod(serverDir: string, fileName: string, tempPath: string): string | null {
+  const internal = readModInternalName(tempPath);
+  if (!internal) {
+    fs.rmSync(tempPath, { force: true });
+    return null;
+  }
+
+  const dir = modsDir(serverDir);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.renameSync(tempPath, path.join(dir, fileName));
+  return internal;
+}
+
+/*
+ * POST /api/v1/servers/:serverId/tmods/complete   { uploadId, fileName, totalChunks }
+ *
+ * Finishes an upload sent through /upload-chunk, which exists because Cloudflare refuses a
+ * request body over 100 MB and the largest mods are comfortably past that — Calamity's
+ * music pack alone is several times the limit.
+ *
+ * The chunks themselves reuse the existing upload-chunk endpoint rather than getting their
+ * own: that path has been carrying serverpacks across this same deployment for a long
+ * time, and a second implementation of chunk storage would be a second thing to get wrong.
+ * Only the assembly differs, because a mod is installed rather than extracted.
+ */
+router.post('/:serverId/tmods/complete', async (req: Request, res: Response) => {
+  try {
+    const fileName = safeModFileName(req.body?.fileName);
+    const uploadId = typeof req.body?.uploadId === 'string' ? req.body.uploadId : '';
+    const totalChunks = Number(req.body?.totalChunks);
+
+    if (!fileName) {
+      return res.status(400).json({ error: 'fileName must be a plain .tmod filename.' });
+    }
+    // The upload id builds a path, so it is held to the same standard as the filename.
+    if (!uploadId || !/^[A-Za-z0-9_.-]{1,128}$/.test(uploadId)) {
+      return res.status(400).json({ error: 'uploadId is missing or malformed.' });
+    }
+    if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > 10_000) {
+      return res.status(400).json({ error: 'totalChunks is missing or out of range.' });
+    }
+
+    const serverDir = serverDirFor(req.params.serverId);
+    if (!fs.existsSync(serverDir)) {
+      return res.status(404).json({ error: 'No such server on this node' });
+    }
+
+    const uploadTmpDir = path.join(serverDir, '.tmp_uploads', uploadId);
+    if (!fs.existsSync(uploadTmpDir)) {
+      return res.status(404).json({ error: 'That upload was not found — it may have expired.' });
+    }
+
+    // Every chunk is checked before any is read, so a gap is reported as a missing chunk
+    // rather than as a corrupt mod file assembled out of what happened to arrive.
+    for (let i = 0; i < totalChunks; i++) {
+      if (!fs.existsSync(path.join(uploadTmpDir, `chunk_${i}`))) {
+        fs.rmSync(uploadTmpDir, { recursive: true, force: true });
+        return res.status(400).json({
+          error: `Chunk ${i + 1} of ${totalChunks} never arrived, so the mod was not installed.`,
+        });
+      }
+    }
+
+    const tempPath = path.join(serverDir, `.tmp_uploads`, `${uploadId}.assembled`);
+    const out = fs.createWriteStream(tempPath);
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = path.join(uploadTmpDir, `chunk_${i}`);
+        await new Promise<void>((resolve, reject) => {
+          const input = fs.createReadStream(chunk);
+          input.on('error', reject);
+          out.on('error', reject);
+          input.on('end', resolve);
+          input.pipe(out, { end: false });
+        });
+      }
+    } finally {
+      await new Promise<void>((resolve) => out.end(resolve));
+      fs.rmSync(uploadTmpDir, { recursive: true, force: true });
+    }
+
+    const internal = installTmod(serverDir, fileName, tempPath);
+    if (!internal) {
+      return res.status(400).json({
+        error: `${fileName} is not a readable .tmod file once reassembled.`,
+      });
+    }
+
+    console.log(`[tModLoader] Installed mod '${internal}' (${fileName}, ${totalChunks} chunks) for ${req.params.serverId}`);
+    res.json({ success: true, name: internal, fileName });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to finish the upload', details: err.message });
+  }
+});
+
 /*
  * POST /api/v1/servers/:serverId/tmods?fileName=Something.tmod
  *
@@ -142,8 +245,7 @@ router.post('/:serverId/tmods', async (req: Request, res: Response) => {
     // Written to a temporary name and renamed into place, so an interrupted upload cannot
     // leave a truncated `.tmod` that the list shows as a real mod and the server refuses
     // to load with an unrelated-looking error.
-    const finalPath = path.join(dir, fileName);
-    const tempPath = `${finalPath}.uploading`;
+    const tempPath = path.join(dir, `${fileName}.uploading`);
 
     const writeStream = fs.createWriteStream(tempPath);
     req.pipe(writeStream);
@@ -153,9 +255,8 @@ router.post('/:serverId/tmods', async (req: Request, res: Response) => {
       req.on('error', reject);
     });
 
-    const internal = readModInternalName(tempPath);
+    const internal = installTmod(serverDir, fileName, tempPath);
     if (!internal) {
-      fs.rmSync(tempPath, { force: true });
       return res.status(400).json({
         error:
           `${fileName} is not a readable .tmod file. It may have been renamed from another ` +
@@ -163,7 +264,6 @@ router.post('/:serverId/tmods', async (req: Request, res: Response) => {
       });
     }
 
-    fs.renameSync(tempPath, finalPath);
     console.log(`[tModLoader] Installed mod '${internal}' (${fileName}) for ${req.params.serverId}`);
 
     res.json({ success: true, name: internal, fileName });

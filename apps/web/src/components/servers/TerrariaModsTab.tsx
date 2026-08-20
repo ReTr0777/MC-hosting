@@ -31,6 +31,16 @@ interface Props {
   canManage: boolean;
 }
 
+/**
+ * Above this, a mod is uploaded in pieces instead of in one request.
+ *
+ * Cloudflare refuses a request body over 100 MB, and the largest mods are well past it —
+ * Calamity's music pack is several times the limit. 15 MB is deliberately far below that
+ * ceiling rather than just under it, because Cloudflare is not the only thing in the path
+ * for every deployment and a reverse proxy's default is often far smaller.
+ */
+const CHUNK_THRESHOLD_BYTES = 15 * 1024 * 1024;
+
 function Mono({ children }: { children: React.ReactNode }) {
   return (
     <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.95em', wordBreak: 'break-all' }}>{children}</code>
@@ -40,6 +50,39 @@ function Mono({ children }: { children: React.ReactNode }) {
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Sends one large mod as a sequence of chunks, then asks the daemon to assemble it.
+ *
+ * The chunks go through the panel's existing /upload-chunk route rather than a new one:
+ * that path already crosses this deployment reliably and already stores pieces under the
+ * server's own directory. Only the final step differs, because a mod is installed rather
+ * than extracted.
+ */
+async function uploadInChunks(serverId: string, file: File): Promise<void> {
+  const CHUNK_SIZE = 15 * 1024 * 1024;
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const uploadId = `tmod_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+  for (let i = 0; i < totalChunks; i++) {
+    const slice = file.slice(i * CHUNK_SIZE, Math.min(file.size, (i + 1) * CHUNK_SIZE));
+    await apiRequest(`/api/servers/${serverId}/upload-chunk`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Upload-Id': uploadId,
+        'X-Chunk-Index': String(i),
+      },
+      body: await slice.arrayBuffer(),
+    });
+  }
+
+  await apiRequest(`/api/servers/${serverId}/tmods/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId, fileName: file.name, totalChunks }),
+  });
 }
 
 export default function TerrariaModsTab({ serverId, serverName, canManage }: Props) {
@@ -107,25 +150,22 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
       // get a timeout partway through and no way to tell which ones landed.
       for (const file of chosen) {
         try {
-          /*
-           * Sent as an ArrayBuffer with an explicit content type, mirroring
-           * uploadFileInChunks — which is the one upload path in this panel already proven
-           * to cross a Cloudflare-fronted deployment.
-           *
-           * Handing `fetch` the File directly instead lets the browser derive the content
-           * type from the file, and `.tmod` is not a type any browser knows, so the POST
-           * goes out carrying a body and no Content-Type header at all. A proxy is entitled
-           * to refuse that, and one did: every upload came back as an HTML 502 the origin
-           * never saw.
-           */
-          await apiRequest(
-            `/api/servers/${serverId}/tmods?fileName=${encodeURIComponent(file.name)}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body: await file.arrayBuffer(),
-            }
-          );
+          if (file.size > CHUNK_THRESHOLD_BYTES) {
+            await uploadInChunks(serverId, file);
+          } else {
+            // An ArrayBuffer with an explicit content type, matching uploadFileInChunks.
+            // Handing fetch the File directly lets the browser derive the type from it, and
+            // no browser knows what a .tmod is — so the request would carry a body and no
+            // Content-Type header at all, which a proxy is entitled to refuse.
+            await apiRequest(
+              `/api/servers/${serverId}/tmods?fileName=${encodeURIComponent(file.name)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream' },
+                body: await file.arrayBuffer(),
+              }
+            );
+          }
           installed++;
         } catch (err) {
           failed.push(`${file.name}: ${errorMessage(err, 'upload failed')}`);
