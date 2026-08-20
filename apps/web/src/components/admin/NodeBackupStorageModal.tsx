@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 
 interface Props {
   nodeId: string;
@@ -23,23 +23,36 @@ export default function NodeBackupStorageModal({ nodeId, nodeName, onClose }: Pr
   const [retainLocal, setRetainLocal] = useState(true);
   const [configured, setConfigured] = useState(false);
 
-  useEffect(() => {
-    fetch(`/api/nodes/${nodeId}/backup-storage`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.config) {
-          setEndpoint(data.config.s3Endpoint || '');
-          setBucket(data.config.s3Bucket || '');
-          setRegion(data.config.s3Region || '');
-          setAccessKeyId(data.config.s3AccessKeyId || '');
-          setSecretSet(!!data.config.s3SecretAccessKeySet);
-          setPrefix(data.config.s3Prefix || '');
-          setRetainLocal(data.config.s3RetainLocal !== false);
-          setConfigured(!!data.config.configured);
-        }
-      })
-      .finally(() => setLoading(false));
+  /**
+   * Reads the node's stored config.
+   *
+   * Called again after a save, which is the part that was missing: `configured` was only
+   * ever read on mount, so a successful save left the header still reading "Not
+   * configured" beside its own "Saved" message. The two together read as a save that
+   * silently failed, which is the one thing the header exists to rule out.
+   */
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/nodes/${nodeId}/backup-storage`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.config) {
+        setEndpoint(data.config.s3Endpoint || '');
+        setBucket(data.config.s3Bucket || '');
+        setRegion(data.config.s3Region || '');
+        setAccessKeyId(data.config.s3AccessKeyId || '');
+        setSecretSet(!!data.config.s3SecretAccessKeySet);
+        setPrefix(data.config.s3Prefix || '');
+        setRetainLocal(data.config.s3RetainLocal !== false);
+        setConfigured(!!data.config.configured);
+      }
+    } finally {
+      setLoading(false);
+    }
   }, [nodeId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,9 +74,14 @@ export default function NodeBackupStorageModal({ nodeId, nodeName, onClose }: Pr
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save');
-      setMessage('Saved. New backups on this node will upload off-site.');
       setSecretAccessKey('');
-      if (secretAccessKey) setSecretSet(true);
+      // Re-read rather than assume: the node decides whether the set is complete, and it
+      // is the node's answer the header reports.
+      await load();
+      setMessage(
+        'Saved. New backups taken from here on will upload off-site — existing ones are not ' +
+        'sent retroactively, so take one to confirm the credentials work.'
+      );
     } catch (err: any) {
       setMessage(`${err.message}`);
     } finally {
