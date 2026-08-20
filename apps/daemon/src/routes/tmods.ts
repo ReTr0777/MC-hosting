@@ -3,7 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { getConfig } from '../config';
 import {
-  modsDir, readEnabledMods, writeEnabledMods, readModInternalName,
+  modsDir, readEnabledMods, writeEnabledMods, readModInternalName, readModHeader,
+  TMODLOADER_VERSION,
 } from '../games/tmodloader';
 import { bareServerId } from '../services/runtime/lifecycle';
 
@@ -32,6 +33,8 @@ interface ModEntry {
   enabled: boolean;
   /** True when the internal name had to be guessed from the filename. */
   nameGuessed: boolean;
+  /** The tModLoader build this mod was compiled against, or null if unreadable. */
+  builtFor: string | null;
 }
 
 /**
@@ -77,16 +80,17 @@ function listMods(serverDir: string): ModEntry[] {
     .filter((f) => f.toLowerCase().endsWith('.tmod'))
     .map((fileName) => {
       const full = path.join(dir, fileName);
-      const internal = readModInternalName(full);
+      const header = readModHeader(full);
       // Falling back to the filename is a guess, and flagged as one — better than
       // hiding a mod whose header we could not read.
-      const name = internal ?? fileName.replace(/\.tmod$/i, '');
+      const name = header?.name ?? fileName.replace(/\.tmod$/i, '');
       return {
         name,
         fileName,
         sizeBytes: fs.statSync(full).size,
         enabled: enabled.has(name),
-        nameGuessed: internal === null,
+        nameGuessed: header === null,
+        builtFor: header?.builtFor ?? null,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -106,7 +110,9 @@ router.get('/:serverId/tmods', (req: Request, res: Response) => {
     const present = new Set(mods.map((m) => m.name));
     const missing = readEnabledMods(serverDir).filter((n) => !present.has(n));
 
-    res.json({ mods, missing });
+    // The build the node would actually run, so the panel can judge each mod against it
+    // rather than against whatever it believes is configured.
+    res.json({ mods, missing, serverBuild: TMODLOADER_VERSION });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to list mods', details: err.message });
   }

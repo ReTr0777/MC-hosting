@@ -91,3 +91,37 @@ export function daemonVersionState(
   if (cmp > 0) return 'ahead';
   return 'current';
 }
+
+export type TmodCompatibility = 'ok' | 'older' | 'newer' | 'incompatible' | 'unknown';
+
+/**
+ * Whether a `.tmod` built for one tModLoader will load on another.
+ *
+ * Every `.tmod` records the tModLoader it was compiled against, and the server says plainly
+ * in its log when the two disagree — but only once it has already tried to load the mod,
+ * failed, disabled it, and begun unloading. That cascade is what takes a server down, and
+ * by then the operator is reading a stack trace from a mod that was merely nearby.
+ *
+ * The distinction that matters is not "older" but "from before the format changed".
+ * tModLoader versions went date-based with the 1.4 rewrite: anything numbered 0.x or 1.x
+ * targets Terraria 1.3 and cannot work here at all, while a 2024 build on a 2026 server is
+ * ordinary and usually fine. Reporting those two the same way would either cry wolf on
+ * every slightly-old mod or say nothing about the ones that genuinely cannot run.
+ */
+export function tmodCompatibility(
+  builtFor: string | null | undefined,
+  serverBuild: string
+): TmodCompatibility {
+  if (!builtFor) return 'unknown';
+
+  const major = parseInt(String(builtFor).trim().replace(/^v/i, '').split('.')[0], 10);
+  if (!Number.isFinite(major)) return 'unknown';
+
+  // Date-based versioning began with the 1.4 rewrite. A pre-1.4 mod is not old, it is for
+  // a different game version, and no amount of tolerance will load it.
+  if (major < 2000) return 'incompatible';
+
+  const cmp = compareVersions(builtFor, serverBuild);
+  if (cmp === 0) return 'ok';
+  return cmp < 0 ? 'older' : 'newer';
+}

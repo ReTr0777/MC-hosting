@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { tmodCompatibility, TmodCompatibility, DEFAULT_TMODLOADER_VERSION } from '@mc-manager/shared';
 import { apiRequest, errorMessage } from '@/lib/api';
 import { pickNewestTmods } from '@/lib/servers/tmod-select';
 import { useToast } from '@/context/ToastContext';
@@ -23,6 +24,7 @@ interface ModEntry {
   sizeBytes: number;
   enabled: boolean;
   nameGuessed: boolean;
+  builtFor: string | null;
 }
 
 interface Props {
@@ -40,6 +42,38 @@ interface Props {
  * for every deployment and a reverse proxy's default is often far smaller.
  */
 const CHUNK_THRESHOLD_BYTES = 15 * 1024 * 1024;
+
+/**
+ * A line under a mod when its build is worth mentioning.
+ *
+ * Silent for 'ok' and 'older'. An older 1.4-era build is the normal state of most installed
+ * mods, and marking every one of them would bury the handful that genuinely cannot load.
+ */
+function CompatibilityNote({
+  compatibility, serverBuild,
+}: { compatibility: TmodCompatibility; serverBuild: string }) {
+  if (compatibility === 'ok' || compatibility === 'older') return null;
+
+  const text =
+    compatibility === 'incompatible'
+      ? `Built for Terraria 1.3. This cannot load on tModLoader ${serverBuild} and will crash the start.`
+      : compatibility === 'newer'
+        ? `Built for a newer tModLoader than this server runs. Update the server's build, or use a mod version built for ${serverBuild}.`
+        : 'The build this was compiled for could not be read.';
+
+  return (
+    <div
+      style={{
+        fontSize: '0.68rem',
+        color: compatibility === 'incompatible' ? 'var(--danger)' : 'var(--warning)',
+        marginTop: '3px',
+        lineHeight: 1.4,
+      }}
+    >
+      {text}
+    </div>
+  );
+}
 
 function Mono({ children }: { children: React.ReactNode }) {
   return (
@@ -91,6 +125,8 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
 
   const [mods, setMods] = useState<ModEntry[]>([]);
   const [missing, setMissing] = useState<string[]>([]);
+  // Annotated: the constant is a literal type, which would pin the state to that one value.
+  const [serverBuild, setServerBuild] = useState<string>(DEFAULT_TMODLOADER_VERSION);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -102,12 +138,13 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
 
   const load = useCallback(async () => {
     try {
-      const data = await apiRequest<{ mods?: ModEntry[]; missing?: string[] }>(
+      const data = await apiRequest<{ mods?: ModEntry[]; missing?: string[]; serverBuild?: string }>(
         `/api/servers/${serverId}/tmods`,
         { cache: 'no-store' }
       );
       setMods(data.mods ?? []);
       setMissing(data.missing ?? []);
+      if (data.serverBuild) setServerBuild(data.serverBuild);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Failed to load mods'));
@@ -243,6 +280,12 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
     }
   };
 
+  // Only the enabled ones matter: a disabled incompatible mod is inert, and warning about
+  // it would train the reader to ignore the banner that does matter.
+  const incompatible = mods.filter(
+    (m) => m.enabled && tmodCompatibility(m.builtFor, serverBuild) === 'incompatible'
+  );
+
   if (loading) {
     return <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Loading mods…</p>;
   }
@@ -343,6 +386,24 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
         </div>
       )}
 
+      {/*
+        Mods that cannot load at all, named before a start rather than after one.
+        tModLoader disables these itself and then begins unloading — and it is that
+        cascade, not the incompatible mod, that crashes the server, so the stack trace
+        ends up naming whichever mod happened to be unloading at the time.
+      */}
+      {incompatible.length > 0 && (
+        <div style={{ fontSize: '0.78rem', color: 'var(--danger)', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.25)', padding: '10px 12px', borderRadius: '6px', lineHeight: 1.55 }}>
+          <strong>
+            {incompatible.length} mod{incompatible.length === 1 ? '' : 's'} cannot run on tModLoader {serverBuild}:
+          </strong>{' '}
+          {incompatible.map((m) => `${m.name} (built for ${m.builtFor})`).join(', ')}.
+          {' '}These target Terraria 1.3. tModLoader will disable them and then unload, which is
+          what crashes the server — usually blaming a different mod entirely. Disable or delete
+          them before starting.
+        </div>
+      )}
+
       {mods.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '40px 20px', border: '1px dashed var(--border-2)', borderRadius: '10px' }}>
           <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>
@@ -372,7 +433,9 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
                 </div>
                 <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
                   {mod.fileName} · {formatSize(mod.sizeBytes)}
+                  {mod.builtFor ? ` · built for ${mod.builtFor}` : ''}
                 </div>
+                <CompatibilityNote compatibility={tmodCompatibility(mod.builtFor, serverBuild)} serverBuild={serverBuild} />
                 {mod.nameGuessed && (
                   <div style={{ fontSize: '0.68rem', color: 'var(--warning)', marginTop: '3px', lineHeight: 1.4 }}>
                     The internal name could not be read from this file, so it was guessed from the filename. If the

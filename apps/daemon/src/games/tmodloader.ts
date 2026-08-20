@@ -225,24 +225,41 @@ export function writeEnabledMods(serverDir: string, names: string[]): void {
  * fall back to the filename, which is worth trying, whereas a thrown error would make one
  * malformed upload break the whole mod list.
  */
-export function readModInternalName(tmodPath: string): string | null {
+export interface TmodHeader {
+  /** Internal name: what enabled.json must contain. */
+  name: string;
+  /**
+   * The tModLoader this mod was compiled against.
+   *
+   * Read and kept rather than skipped past, because it is the difference between a mod
+   * that will load and one that will take the server down. tModLoader reports the mismatch
+   * itself — but only after loading has already failed and the disable-and-unload cascade
+   * has begun, by which point the crash names whichever mod happened to be unloading.
+   */
+  builtFor: string;
+}
+
+export function readModHeader(tmodPath: string): TmodHeader | null {
   try {
     const buf = fs.readFileSync(tmodPath);
     if (buf.length < 4 || buf.toString('ascii', 0, 4) !== 'TMOD') return null;
 
-    let offset = 4;
-    const version = readDotNetString(buf, offset);
+    const version = readDotNetString(buf, 4);
     if (!version) return null;
-    offset = version.next;
 
     // hash (20) + signature (256) + data length (4)
-    offset += 20 + 256 + 4;
+    const name = readDotNetString(buf, version.next + 20 + 256 + 4);
+    if (!name || name.value.length === 0) return null;
 
-    const name = readDotNetString(buf, offset);
-    return name && name.value.length > 0 ? name.value : null;
+    return { name: name.value, builtFor: version.value };
   } catch {
     return null;
   }
+}
+
+/** Just the internal name. Kept because most callers want only that. */
+export function readModInternalName(tmodPath: string): string | null {
+  return readModHeader(tmodPath)?.name ?? null;
 }
 
 /** A .NET BinaryWriter string: 7-bit encoded length prefix, then UTF-8 bytes. */
