@@ -13,6 +13,34 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * What went wrong when the reply is an HTML page rather than this API's JSON.
+ *
+ * Something between the browser and the route answered instead of the route: a proxy, a
+ * CDN, or Next's own error page. Rendering that HTML into a toast is useless — it starts
+ * `<!DOCTYPE` and tells the reader nothing — so the status is what gets reported, along
+ * with what each status actually means here.
+ */
+function messageFromErrorPage(status: number): string {
+  if (status === 413) {
+    return (
+      'The file was rejected as too large before it reached the panel (HTTP 413). ' +
+      'Something in front of the panel caps upload size — a reverse proxy, or Cloudflare, ' +
+      'which allows 100 MB on the free plan. Raise that limit, or reach the panel directly.'
+    );
+  }
+  if (status === 404) {
+    return (
+      'That endpoint does not exist on this panel (HTTP 404). The panel is probably running an ' +
+      'older image than the page you are looking at — reload, and update the container if it persists.'
+    );
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return `The panel did not answer (HTTP ${status}). It may be restarting, or a proxy in front of it lost the connection.`;
+  }
+  return `The panel returned an error page instead of data (HTTP ${status}).`;
+}
+
 /** Pulls the most useful message out of an error body, whatever shape it has. */
 function messageFromBody(body: unknown, status: number): string {
   if (body && typeof body === 'object') {
@@ -22,7 +50,13 @@ function messageFromBody(body: unknown, status: number): string {
       if (typeof value === 'string' && value.trim()) return value;
     }
   }
-  if (typeof body === 'string' && body.trim()) return body;
+  if (typeof body === 'string' && body.trim()) {
+    // An HTML page is never this API talking, so it is reported as a transport problem
+    // rather than quoted back at the user.
+    const head = body.trimStart().slice(0, 200).toLowerCase();
+    if (head.startsWith('<!doctype') || head.startsWith('<html')) return messageFromErrorPage(status);
+    return body.length > 300 ? `${body.slice(0, 300)}…` : body;
+  }
   return `Request failed (HTTP ${status})`;
 }
 

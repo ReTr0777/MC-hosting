@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { apiRequest, errorMessage } from '@/lib/api';
 import { pickNewestTmods } from '@/lib/servers/tmod-select';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
@@ -58,14 +59,15 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/servers/${serverId}/tmods`, { cache: 'no-store' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load mods');
+      const data = await apiRequest<{ mods?: ModEntry[]; missing?: string[] }>(
+        `/api/servers/${serverId}/tmods`,
+        { cache: 'no-store' }
+      );
       setMods(data.mods ?? []);
       setMissing(data.missing ?? []);
       setError('');
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to load mods'));
     } finally {
       setLoading(false);
     }
@@ -105,15 +107,13 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
       // get a timeout partway through and no way to tell which ones landed.
       for (const file of chosen) {
         try {
-          const res = await fetch(
+          await apiRequest(
             `/api/servers/${serverId}/tmods?fileName=${encodeURIComponent(file.name)}`,
             { method: 'POST', body: file }
           );
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'upload failed');
           installed++;
-        } catch (err: any) {
-          failed.push(`${file.name} (${err.message})`);
+        } catch (err) {
+          failed.push(`${file.name}: ${errorMessage(err, 'upload failed')}`);
         }
         setProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
       }
@@ -127,7 +127,9 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
       if (failed.length > 0) {
         toast.error(
           `${failed.length} file${failed.length === 1 ? '' : 's'} could not be installed`,
-          failed.slice(0, 3).join('; ') + (failed.length > 3 ? `, and ${failed.length - 3} more` : '')
+          // Every failure in a batch is normally the same failure, so one explained
+          // properly is worth more than three truncated.
+          failed[0] + (failed.length > 1 ? ` (and ${failed.length - 1} more, same problem)` : '')
         );
       }
       load();
@@ -142,21 +144,19 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
   const toggle = async (mod: ModEntry) => {
     setBusyName(mod.name);
     try {
-      const res = await fetch(`/api/servers/${serverId}/tmods/${encodeURIComponent(mod.name)}`, {
+      await apiRequest(`/api/servers/${serverId}/tmods/${encodeURIComponent(mod.name)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !mod.enabled }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to change the mod');
 
       toast.success(
         mod.enabled ? `${mod.name} disabled` : `${mod.name} enabled`,
         'Restart the server for this to take effect.'
       );
       load();
-    } catch (err: any) {
-      toast.error('Could not change the mod', err.message);
+    } catch (err) {
+      toast.error('Could not change the mod', errorMessage(err));
     } finally {
       setBusyName(null);
     }
@@ -175,16 +175,14 @@ export default function TerrariaModsTab({ serverId, serverName, canManage }: Pro
 
     setBusyName(mod.name);
     try {
-      const res = await fetch(`/api/servers/${serverId}/tmods/${encodeURIComponent(mod.fileName)}`, {
+      await apiRequest(`/api/servers/${serverId}/tmods/${encodeURIComponent(mod.fileName)}`, {
         method: 'DELETE',
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to remove the mod');
 
       toast.success(`${mod.name} deleted`, 'Restart the server for this to take effect.');
       load();
-    } catch (err: any) {
-      toast.error('Could not remove the mod', err.message);
+    } catch (err) {
+      toast.error('Could not remove the mod', errorMessage(err));
     } finally {
       setBusyName(null);
     }
