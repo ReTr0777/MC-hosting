@@ -1,0 +1,16 @@
+<!--
+  Instatus → HTML → below-components.html
+
+  A key for the 90-day bar.
+
+  Instatus shows a day's status only on hover, which is fine on a desktop and useless on a
+  phone — where most people read this, having just failed to connect to something. Nothing
+  can add per-day labels, because the text is not in the page to style. What can be fixed is
+  the other half: making the colours mean something without an interaction.
+-->
+<div class="cc-legend">
+  <span><i class="cc-dot cc-dot-ok"></i>Operational</span>
+  <span><i class="cc-dot cc-dot-warn"></i>Degraded</span>
+  <span><i class="cc-dot cc-dot-down"></i>Outage</span>
+  <span><i class="cc-dot cc-dot-none"></i>No data</span>
+</div>

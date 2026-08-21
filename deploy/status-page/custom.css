@@ -80,6 +80,36 @@ button {
   font-weight: 600 !important;
 }
 
+/* ── key for the 90-day bar (see below-components.html) ────────────────────────────── */
+
+/*
+ * Instatus reveals a day's status on hover only. That is unusable on a phone, and a phone is
+ * where this page is read — by someone who has just failed to connect to something. The
+ * labels cannot be added, so the colours are made to carry the meaning instead.
+ */
+.cc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 18px;
+  margin: -4px auto 24px;
+  max-width: 700px;
+  font-size: 0.7rem;
+  color: var(--cc-muted);
+}
+.cc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.cc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+/* The same greens, ambers and reds the bar itself uses, so the key is not a near miss. */
+.cc-dot-ok { background: var(--cc-accent); }
+.cc-dot-warn { background: #f0883e; }
+.cc-dot-down { background: #f85149; }
+.cc-dot-none { background: var(--cc-border); }
+
 /* ── the link back to the panel (see below-footer.html) ────────────────────────────── */
 
 .cc-backlink {

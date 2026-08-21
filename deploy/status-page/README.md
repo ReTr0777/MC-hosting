@@ -8,6 +8,7 @@ of its own, and a page nobody can diff is a page nobody dares change.
 |---|---|
 | `custom.css` | custom.css |
 | `in-head-tag.html` | in-head-tag.html |
+| `below-components.html` | below-components.html |
 | `below-footer.html` | below-footer.html |
 
 Paste `custom.css` over the placeholder rule that is there by default — the `background-color:
