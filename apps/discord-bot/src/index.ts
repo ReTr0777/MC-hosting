@@ -3,7 +3,6 @@ import {
   GatewayIntentBits,
   REST,
   Routes,
-  SlashCommandBuilder,
   ChatInputCommandInteraction,
   AutocompleteInteraction,
   ButtonInteraction,
@@ -12,6 +11,7 @@ import {
   MessageFlags,
 } from 'discord.js';
 import { linkAccount, listServers, getServer, runAction, isNotLinkedError, ServerSummary } from './api';
+import { globalCommands, guildCommands, installUrl } from './commands';
 import {
   Action,
   decodeId,
@@ -39,57 +39,38 @@ if (!process.env.DISCORD_BOT_SECRET) {
  * Every reply is ephemeral. It keeps a channel from filling with status dumps, and it is
  * also what makes the buttons safe: an ephemeral message exists only for the person who
  * ran the command, so nobody else can press the Stop button on it.
+ *
+ * It is also a hard requirement of being installable to a user account: in a guild the app
+ * was never added to, Discord only permits an ephemeral response.
  */
 const EPHEMERAL = { flags: MessageFlags.Ephemeral } as const;
 
 /**
- * The server option, shared by the commands that take one.
+ * Registers globally, always.
  *
- * Autocompleted, which is the whole difference between this bot and one you have to
- * remember exact names for. Typing a name still works; nobody has to.
+ * Global is the only scope that can carry an integration type, so it is the only scope a
+ * user install can come from — registering solely to a guild, as this used to, is what
+ * would confine the bot to that one server. A guild registration is still done alongside
+ * when DISCORD_GUILD_ID is set, purely so changes show up there without the wait; it
+ * shadows the global copy of the same name rather than duplicating it.
  */
-const serverOption = (opt: any) =>
-  opt.setName('server').setDescription('Which server').setRequired(true).setAutocomplete(true);
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName('servers')
-    .setDescription('List your servers and manage them with buttons'),
-  new SlashCommandBuilder()
-    .setName('server')
-    .setDescription('Open one server, with buttons to start, stop or restart it')
-    .addStringOption(serverOption),
-  new SlashCommandBuilder()
-    .setName('start')
-    .setDescription('Start a server')
-    .addStringOption(serverOption),
-  new SlashCommandBuilder()
-    .setName('stop')
-    .setDescription('Stop a server')
-    .addStringOption(serverOption),
-  new SlashCommandBuilder()
-    .setName('restart')
-    .setDescription('Restart a server')
-    .addStringOption(serverOption),
-  new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Link your Discord account to your CraftControl panel account')
-    .addStringOption((opt) =>
-      opt.setName('code').setDescription('Code from the panel\'s "Link Discord" button').setRequired(true)
-    ),
-  new SlashCommandBuilder().setName('help').setDescription('What this bot can do'),
-].map((c) => c.toJSON());
-
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: '10' }).setToken(TOKEN!);
-  const route = GUILD_ID
-    ? Routes.applicationGuildCommands(CLIENT_ID!, GUILD_ID)
-    : Routes.applicationCommands(CLIENT_ID!);
-  await rest.put(route, { body: commands });
+  const global = globalCommands();
+
+  await rest.put(Routes.applicationCommands(CLIENT_ID!), { body: global });
   console.log(
-    `[discord-bot] Registered ${commands.length} slash commands` +
-      (GUILD_ID ? ` to guild ${GUILD_ID}.` : ' globally (may take up to an hour to propagate).')
+    `[discord-bot] Registered ${global.length} commands globally, installable to a server or to an account.` +
+      ' A first global registration can take up to an hour to appear.'
   );
+
+  if (GUILD_ID) {
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID!, GUILD_ID), { body: guildCommands() });
+    console.log(`[discord-bot] Also registered to guild ${GUILD_ID} for immediate availability.`);
+  }
+
+  console.log(`[discord-bot] Add to your account: ${installUrl(CLIENT_ID!, 'user')}`);
+  console.log(`[discord-bot] Add to a server:     ${installUrl(CLIENT_ID!, 'guild')}`);
 }
 
 function friendlyError(err: any): string {
@@ -142,9 +123,47 @@ async function handleHelp(interaction: ChatInputCommandInteraction) {
       {
         name: '/link <code>',
         value: 'Connect this Discord account to your panel account. Get the code from **Link Discord** in the panel.',
+      },
+      {
+        name: '/install',
+        value: 'Add the bot to your own account, so these commands work in any server and in DMs.',
       }
     )
     .setFooter({ text: 'A sleeping server does not need starting — it wakes when someone joins.' });
+  await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * The install links, from inside Discord.
+ *
+ * Someone who wants the bot in a second server, or in a DM at three in the morning, should
+ * not have to go and find a URL somebody pasted once. Adding it to an account needs no
+ * permissions and no server admin — which is the part people do not expect.
+ */
+async function handleInstall(interaction: ChatInputCommandInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('Use CraftControl everywhere')
+    .setColor(0x5865f2)
+    .setDescription(
+      'The commands are the same either way, and both can be done at once. Your panel account is what decides which servers you see, so a fresh install still only shows you what is yours.'
+    )
+    .addFields(
+      {
+        name: 'Add to your account',
+        value:
+          `[Install for yourself](${installUrl(CLIENT_ID!, 'user')})
+` +
+          'Works in DMs, group DMs and every server you are in — including ones where you cannot add bots. Nobody else in those servers sees the bot or your replies.',
+      },
+      {
+        name: 'Add to a server',
+        value:
+          `[Install to a server](${installUrl(CLIENT_ID!, 'guild')})
+` +
+          'Requires Manage Server there. Everyone in the server can then use the commands, each seeing only their own servers.',
+      }
+    )
+    .setFooter({ text: 'Freshly installed commands can take a minute to appear. Reloading Discord helps.' });
   await interaction.editReply({ embeds: [embed] });
 }
 
@@ -339,6 +358,8 @@ client.on('interactionCreate', async (interaction) => {
     switch (interaction.commandName) {
       case 'help':
         return await handleHelp(interaction);
+      case 'install':
+        return await handleInstall(interaction);
       case 'link':
         return await handleLink(interaction);
       case 'servers':
