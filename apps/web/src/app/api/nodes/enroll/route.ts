@@ -262,6 +262,11 @@ export async function POST(req: NextRequest) {
       totalMemory:
         reportedMemory > 0 ? Math.round(reportedMemory) : detectedMemory > 0 ? detectedMemory : 8192,
       totalCpu: reportedCpu > 0 ? Math.round(reportedCpu) : detectedCpu > 0 ? detectedCpu : 4,
+      // Kept whether or not they worked this time: a machine the panel could not reach
+      // today is often reachable tomorrow, once a firewall rule exists or a laptop is back
+      // on the right network, and /recheck looks here rather than asking for a new code.
+      candidateAddresses: candidates,
+      candidatePort: port,
       ...(games.length > 0 ? { enabledGames: games } : {}),
     },
     select: { id: true, name: true, host: true, port: true, isOnline: true },

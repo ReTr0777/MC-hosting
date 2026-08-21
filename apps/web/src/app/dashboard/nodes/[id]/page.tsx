@@ -130,6 +130,7 @@ export default function NodeDetailPage() {
 
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
   const [showBackupStorage, setShowBackupStorage] = useState(false);
   const [savingGames, setSavingGames] = useState(false);
 
@@ -208,6 +209,28 @@ export default function NodeDetailPage() {
       toast.error('Could not run diagnostics', err.message);
     } finally {
       setDiagnosing(false);
+    }
+  };
+
+  /**
+   * Asks the panel to look for this node at every address it has offered.
+   *
+   * The recovery for a node registered at an address that has stopped being right — a new
+   * DHCP lease, a firewall opened after the fact, a laptop on a different network. Without
+   * it the only fix was deleting the node and enrolling it again.
+   */
+  const recheckAddress = async () => {
+    setRechecking(true);
+    try {
+      const res = await fetch(`/api/nodes/${nodeId}/recheck`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not reach the node');
+      toast.success(data.moved ? 'Node found at a new address' : 'Node answered', data.message);
+      load();
+    } catch (err: any) {
+      toast.error('Still no answer', err.message);
+    } finally {
+      setRechecking(false);
     }
   };
 
@@ -535,9 +558,19 @@ export default function NodeDetailPage() {
           title="Diagnostics"
           hint="Offline is one bit, and a dead daemon, a wrong port and a rotated key all look identical from outside. This tells them apart."
         >
-          <button onClick={runDiagnostics} disabled={diagnosing} className="cc-btn-ghost">
-            {diagnosing ? 'Checking…' : 'Run checks'}
-          </button>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button onClick={runDiagnostics} disabled={diagnosing} className="cc-btn-ghost">
+              {diagnosing ? 'Checking…' : 'Run checks'}
+            </button>
+            <button onClick={recheckAddress} disabled={rechecking} className="cc-btn-ghost">
+              {rechecking ? 'Looking…' : 'Find this node again'}
+            </button>
+          </div>
+          <p className="cc-help" style={{ marginTop: '8px' }}>
+            <strong>Find this node again</strong> re-probes every address the machine reported when it
+            joined and re-registers it wherever it answers — the fix when its address has changed, or
+            when a firewall was blocking the panel and no longer is.
+          </p>
 
           {diagnostics && (
             <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>

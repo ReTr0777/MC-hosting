@@ -115,6 +115,25 @@ This is somebody's PC as well as a node — registering it at its full size is h
 ends up swapping with every server "fitting" perfectly. It is changed afterwards on the
 node's page in the panel, which its owner can now reach.
 
+### Windows Firewall decides whether any of this works
+
+A node on the same network as the panel should be reached directly, and Windows blocks
+that by default. The symptom is peculiarly unhelpful: the node app says Running, the
+daemon answers everything asked of it locally, and the panel simply calls the node
+offline — the machine is invisible from every other host on the network, including during
+the enrollment probe, which then falls back to a tunnel that a deployment may not even
+route.
+
+So the app checks for its own rule and offers to create one (Overview → *Reachable from
+the panel*, and step 2 of setup). That needs administrator rights, so Windows prompts; the
+rule is scoped to private and domain networks, never public. The log records the state at
+every start, which turns "offline for no reason" into one line.
+
+If the address a node was registered at stops being right — a new DHCP lease, a laptop on
+another network, or a firewall opened after enrollment — **Find this node again** on the
+node's page re-probes every address the machine reported when it joined and re-registers
+it wherever it answers. No new setup code, and a direct address is preferred over a tunnel.
+
 ### Keeping it up without anybody watching
 
 Two switches, and a node that survives a reboot needs both:

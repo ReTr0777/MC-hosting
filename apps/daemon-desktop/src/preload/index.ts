@@ -47,6 +47,12 @@ const api = {
     ipcRenderer.on('docker:status', (_e, s: DockerStatus) => cb(s));
   },
 
+  /** Whether Windows Firewall lets the panel reach this node's port. */
+  getFirewallStatus: (): Promise<{ state: string; detail: string }> => ipcRenderer.invoke('firewall:status'),
+  /** Opens the port, prompting for administrator rights. */
+  openFirewall: (): Promise<{ ok: boolean; detail: string; status: { state: string; detail: string } }> =>
+    ipcRenderer.invoke('firewall:open'),
+
   setAutoStart: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke('app:set-auto-start', enabled),
   openDataDir: (): Promise<void> => ipcRenderer.invoke('app:open-data-dir'),
   openLogFile: (): Promise<void> => ipcRenderer.invoke('app:open-log'),

@@ -225,6 +225,14 @@ model Node {
   // node private — only the owner and a global admin can see it, place servers on it or
   // migrate onto it. Ownership is deliberately not a permission table: a node has exactly
   // one hoster, and sharing someone's home PC with strangers is not a feature.
+  // Where this machine said it could be found when it enrolled, and the port its daemon
+  // listens on locally. Kept so the panel can look for the node again later without a new
+  // setup code: the address a node is registered at goes stale for ordinary reasons — DHCP
+  // moves it, a firewall that was blocking the probe has since been opened, a laptop
+  // changes network — and without this the only recovery was to delete it and start over.
+  candidateAddresses String[] @default([])
+  candidatePort      Int?
+
   ownerId         String?
   // SetNull rather than Cascade: deleting an account must not silently take a machine's
   // servers with it. The node falls back to the shared pool for an admin to deal with.

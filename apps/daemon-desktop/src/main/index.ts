@@ -12,6 +12,7 @@ import {
   waitForDockerEngine,
 } from './docker';
 import { configureDockerAutoStart } from './docker-settings';
+import { firewallStatus, openFirewall } from './firewall';
 import { FileLogger } from './logger';
 import { initAutoUpdates, type UpdaterControls } from './updater';
 import { enrollWithPanel, normalisePanelUrl } from './enroll';
@@ -414,6 +415,16 @@ function registerIpc(): void {
   ipcMain.handle('docker:check', () => checkDocker());
   ipcMain.handle('docker:download', () => shell.openExternal(DOCKER_DOWNLOAD_URL));
   ipcMain.handle('docker:start', () => ensureDockerRunning('asked from the window'));
+
+  ipcMain.handle('firewall:status', () => firewallStatus(store.read().port));
+  ipcMain.handle('firewall:open', async () => {
+    const port = store.read().port;
+    const result = await openFirewall(port);
+    log.write('firewall', result.ok ? `port ${port} allowed` : `port ${port} not allowed: ${result.detail}`);
+    // Report the state as it now is rather than as the command claimed: a rule that was
+    // created and then immediately fails to read back is worth knowing about here.
+    return { ...result, status: await firewallStatus(port) };
+  });
   ipcMain.handle('docker:configure-autostart', async () => {
     const status = await checkDocker();
     return configureDockerAutoStart(status.state === 'ok');
@@ -484,6 +495,17 @@ app.whenReady().then(async () => {
    * refusing to start. Not awaited — Docker takes minutes to boot and none of the rest of
    * the app should wait on it.
    */
+  /*
+   * Say in the log whether this machine is reachable at all.
+   *
+   * A blocked port produces a node that is running, healthy and invisible: the panel calls
+   * it offline and nothing on this side disagrees. One line at startup turns that into a
+   * five-second diagnosis instead of a network hunt.
+   */
+  void firewallStatus(store.read().port)
+    .then((status) => log.write('firewall', status.detail))
+    .catch(() => {});
+
   if (store.read().startDockerWithApp) {
     void ensureDockerRunning('startup').catch((err: Error) => log.write('docker', `startup: ${err.message}`));
   }

@@ -54,6 +54,18 @@
           </div>
         </div>
 
+        <div class="card" id="firewall-card">
+          <div class="card-head">
+            <h2>Reachable from the panel</h2>
+            <span class="badge" id="firewall-badge">Checking…</span>
+          </div>
+          <p class="muted" id="firewall-detail">Checking Windows Firewall…</p>
+          <div class="row">
+            <button id="btn-firewall-open" class="btn small primary hidden">Allow through the firewall</button>
+            <button id="btn-firewall-recheck" class="btn small">Check again</button>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head"><h2>Node status</h2></div>
           <dl class="facts">
@@ -230,7 +242,7 @@
       <div class="wizard-panel" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
         <div class="wizard-head">
           <h2 id="wizard-title">Set up this machine</h2>
-          <span class="muted" id="wizard-step-label">Step 1 of 4</span>
+          <span class="muted" id="wizard-step-label">Step 1 of 5</span>
         </div>
 
         <!-- 1: Docker -->
@@ -261,15 +273,38 @@
           </label>
         </section>
 
-        <!-- 2: Games -->
+        <!-- 2: Reachability -->
         <section class="wizard-step hidden" data-step="2">
+          <p class="muted">
+            The panel reaches this machine over the network, and Windows blocks that by default.
+            Allowing it needs administrator rights, so Windows will ask.
+          </p>
+          <div class="card">
+            <div class="card-head">
+              <h3>Windows Firewall</h3>
+              <span class="badge" id="wiz-firewall-badge">Checking…</span>
+            </div>
+            <p class="muted" id="wiz-firewall-detail">Checking…</p>
+            <div class="row">
+              <button id="wiz-firewall-open" class="btn small primary hidden">Allow through the firewall</button>
+              <button id="wiz-firewall-recheck" class="btn small">Check again</button>
+            </div>
+          </div>
+          <p class="muted">
+            Skipping this is not fatal: a machine the panel cannot reach directly is published
+            through the hosting tunnel instead. Direct is simpler and faster where it works.
+          </p>
+        </section>
+
+        <!-- 3: Games -->
+        <section class="wizard-step hidden" data-step="3">
           <p class="muted">Which games should this machine be offered for?</p>
           <div class="row" id="wiz-games"></div>
           <p class="muted">You can change this later on the Connection tab.</p>
         </section>
 
-        <!-- 3: Limits -->
-        <section class="wizard-step hidden" data-step="3">
+        <!-- 4: Limits -->
+        <section class="wizard-step hidden" data-step="4">
           <p class="muted">
             How much of this machine may go to game servers? Leave headroom if you use this PC
             for anything else — the panel will fill up to whatever you set here.
@@ -286,8 +321,8 @@
           </label>
         </section>
 
-        <!-- 4: Join a panel -->
-        <section class="wizard-step hidden" data-step="4">
+        <!-- 5: Join a panel -->
+        <section class="wizard-step hidden" data-step="5">
           <p class="muted">
             In the panel, open the Nodes rail and choose <strong>Connect a machine of your own</strong>.
             Put the code it gives you here.

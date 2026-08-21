@@ -46,6 +46,7 @@ interface AppInfo {
   availableGames: { id: string; label: string }[];
 }
 interface LogLine { ts: number; stream: 'out' | 'err' | 'app'; text: string }
+interface FirewallStatus { state: 'open' | 'missing' | 'unknown'; detail: string }
 interface EnrollResult {
   node: { id: string; name: string; host: string; port: number };
   tunnel: { serverAddr: string; serverPort: number; token: string; apiRemotePort: number } | null;
@@ -75,6 +76,8 @@ interface NodeApi {
   checkForUpdate(): Promise<void>;
   installUpdate(): Promise<void>;
   onUpdateStatus(cb: (s: UpdateStatus) => void): void;
+  getFirewallStatus(): Promise<FirewallStatus>;
+  openFirewall(): Promise<{ ok: boolean; detail: string; status: FirewallStatus }>;
   checkDocker(): Promise<DockerStatus>;
   openDockerDownload(): Promise<void>;
   startDocker(): Promise<DockerStatus>;
@@ -208,6 +211,50 @@ function renderDocker(d: DockerStatus): void {
   $('btn-docker-start').classList.toggle('hidden', !offerStart);
   $('wiz-docker-download').classList.toggle('hidden', installed);
   $('wiz-docker-start').classList.toggle('hidden', !offerStart);
+}
+
+/**
+ * Windows Firewall, in both places it is shown.
+ *
+ * Treated as first-class rather than a footnote because a blocked port is invisible from
+ * this side: the node runs, the daemon answers locally, and only the panel knows anything
+ * is wrong — by which point it just says "offline".
+ */
+function renderFirewall(f: FirewallStatus): void {
+  const labels: Record<FirewallStatus['state'], string> = {
+    open: 'Allowed',
+    missing: 'Blocked',
+    unknown: 'Unknown',
+  };
+
+  for (const [badgeId, detailId] of [
+    ['firewall-badge', 'firewall-detail'],
+    ['wiz-firewall-badge', 'wiz-firewall-detail'],
+  ] as const) {
+    const badge = document.getElementById(badgeId);
+    const detail = document.getElementById(detailId);
+    if (!badge || !detail) continue;
+    badge.textContent = labels[f.state];
+    // Reuse the Docker badge's colours: ok is the same green, blocked the same amber.
+    badge.dataset.state = f.state === 'open' ? 'ok' : f.state === 'missing' ? 'not-running' : '';
+    detail.textContent = f.detail;
+  }
+
+  const blocked = f.state !== 'open';
+  $('btn-firewall-open').classList.toggle('hidden', !blocked);
+  $('wiz-firewall-open').classList.toggle('hidden', !blocked);
+}
+
+async function refreshFirewall(): Promise<void> {
+  renderFirewall(await api.getFirewallStatus());
+}
+
+async function allowThroughFirewall(): Promise<void> {
+  const result = await api.openFirewall();
+  renderFirewall(result.status);
+  // The elevated command's own message is the useful one when it went wrong: it carries
+  // the netsh line to run by hand.
+  if (!result.ok) toast(result.detail.split('\n')[0]);
 }
 
 async function refreshDocker(): Promise<void> {
@@ -347,7 +394,7 @@ async function saveGames(): Promise<void> {
  * the machine to give away, and which panel to join. Enrolling is last because it is the
  * only one that cannot be undone from in here — the code is spent once it is used.
  */
-const WIZARD_STEPS = 4;
+const WIZARD_STEPS = 5;
 let wizardStep = 1;
 /** Set once enrollment succeeds, so the last step turns into a summary rather than a retry. */
 let wizardJoined = false;
@@ -357,6 +404,11 @@ function renderWizard(): void {
   document.querySelectorAll<HTMLElement>('.wizard-step').forEach((el) => {
     el.classList.toggle('hidden', Number(el.dataset.step) !== wizardStep);
   });
+
+  // Both checks are re-read on arrival: the user may have just installed Docker or
+  // clicked through a UAC prompt, and a stale badge is worse than no badge.
+  if (wizardStep === 1) void refreshDocker();
+  if (wizardStep === 2) void refreshFirewall();
 
   ($('wiz-back') as HTMLButtonElement).disabled = wizardStep === 1;
   const next = $('wiz-next') as HTMLButtonElement;
@@ -428,7 +480,7 @@ async function commitWizardStep(step: number): Promise<void> {
     }
   }
 
-  if (step === 2) {
+  if (step === 3) {
     const picked = Array.from($('wiz-games').querySelectorAll<HTMLInputElement>('input:checked')).map(
       (b) => b.value
     );
@@ -531,6 +583,11 @@ function wire(): void {
   $('btn-docker-recheck').addEventListener('click', refreshDocker);
   $('btn-docker-download').addEventListener('click', () => api.openDockerDownload());
   $('btn-docker-start').addEventListener('click', startDocker);
+
+  $('btn-firewall-recheck').addEventListener('click', refreshFirewall);
+  $('btn-firewall-open').addEventListener('click', allowThroughFirewall);
+  $('wiz-firewall-recheck').addEventListener('click', refreshFirewall);
+  $('wiz-firewall-open').addEventListener('click', allowThroughFirewall);
 
   $('chk-docker-autostart').addEventListener('change', async (e) => {
     const on = (e.target as HTMLInputElement).checked;
@@ -714,7 +771,10 @@ async function init(): Promise<void> {
    * the wizard — starting two probes at once only makes the badge flicker.
    */
   if (!config.setupCompleted) openWizard();
-  else await refreshDocker();
+  else {
+    await refreshDocker();
+    await refreshFirewall();
+  }
 
   // Uptime is derived from a start timestamp, so it only advances if we re-render.
   window.setInterval(async () => renderStatus(await api.getStatus()), 1000);
