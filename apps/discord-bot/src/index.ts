@@ -5,9 +5,22 @@ import {
   Routes,
   SlashCommandBuilder,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
+  ButtonInteraction,
+  StringSelectMenuInteraction,
   EmbedBuilder,
+  MessageFlags,
 } from 'discord.js';
-import { linkAccount, listServers, runAction, isNotLinkedError, ServerSummary } from './api';
+import { linkAccount, listServers, getServer, runAction, isNotLinkedError, ServerSummary } from './api';
+import {
+  Action,
+  decodeId,
+  matchServers,
+  serverButtons,
+  serverCardEmbed,
+  serverListEmbed,
+  serverSelect,
+} from './ui';
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -22,126 +35,331 @@ if (!process.env.DISCORD_BOT_SECRET) {
   process.exit(1);
 }
 
+/*
+ * Every reply is ephemeral. It keeps a channel from filling with status dumps, and it is
+ * also what makes the buttons safe: an ephemeral message exists only for the person who
+ * ran the command, so nobody else can press the Stop button on it.
+ */
+const EPHEMERAL = { flags: MessageFlags.Ephemeral } as const;
+
+/**
+ * The server option, shared by the commands that take one.
+ *
+ * Autocompleted, which is the whole difference between this bot and one you have to
+ * remember exact names for. Typing a name still works; nobody has to.
+ */
+const serverOption = (opt: any) =>
+  opt.setName('server').setDescription('Which server').setRequired(true).setAutocomplete(true);
+
 const commands = [
   new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Link your Discord account to your CraftControl panel account')
-    .addStringOption((opt) => opt.setName('code').setDescription('Code from the panel\'s "Link Discord" button').setRequired(true)),
+    .setName('servers')
+    .setDescription('List your servers and manage them with buttons'),
   new SlashCommandBuilder()
-    .setName('status')
-    .setDescription('Show the status of your servers'),
+    .setName('server')
+    .setDescription('Open one server, with buttons to start, stop or restart it')
+    .addStringOption(serverOption),
   new SlashCommandBuilder()
     .setName('start')
     .setDescription('Start a server')
-    .addStringOption((opt) => opt.setName('server').setDescription('Server name').setRequired(true)),
+    .addStringOption(serverOption),
   new SlashCommandBuilder()
     .setName('stop')
     .setDescription('Stop a server')
-    .addStringOption((opt) => opt.setName('server').setDescription('Server name').setRequired(true)),
+    .addStringOption(serverOption),
   new SlashCommandBuilder()
     .setName('restart')
     .setDescription('Restart a server')
-    .addStringOption((opt) => opt.setName('server').setDescription('Server name').setRequired(true)),
+    .addStringOption(serverOption),
+  new SlashCommandBuilder()
+    .setName('link')
+    .setDescription('Link your Discord account to your CraftControl panel account')
+    .addStringOption((opt) =>
+      opt.setName('code').setDescription('Code from the panel\'s "Link Discord" button').setRequired(true)
+    ),
+  new SlashCommandBuilder().setName('help').setDescription('What this bot can do'),
 ].map((c) => c.toJSON());
 
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: '10' }).setToken(TOKEN!);
-  const route = GUILD_ID ? Routes.applicationGuildCommands(CLIENT_ID!, GUILD_ID) : Routes.applicationCommands(CLIENT_ID!);
+  const route = GUILD_ID
+    ? Routes.applicationGuildCommands(CLIENT_ID!, GUILD_ID)
+    : Routes.applicationCommands(CLIENT_ID!);
   await rest.put(route, { body: commands });
-  console.log(`[discord-bot] Registered ${commands.length} slash commands${GUILD_ID ? ` to guild ${GUILD_ID}` : ' globally (may take up to an hour to propagate)'}.`);
+  console.log(
+    `[discord-bot] Registered ${commands.length} slash commands` +
+      (GUILD_ID ? ` to guild ${GUILD_ID}.` : ' globally (may take up to an hour to propagate).')
+  );
 }
-
-const STATUS_EMOJI: Record<string, string> = {
-  RUNNING: '🟢',
-  STARTING: '🟡',
-  STOPPING: '🟠',
-  OFFLINE: '⚪',
-  ERROR: '🔴',
-  INSTALLING: '🔵',
-  SLEEPING: '🌙',
-};
 
 function friendlyError(err: any): string {
   if (isNotLinkedError(err)) {
-    return 'Your Discord account isn\'t linked yet. Click "Link Discord" in the CraftControl panel, then run `/link <code>`.';
+    return 'Your Discord account is not linked yet. Open the CraftControl panel, click **Link Discord**, then run `/link <code>` with the code it gives you.';
   }
   return err?.message || 'Something went wrong.';
 }
 
+type Repliable = ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction;
+
+/** Replaces the current reply with one server's card and its buttons. */
+async function showServer(interaction: Repliable, server: ServerSummary, banner?: string) {
+  await interaction.editReply({
+    content: banner ?? null,
+    embeds: [serverCardEmbed(server)],
+    components: [serverButtons(server)],
+  });
+}
+
+/** Replaces the current reply with the picker. */
+async function showList(interaction: Repliable, servers: ServerSummary[]) {
+  if (servers.length === 0) {
+    await interaction.editReply({
+      content:
+        'No servers are visible to your linked account. If you expect to see one, ask its owner to add you on the panel\'s Access tab.',
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+  await interaction.editReply({
+    content: null,
+    embeds: [serverListEmbed(servers)],
+    components: [serverSelect(servers)],
+  });
+}
+
+/* ── commands ──────────────────────────────────────────────────────────────────────── */
+
+async function handleHelp(interaction: ChatInputCommandInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('CraftControl')
+    .setColor(0x5865f2)
+    .setDescription('Manage your game servers without leaving Discord. Every reply is visible only to you.')
+    .addFields(
+      { name: '/servers', value: 'List everything you can see, then pick one to manage with buttons. Start here.' },
+      { name: '/server <name>', value: 'Jump straight to one server\'s controls. The name autocompletes.' },
+      { name: '/start · /stop · /restart <name>', value: 'Do it in one step, if you already know which server.' },
+      {
+        name: '/link <code>',
+        value: 'Connect this Discord account to your panel account. Get the code from **Link Discord** in the panel.',
+      }
+    )
+    .setFooter({ text: 'A sleeping server does not need starting — it wakes when someone joins.' });
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleLink(interaction: ChatInputCommandInteraction) {
   const code = interaction.options.getString('code', true);
-  await interaction.deferReply({ ephemeral: true });
   try {
     const result = await linkAccount(code, interaction.user.id);
-    await interaction.editReply(`✅ Linked to panel account **${result.username}**. You can now use \`/status\`, \`/start\`, \`/stop\`, and \`/restart\`.`);
+    await interaction.editReply(
+      `✅ Linked to panel account **${result.username}**. Try \`/servers\` — that is the only command you need to remember.`
+    );
   } catch (err: any) {
     await interaction.editReply(`❌ ${friendlyError(err)}`);
   }
 }
 
-async function handleStatus(interaction: ChatInputCommandInteraction) {
-  await interaction.deferReply({ ephemeral: true });
+async function handleServers(interaction: ChatInputCommandInteraction) {
   try {
-    const { servers } = await listServers(interaction.user.id);
-    if (servers.length === 0) {
-      await interaction.editReply('No servers are visible to your linked account.');
+    await showList(interaction, await listServers(interaction.user.id));
+  } catch (err: any) {
+    await interaction.editReply(`❌ ${friendlyError(err)}`);
+  }
+}
+
+/**
+ * Resolves what someone typed or picked into one server.
+ *
+ * Autocomplete sends the id back as the option's value, so the normal path is an exact
+ * id. A typed name is matched case-insensitively, and an ambiguous one is reported rather
+ * than resolved — picking the first of two servers called "survival" and stopping it is
+ * the kind of help nobody wants.
+ */
+async function resolveServer(
+  discordUserId: string,
+  typed: string
+): Promise<{ server: ServerSummary } | { error: string }> {
+  const servers = await listServers(discordUserId);
+
+  const byId = servers.find((s) => s.id === typed);
+  if (byId) return { server: byId };
+
+  const byName = servers.filter((s) => s.name.toLowerCase() === typed.trim().toLowerCase());
+  if (byName.length === 1) return { server: byName[0] };
+  if (byName.length > 1) {
+    return { error: `More than one server is called "${typed}". Use \`/servers\` and pick the one you mean.` };
+  }
+
+  const near = matchServers(servers, typed).slice(0, 5);
+  if (near.length > 0) {
+    return { error: `No server called "${typed}". Did you mean: ${near.map((s) => `**${s.name}**`).join(', ')}?` };
+  }
+  return { error: `No server called "${typed}" is visible to your account.` };
+}
+
+async function handleServerCard(interaction: ChatInputCommandInteraction) {
+  try {
+    const resolved = await resolveServer(interaction.user.id, interaction.options.getString('server', true));
+    if ('error' in resolved) {
+      await interaction.editReply(`❌ ${resolved.error}`);
       return;
     }
-
-    const embed = new EmbedBuilder()
-      .setTitle('CraftControl — Your Servers')
-      .setColor(0x3ba55d)
-      .setDescription(
-        servers
-          .map((s: ServerSummary) => `${STATUS_EMOJI[s.status] || '⚪'} **${s.name}** — ${s.status} (${s.serverType} ${s.mcVersion})`)
-          .join('\n')
-      );
-    await interaction.editReply({ embeds: [embed] });
+    await showServer(interaction, resolved.server);
   } catch (err: any) {
     await interaction.editReply(`❌ ${friendlyError(err)}`);
   }
 }
 
-async function handleLifecycleAction(interaction: ChatInputCommandInteraction, action: 'start' | 'stop' | 'restart') {
-  const serverName = interaction.options.getString('server', true);
-  await interaction.deferReply({ ephemeral: true });
+async function handleLifecycleCommand(interaction: ChatInputCommandInteraction, action: Action) {
   try {
-    const result = await runAction(interaction.user.id, serverName, action);
-    await interaction.editReply(`✅ ${result.message} — status: **${result.status}**`);
+    const resolved = await resolveServer(interaction.user.id, interaction.options.getString('server', true));
+    if ('error' in resolved) {
+      await interaction.editReply(`❌ ${resolved.error}`);
+      return;
+    }
+    await applyAction(interaction, resolved.server.id, action);
   } catch (err: any) {
     await interaction.editReply(`❌ ${friendlyError(err)}`);
   }
 }
+
+/**
+ * Runs an action, then re-renders the card from the panel's own view of the server rather
+ * than from what the action returned. The two disagree often enough to matter: a start is
+ * recorded as RUNNING the moment the command is accepted, while a large modpack takes
+ * minutes to actually come up.
+ */
+async function applyAction(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  serverId: string,
+  action: Action
+) {
+  let banner: string;
+  try {
+    const result = await runAction(interaction.user.id, { serverId }, action);
+    banner = `✅ ${action.charAt(0).toUpperCase() + action.slice(1)} sent to **${result.serverName}**.`;
+  } catch (err: any) {
+    banner = `❌ ${friendlyError(err)}`;
+  }
+
+  /*
+   * The card is re-rendered on failure too. A refused action leaves the server exactly as
+   * it was, and taking the buttons away would make a permission error look as though the
+   * server had gone.
+   */
+  const fresh = await getServer(interaction.user.id, serverId).catch(() => null);
+  if (fresh) {
+    await showServer(interaction, fresh, banner);
+  } else {
+    await interaction.editReply({ content: banner, embeds: [], components: [] });
+  }
+}
+
+/* ── components ────────────────────────────────────────────────────────────────────── */
+
+async function handleAutocomplete(interaction: AutocompleteInteraction) {
+  const typed = interaction.options.getFocused();
+  try {
+    const servers = await listServers(interaction.user.id);
+    await interaction.respond(
+      matchServers(servers, typed).map((s) => ({
+        name: `${s.name} — ${s.status.toLowerCase()}`.slice(0, 100),
+        value: s.id,
+      }))
+    );
+  } catch {
+    /*
+     * Autocomplete has no way to show an error: Discord's only options are choices or
+     * silence. An unlinked user gets nothing here and the real explanation when they run
+     * the command, which is the right place for it.
+     */
+    await interaction.respond([]).catch(() => {});
+  }
+}
+
+async function handleComponent(interaction: ButtonInteraction | StringSelectMenuInteraction) {
+  const decoded = decodeId(interaction.customId);
+  if (!decoded) return;
+
+  // Edits the existing ephemeral message in place, so the card updates where it already is.
+  await interaction.deferUpdate();
+
+  const gone = { content: '❌ That server no longer exists.', embeds: [], components: [] };
+
+  try {
+    if (decoded.kind === 'pick' && interaction.isStringSelectMenu()) {
+      const server = await getServer(interaction.user.id, interaction.values[0]);
+      if (!server) return void (await interaction.editReply(gone));
+      return void (await showServer(interaction, server));
+    }
+
+    if (decoded.kind === 'list') {
+      return void (await showList(interaction, await listServers(interaction.user.id)));
+    }
+
+    if (decoded.kind === 'refresh') {
+      const server = await getServer(interaction.user.id, decoded.parts[0]);
+      if (!server) return void (await interaction.editReply(gone));
+      return void (await showServer(interaction, server));
+    }
+
+    if (decoded.kind === 'act' && interaction.isButton()) {
+      const [action, serverId] = decoded.parts;
+      await applyAction(interaction, serverId, action as Action);
+    }
+  } catch (err: any) {
+    await interaction
+      .editReply({ content: `❌ ${friendlyError(err)}`, embeds: [], components: [] })
+      .catch(() => {});
+  }
+}
+
+/* ── wiring ────────────────────────────────────────────────────────────────────────── */
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`[discord-bot] Logged in as ${client.user?.tag}`);
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-
   try {
+    if (interaction.isAutocomplete()) return await handleAutocomplete(interaction);
+    if (interaction.isButton() || interaction.isStringSelectMenu()) return await handleComponent(interaction);
+    if (!interaction.isChatInputCommand()) return;
+
+    /*
+     * Deferred before anything touches the panel. Discord discards an interaction that is
+     * not acknowledged within three seconds, and a cold panel can take longer than that
+     * just to list servers.
+     */
+    await interaction.deferReply(EPHEMERAL);
+
     switch (interaction.commandName) {
+      case 'help':
+        return await handleHelp(interaction);
       case 'link':
         return await handleLink(interaction);
-      case 'status':
-        return await handleStatus(interaction);
+      case 'servers':
+        return await handleServers(interaction);
+      case 'server':
+        return await handleServerCard(interaction);
       case 'start':
-        return await handleLifecycleAction(interaction, 'start');
+        return await handleLifecycleCommand(interaction, 'start');
       case 'stop':
-        return await handleLifecycleAction(interaction, 'stop');
+        return await handleLifecycleCommand(interaction, 'stop');
       case 'restart':
-        return await handleLifecycleAction(interaction, 'restart');
+        return await handleLifecycleCommand(interaction, 'restart');
     }
   } catch (err: any) {
-    console.error(`[discord-bot] Unhandled error in /${interaction.commandName}:`, err);
-    const payload = { content: '❌ An unexpected error occurred.', ephemeral: true };
+    console.error('[discord-bot] Unhandled error:', err);
+    if (interaction.isAutocomplete() || !interaction.isRepliable()) return;
+    const content = '❌ An unexpected error occurred.';
     if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(payload).catch(() => {});
+      await interaction.editReply({ content, embeds: [], components: [] }).catch(() => {});
     } else {
-      await interaction.reply(payload).catch(() => {});
+      await interaction.reply({ content, ...EPHEMERAL }).catch(() => {});
     }
   }
 });

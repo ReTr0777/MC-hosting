@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>craftcontrol-discord-bot</Name>
+  <Repository>ghcr.io/retr0777/mc-hosting:discord-bot</Repository>
+  <Registry>https://ghcr.io/retr0777/mc-hosting</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mc-server-manager/craftcontrol</Support>
+  <Project>https://github.com/mc-server-manager/craftcontrol</Project>
+  <Overview>CraftControl Discord bot. Provides /link, /status, /start, /stop and /restart against the web panel, authorised per user from the linked Discord account. Publishes no ports: it holds an outbound websocket to Discord and calls the panel over HTTP, so nothing needs to reach it. Exits immediately if the token, client ID or panel secret is unset rather than idling in a state where every command fails.</Overview>
+  <Category>Tools: System: Management:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/mc-server-manager/craftcontrol/main/logo.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <!-- Discord application credentials -->
+  <Config Name="Discord Bot Token" Target="DISCORD_BOT_TOKEN" Default="" Description="Bot token from the Discord Developer Portal (Applications, your app, Bot, Reset Token). Shown once and cannot be read back afterwards." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="Discord Client ID" Target="DISCORD_CLIENT_ID" Default="" Description="Application ID from the Discord Developer Portal, under General Information. Not a secret." Type="Variable" Display="always" Required="true" Mask="false"></Config>
+
+  <Config Name="Discord Guild ID" Target="DISCORD_GUILD_ID" Default="" Description="Optional. Registers the slash commands to this one server, where they appear immediately. Left blank they register globally and can take up to an hour to show up, which looks identical to a bot that is not working. Enable Developer Mode in Discord and right-click the server to copy its ID." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <!-- Panel connection -->
+  <Config Name="Web Panel URL" Target="WEB_API_URL" Default="http://192.168.50.220:3000" Description="Where this container reaches the panel. Use the host LAN address and published port, not the container name: Unraid's default bridge has no DNS between containers, so http://web:3000 resolves nowhere and every command fails with a fetch error." Type="Variable" Display="always" Required="true" Mask="false">http://192.168.50.220:3000</Config>
+
+  <Config Name="Panel Shared Secret" Target="DISCORD_BOT_SECRET" Default="" Description="Must match DISCORD_BOT_SECRET in the web panel's own environment. It identifies the bot as a trusted service; per-user authorisation is then resolved from the caller's linked Discord account. If the panel does not have it set, the integration is off and every call is rejected." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+</Container>
