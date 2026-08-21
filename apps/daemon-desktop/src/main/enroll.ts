@@ -1,4 +1,4 @@
-import type { EnrollResult, EnrollSubmission } from '../shared-types';
+import type { EnrollResult, EnrollSubmission, VerifyResult } from '../shared-types';
 
 /**
  * Joining a panel with a setup code.
@@ -86,4 +86,56 @@ export async function enrollWithPanel(
   }
 
   return body as EnrollResult;
+}
+
+/** How long the panel gets to see this machine, and how often to ask. */
+const VERIFY_WINDOW_MS = 120_000;
+const VERIFY_INTERVAL_MS = 5000;
+
+/**
+ * Asks the panel, until it says yes, whether it can actually reach this node.
+ *
+ * Enrolling records an address; it does not prove anything can be reached at it. The gap
+ * between those two is where every setup failure has lived, and it is invisible from here:
+ * the daemon is up, the tunnel client says it connected, and only the panel knows that
+ * nothing answers where it is looking.
+ *
+ * Asked repeatedly because the answer legitimately changes during the first minute — frpc
+ * has to connect and register its proxy, and the daemon has to finish restarting — so a
+ * single check would report a failure that fixes itself two seconds later.
+ */
+export async function verifyWithPanel(
+  panelUrl: string,
+  payload: { nodeId: string; apiKey: string; port: number; addresses: string[] },
+  onProgress?: (secondsWaited: number) => void
+): Promise<VerifyResult> {
+  const deadline = Date.now() + VERIFY_WINDOW_MS;
+  const started = Date.now();
+  let last: VerifyResult = { ok: false, tried: [] };
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${panelUrl}/api/nodes/enroll/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (res.ok) {
+        const body = (await res.json()) as VerifyResult;
+        if (body.ok) return body;
+        last = body;
+      }
+      // A non-OK reply is not worth abandoning the wait for: the panel may be restarting,
+      // and the node is registered either way.
+    } catch {
+      // Same reasoning — a dropped request is one missed poll, not a failed setup.
+    }
+
+    onProgress?.(Math.round((Date.now() - started) / 1000));
+    await new Promise((r) => setTimeout(r, VERIFY_INTERVAL_MS));
+  }
+
+  return last;
 }

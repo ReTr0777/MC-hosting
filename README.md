@@ -115,6 +115,25 @@ This is somebody's PC as well as a node — registering it at its full size is h
 ends up swapping with every server "fitting" perfectly. It is changed afterwards on the
 node's page in the panel, which its owner can now reach.
 
+### Setup does not finish until the panel can see the node
+
+Registering an address is not the same as being reachable at it, and the gap between those
+two swallowed every early failure: the node app said connected, the daemon was healthy, the
+tunnel client reported success, and the panel — the only party that knew nothing answered
+where it was looking — just showed the node offline.
+
+So the node now asks. After applying its settings it polls `POST /api/nodes/enroll/verify`,
+authenticated with its own daemon key, for up to two minutes: long enough for frpc to
+register its proxy and the agent to finish restarting. The panel tries the tunnel address
+first and the machine's own addresses after, registers the node at whichever answered, and
+says which. The tunnel is preferred because it survives the node changing network or
+lease; direct is the fallback that gets taken rather than merely offered.
+
+When nothing answers, the app names every address it tried and what each failure means — a
+refused direct address is a firewall, a refused tunnel address is a port the tunnel server
+is not publishing. Those need different fixes, and nothing else in the system distinguishes
+them.
+
 ### Windows Firewall decides whether any of this works
 
 A node on the same network as the panel should be reached directly, and Windows blocks

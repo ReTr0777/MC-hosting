@@ -15,7 +15,7 @@ import { configureDockerAutoStart } from './docker-settings';
 import { firewallStatus, openFirewall } from './firewall';
 import { FileLogger } from './logger';
 import { initAutoUpdates, type UpdaterControls } from './updater';
-import { enrollWithPanel, normalisePanelUrl } from './enroll';
+import { enrollWithPanel, normalisePanelUrl, verifyWithPanel } from './enroll';
 import type { AppInfo, DaemonStatus, DockerStatus, EnrollResult, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
@@ -378,7 +378,35 @@ function registerIpc(): void {
     );
 
     await daemon.restart();
-    return result;
+
+    /*
+     * Registering is not connecting.
+     *
+     * The address the panel chose is a prediction until something answers at it: the tunnel
+     * has to come up, or a direct probe has to get past a firewall that was not consulted.
+     * Asking until the panel says yes is the difference between "setup finished" and "setup
+     * finished and the node is online", and every failure so far has been in that gap.
+     */
+    send('enroll:progress', 'Waiting for the panel to reach this machine…');
+    const verified = await verifyWithPanel(
+      result.panelUrl,
+      {
+        nodeId: result.node.id,
+        apiKey: config.apiKey,
+        port: config.port,
+        addresses: lanAddresses(),
+      },
+      (seconds) => send('enroll:progress', `Still waiting for the panel to reach this machine… (${seconds}s)`)
+    );
+
+    log.write(
+      'config',
+      verified.ok
+        ? `panel reached this node at ${verified.host}:${verified.port} (${verified.via})`
+        : `panel could not reach this node — tried ${(verified.tried ?? []).map((t) => t.address).join(', ') || 'nothing'}`
+    );
+
+    return { ...result, verified };
   });
 
   ipcMain.handle('config:import', async () => {

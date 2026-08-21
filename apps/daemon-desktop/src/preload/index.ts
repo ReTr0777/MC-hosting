@@ -16,6 +16,10 @@ const api = {
     code: string,
     limits?: { memoryMb?: number; cpuCores?: number }
   ): Promise<EnrollResult> => ipcRenderer.invoke('config:enroll', panelUrl, code, limits),
+  /** Progress while the panel is being asked whether it can see this machine. */
+  onEnrollProgress: (cb: (message: string) => void): void => {
+    ipcRenderer.on('enroll:progress', (_e, message: string) => cb(message));
+  },
   /** Marks the first-run wizard finished, so it does not reappear. */
   completeSetup: (): Promise<NodeConfig> => ipcRenderer.invoke('config:complete-setup'),
   importConfig: (): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }> =>

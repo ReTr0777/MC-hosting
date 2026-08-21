@@ -69,6 +69,24 @@ export interface EnrollResult {
   tunnel: { serverAddr: string; serverPort: number; token: string; apiRemotePort: number } | null;
   reachability: 'direct' | 'tunnel' | 'unverified';
   panelUrl: string;
+  /** Filled in by the app once the panel has confirmed — or failed — to reach this node. */
+  verified?: VerifyResult;
+}
+
+/**
+ * What the panel says when the node asks whether it can be seen.
+ *
+ * `tried` carries every address that went unanswered, which is the whole of the diagnosis
+ * when setup fails: a direct address refused means a firewall, a tunnel address refused
+ * means the tunnel server is not publishing that port.
+ */
+export interface VerifyResult {
+  ok: boolean;
+  via?: 'tunnel' | 'direct';
+  host?: string;
+  port?: number;
+  moved?: boolean;
+  tried?: { address: string; via: 'tunnel' | 'direct' }[];
 }
 
 export interface AppInfo {

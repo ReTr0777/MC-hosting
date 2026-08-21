@@ -47,11 +47,56 @@ interface AppInfo {
 }
 interface LogLine { ts: number; stream: 'out' | 'err' | 'app'; text: string }
 interface FirewallStatus { state: 'open' | 'missing' | 'unknown'; detail: string }
+interface VerifyResult {
+  ok: boolean;
+  via?: 'tunnel' | 'direct';
+  host?: string;
+  port?: number;
+  moved?: boolean;
+  tried?: { address: string; via: 'tunnel' | 'direct' }[];
+}
 interface EnrollResult {
   node: { id: string; name: string; host: string; port: number };
   tunnel: { serverAddr: string; serverPort: number; token: string; apiRemotePort: number } | null;
   reachability: 'direct' | 'tunnel' | 'unverified';
   panelUrl: string;
+  verified?: VerifyResult;
+}
+
+/**
+ * What to tell the user once the panel has answered.
+ *
+ * The failure text is the important half. "Could not connect" sends someone to check
+ * whether the node is running, which it plainly is — what they need is which address was
+ * refused, because a direct one means a firewall and a tunnel one means the tunnel server
+ * is not publishing that port. Two different jobs, and only this sentence distinguishes them.
+ */
+function verdict(enrolled: EnrollResult): string {
+  const v = enrolled.verified;
+
+  if (v?.ok) {
+    const where = `${v.host}:${v.port}`;
+    return v.via === 'tunnel'
+      ? `Connected as "${enrolled.node.name}" and the panel can see it, through the tunnel at ${where}. This machine is ready to host.`
+      : `Connected as "${enrolled.node.name}" and the panel can see it directly at ${where}. This machine is ready to host.`;
+  }
+
+  const tried = v?.tried ?? [];
+  const direct = tried.filter((t) => t.via === 'direct').map((t) => t.address);
+  const tunnel = tried.filter((t) => t.via === 'tunnel').map((t) => t.address);
+
+  let why = 'The panel could not reach this machine at any address.';
+  if (direct.length > 0) {
+    why += ` Nothing answered at ${direct.join(', ')} — usually Windows Firewall; the Overview tab can open the port.`;
+  }
+  if (tunnel.length > 0) {
+    why += ` The tunnel address ${tunnel.join(', ')} was refused too, which means the tunnel server is not publishing that port.`;
+  }
+
+  return (
+    `Registered as "${enrolled.node.name}", but not online yet. ${why} ` +
+    'Fix that and press "Find this node again" on its page in the panel — the code is not needed twice.'
+  );
 }
 
 interface NodeApi {
@@ -65,6 +110,7 @@ interface NodeApi {
     limits?: { memoryMb?: number; cpuCores?: number }
   ): Promise<EnrollResult>;
   completeSetup(): Promise<NodeConfig>;
+  onEnrollProgress(cb: (message: string) => void): void;
   importConfig(): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }>;
   getStatus(): Promise<DaemonStatus>;
   getLogs(): Promise<LogLine[]>;
@@ -521,9 +567,7 @@ async function wizardEnroll(): Promise<void> {
     config = await api.readConfig();
     renderConfig();
     wizardJoined = true;
-    success.textContent =
-      `Connected as "${enrolled.node.name}" — the panel reaches it at ` +
-      `${enrolled.node.host}:${enrolled.node.port}. This machine is ready to host.`;
+    success.textContent = verdict(enrolled);
     success.classList.remove('hidden');
     $<HTMLInputElement>('wiz-code').value = '';
   } catch (err) {
@@ -661,17 +705,7 @@ function wire(): void {
       config = await api.readConfig();
       renderConfig();
 
-      const how =
-        enrolled.reachability === 'tunnel'
-          ? `The panel reaches it through the tunnel at ${enrolled.node.host}:${enrolled.node.port}. ` +
-            `If it stays offline, that port has to be published on the tunnel server — nothing else ` +
-            `about the tunnel will look wrong.`
-          : enrolled.reachability === 'direct'
-            ? `The panel reaches it directly at ${enrolled.node.host}:${enrolled.node.port}.`
-            : 'The panel could not reach this machine yet — it is registered at ' +
-              `${enrolled.node.host}:${enrolled.node.port} and will come online once that address works.`;
-
-      result.textContent = `Connected as "${enrolled.node.name}". ${how} The node is restarting.`;
+      result.textContent = verdict(enrolled);
       result.classList.remove('hidden');
       $<HTMLInputElement>('inp-enroll-code').value = '';
       toast(`Joined ${enrolled.panelUrl} as "${enrolled.node.name}".`);
@@ -742,6 +776,19 @@ function wire(): void {
 
   // Docker progress is pushed as well as polled: a launch takes minutes, and the app must
   // not sit on "Not running" for the whole of it.
+  /*
+   * The panel is polled for up to two minutes after enrolling, and a button that says
+   * "Connecting…" for that long looks hung. Say what is being waited for instead.
+   */
+  api.onEnrollProgress((message) => {
+    for (const id of ['enroll-result', 'wiz-success']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.textContent = message;
+      el.classList.remove('hidden');
+    }
+  });
+
   api.onDockerStatus(renderDocker);
   api.onStatus(renderStatus);
   api.onUpdateStatus(renderUpdate);
