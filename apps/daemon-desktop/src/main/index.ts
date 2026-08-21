@@ -7,7 +7,8 @@ import { DaemonProcess } from './daemon-process';
 import { checkDocker, DOCKER_DOWNLOAD_URL } from './docker';
 import { FileLogger } from './logger';
 import { initAutoUpdates, type UpdaterControls } from './updater';
-import type { AppInfo, DaemonStatus, NodeConfig, UpdateStatus } from '../shared-types';
+import { enrollWithPanel, normalisePanelUrl } from './enroll';
+import type { AppInfo, DaemonStatus, EnrollResult, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
  * Bootstrap trace, written before anything else can fail.
@@ -79,7 +80,16 @@ function lanAddresses(): string[] {
   for (const [name, ifaces] of Object.entries(os.networkInterfaces())) {
     if (/docker|veth|br-|WSL|Loopback/i.test(name)) continue;
     for (const iface of ifaces || []) {
-      if (iface.family === 'IPv4' && !iface.internal) out.push(iface.address);
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      /*
+       * 169.254.x.x is what Windows assigns an adapter that never got a lease — a
+       * disconnected Wi-Fi card, a Hyper-V switch, a VPN that is not up. It is not
+       * internal, so it survives the check above, and it sorts ahead of the real LAN
+       * address often enough to be the one shown as "Node address" and the first one
+       * offered to the panel. Nothing is ever reachable there.
+       */
+      if (iface.address.startsWith('169.254.')) continue;
+      out.push(iface.address);
     }
   }
   return out;
@@ -259,6 +269,50 @@ function registerIpc(): void {
     const key = store.regenerateApiKey();
     await daemon.restart();
     return key;
+  });
+
+  /**
+   * Joins a panel with a setup code: the whole of self-service onboarding.
+   *
+   * Everything the panel needs about this machine is gathered here rather than asked for,
+   * because the person running the installer knows their setup code and should not have to
+   * know their LAN address, their core count or which of those the panel can reach.
+   *
+   * The restart at the end is not optional. When the panel could not reach this machine
+   * directly it has registered the node at a tunnel address, and that address only starts
+   * answering once the agent comes back up with the new settings.
+   */
+  ipcMain.handle('config:enroll', async (_e, panelUrlRaw: string, code: string): Promise<EnrollResult> => {
+    const panel = normalisePanelUrl(panelUrlRaw);
+    if (!panel.ok) throw new Error(panel.error);
+
+    const config = store.read();
+    if (!config.apiKey) {
+      // ensureInitialised writes one on first run, so this means the config is unwritable.
+      throw new Error('This node has no daemon key yet. Restart the app and try again.');
+    }
+
+    const result = await enrollWithPanel(panel.url, {
+      code,
+      apiKey: config.apiKey,
+      port: config.port,
+      hostname: os.hostname(),
+      addresses: lanAddresses(),
+      enabledGames: config.enabledGames,
+      memoryMb: Math.round(os.totalmem() / (1024 * 1024)),
+      cpuCores: os.cpus().length,
+      agentVersion: app.getVersion(),
+    });
+
+    store.applyEnrollment(result);
+    log.write(
+      'config',
+      `enrolled with ${result.panelUrl} as "${result.node.name}" ` +
+        `(${result.reachability}, panel dials ${result.node.host}:${result.node.port})`
+    );
+
+    await daemon.restart();
+    return result;
   });
 
   ipcMain.handle('config:import', async () => {

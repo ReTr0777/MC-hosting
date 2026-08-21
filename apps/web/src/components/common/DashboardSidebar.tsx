@@ -2,7 +2,9 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 import { Game, GAME_LABELS, ALL_GAMES, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
+import ConnectMachineModal from './ConnectMachineModal';
 
 /**
  * The dashboard's left rail: what you can host, and what you host it on.
@@ -23,6 +25,8 @@ export interface SidebarNode {
   host: string;
   port: number;
   isOnline: boolean;
+  /** Null for a node the installation runs; set when someone enrolled their own machine. */
+  ownerId?: string | null;
   enabledGames?: string[] | null;
   drainedAt?: string | null;
   liveCpuUsage?: number | null;
@@ -71,6 +75,7 @@ export default function DashboardSidebar({
   onRegisterNode,
 }: Props) {
   const router = useRouter();
+  const [connecting, setConnecting] = useState(false);
 
   /*
    * The filter is a URL parameter rather than component state so that the rail can be a
@@ -266,7 +271,40 @@ export default function DashboardSidebar({
             + Register node
           </button>
         )}
+
+        {/* Open to everyone, unlike registering a node by hand: this one hands out a
+            code rather than asking for an address and a key, and the node it produces
+            belongs to whoever asked. */}
+        <button
+          onClick={() => setConnecting(true)}
+          style={{
+            marginTop: '8px',
+            width: '100%',
+            textAlign: 'left',
+            padding: '8px 10px',
+            borderRadius: '7px',
+            border: '1px dashed var(--border-2)',
+            background: 'transparent',
+            color: 'var(--text-muted)',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+          onMouseOver={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
+          onMouseOut={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+        >
+          + Connect a machine of your own
+        </button>
       </nav>
+
+      {connecting && (
+        <ConnectMachineModal
+          onClose={() => setConnecting(false)}
+          // The rail is rendered from server data on several pages, so a refresh is what
+          // makes the new node appear without asking the user to reload.
+          onConnected={() => router.refresh()}
+        />
+      )}
     </aside>
   );
 }

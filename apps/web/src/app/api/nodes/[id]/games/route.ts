@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
 import { writeAudit } from '@/lib/audit';
 import { ALL_GAMES, parseGameList } from '@mc-manager/shared';
+import { canManageNode, canSeeNode } from '@/lib/servers/node-access';
 
 /**
  * Sets which games a node hosts.
@@ -15,13 +16,19 @@ import { ALL_GAMES, parseGameList } from '@mc-manager/shared';
  */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
-  if (!user || user.globalRole !== 'GLOBAL_ADMIN') {
-    return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const node = await prisma.node.findUnique({ where: { id: params.id } });
-  if (!node) {
+  if (!node || !canSeeNode(user, node)) {
     return NextResponse.json({ error: 'Node not found' }, { status: 404 });
+  }
+
+  // Which games a machine hosts is a property of the machine, so its owner decides it —
+  // the same person who would otherwise have to tick the boxes in the node app itself.
+  if (!canManageNode(user, node)) {
+    return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({}));

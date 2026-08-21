@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { isHealthOnline } from '@/lib/services/node-status';
 import { nodeCapacity } from '@/lib/servers/node-capacity';
+import { canManageNode, canSeeNode } from '@/lib/servers/node-access';
 import {
   DaemonHealthDto, GAME_LABELS, isGame, Game,
   daemonVersionState, MIN_SUPPORTED_DAEMON_VERSION,
@@ -36,16 +37,22 @@ const CONNECT_TIMEOUT_MS = 15000;
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
-  if (!user || user.globalRole !== 'GLOBAL_ADMIN') {
-    return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const node = await prisma.node.findUnique({
     where: { id: params.id },
     include: { servers: { select: { id: true, game: true, status: true, memoryMb: true } } },
   });
-  if (!node) {
+  if (!node || !canSeeNode(user, node)) {
     return NextResponse.json({ error: 'Node not found' }, { status: 404 });
+  }
+
+  // Diagnosing a machine is most of what its hoster needs when it will not come online,
+  // and telling them to ask an admin is the answer that made self-hosting unworkable.
+  if (!canManageNode(user, node)) {
+    return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
   }
 
   const checks: Check[] = [];

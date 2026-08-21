@@ -106,6 +106,8 @@ model User {
   passwordResetTokens PasswordResetToken[]
   emailVerificationTokens EmailVerificationToken[]
   apiKeys             ApiKey[]
+  ownedNodes          Node[]               @relation("OwnedNodes")
+  nodeEnrollments     NodeEnrollment[]
 
   @@map("users")
 }
@@ -217,12 +219,55 @@ model Node {
   liveDaemonVersion String?
   liveLastSeenAt  DateTime? // Last time a successful hardware check was received
 
+  // Who this machine belongs to. Null is the normal case and means the node is part of
+  // the hosting fleet: everybody can see it and the scheduler may place anything on it.
+  // Set when a customer enrolled their own machine (see NodeEnrollment), which makes the
+  // node private — only the owner and a global admin can see it, place servers on it or
+  // migrate onto it. Ownership is deliberately not a permission table: a node has exactly
+  // one hoster, and sharing someone's home PC with strangers is not a feature.
+  ownerId         String?
+  // SetNull rather than Cascade: deleting an account must not silently take a machine's
+  // servers with it. The node falls back to the shared pool for an admin to deal with.
+  owner           User?    @relation("OwnedNodes", fields: [ownerId], references: [id], onDelete: SetNull)
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   servers         Server[]
+  enrollments     NodeEnrollment[]
 
+  @@index([ownerId])
   @@map("nodes")
+}
+
+/// A one-time code that lets a machine register itself as a node.
+///
+/// Self-hosting used to need a global admin: invent a key, create the node by hand, export
+/// the config file, send it over. This is the same handshake with the direction reversed —
+/// the user asks the panel for a code, types it into the desktop app, and the machine
+/// registers itself with a key it generated and never had to transmit by hand.
+///
+/// The code is stored hashed for the same reason an API key is: the row is a credential
+/// until it is claimed, and a leaked database should not hand out nodes.
+model NodeEnrollment {
+  id         String    @id @default(uuid())
+  // sha256 of the code shown to the user; the raw code exists only in that one response.
+  codeHash   String    @unique
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // What the node should be called once it enrolls. The machine's own hostname is used
+  // when this is blank, which is usually the more recognisable of the two anyway.
+  name       String?
+  expiresAt  DateTime
+  // Set the moment a machine redeems it. Single use: a code that has enrolled one node
+  // must not enroll a second, or one leaked code becomes an open door onto the panel.
+  claimedAt  DateTime?
+  nodeId     String?
+  node       Node?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("node_enrollments")
 }
 
 model Server {

@@ -34,6 +34,11 @@ services:
       SECRET_ENCRYPTION_KEY: "super-secret-local-testing-encryption-key"
       # Must match discord-bot's DISCORD_BOT_SECRET. Leave unset to disable the Discord integration.
       DISCORD_BOT_SECRET: "${DISCORD_BOT_SECRET:-}"
+      # How the *panel* dials the tunnel server, when a self-enrolled node has to be
+      # published through it. Nodes dial the public address configured in Settings; the
+      # panel is on the same Docker network and reaches the same server by container
+      # name, so it needs its own value. Leave unset to use the public address for both.
+      FRP_PANEL_HOST: "mc_frps"
       PORT: 3000
     depends_on:
       - db

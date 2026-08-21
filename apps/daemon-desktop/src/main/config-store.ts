@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import type { NodeConfig } from '../shared-types';
+import type { EnrollResult, NodeConfig } from '../shared-types';
 
 /*
  * The desktop app and the daemon share one config.json.
@@ -65,6 +65,10 @@ export class ConfigStore {
     return {
       port: typeof raw.port === 'number' ? raw.port : 3500,
       apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : '',
+      // Written by enrollment only. Empty means this node has never joined a panel from
+      // in here — it may still be registered by hand, which the app cannot know about.
+      panelUrl: typeof raw.panelUrl === 'string' ? raw.panelUrl : '',
+      nodeName: typeof raw.nodeName === 'string' ? raw.nodeName : '',
       frpServerAddr: typeof raw.frpServerAddr === 'string' ? raw.frpServerAddr : '',
       frpServerPort: typeof raw.frpServerPort === 'number' ? raw.frpServerPort : 7000,
       frpToken: typeof raw.frpToken === 'string' ? raw.frpToken : '',
@@ -156,6 +160,33 @@ export class ConfigStore {
       nodeName: typeof doc.panel?.nodeName === 'string' ? doc.panel.nodeName : null,
       panelUrl: typeof doc.panel?.url === 'string' ? doc.panel.url : null,
     };
+  }
+
+  /**
+   * Writes what the panel decided when this machine enrolled.
+   *
+   * The tunnel half is the part that matters: the panel has already recorded the node at
+   * the address it published, and until these settings are saved and the agent restarted,
+   * that address answers nothing. Absent tunnel settings mean the panel reached this
+   * machine directly, and whatever tunnel config is here already is left alone rather than
+   * cleared — a node may be tunnelling its game ports regardless of how its API is reached.
+   */
+  applyEnrollment(result: EnrollResult): void {
+    const patch: Record<string, unknown> = {
+      panelUrl: result.panelUrl,
+      nodeName: result.node.name,
+      nodeId: result.node.id,
+      enrolledAt: new Date().toISOString(),
+    };
+
+    if (result.tunnel) {
+      patch.frpServerAddr = result.tunnel.serverAddr;
+      patch.frpServerPort = result.tunnel.serverPort;
+      patch.frpToken = result.tunnel.token;
+      patch.frpApiRemotePort = result.tunnel.apiRemotePort;
+    }
+
+    this.write(patch);
   }
 
   regenerateApiKey(): string {

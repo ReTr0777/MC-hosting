@@ -93,12 +93,69 @@ npm run build       # shared -> daemon -> web
 Tests live next to the code they cover, as `*.test.ts`, and run on the Node test
 runner via `tsx`.
 
+## Bringing your own machine
+
+A customer can turn their own PC into a node without an administrator touching anything.
+The panel issues a short setup code; the node app redeems it and registers the machine
+itself. Nobody types a bearer token, and the key never leaves the machine that generated
+it except in the one request that registers it.
+
+**On the panel:** the Nodes rail → **Connect a machine of your own**. Name it if you like,
+and it hands you a code good for 15 minutes and one machine.
+
+**On that machine:** install [MC Hosting Node](https://github.com/ReTr0777/MC-hosting/releases)
+and Docker Desktop, open **Connection → Connect to a panel**, and enter the panel's address
+and the code. The dialog in the panel says so the moment the machine checks in.
+
+What happens in between is the part worth knowing about:
+
+- The node sends its own generated key, its port, its addresses and what the machine is
+  (RAM, cores, games it hosts).
+- The panel tries each address in turn. If it can reach the machine directly — same LAN,
+  or a forwarded port — the node is registered at that address and no tunnel is involved.
+- Otherwise it allocates a port on the installation's frps and returns the tunnel settings.
+  The node writes them, restarts, and is reachable at `frps:<allocated port>`. This is the
+  normal case for a home PC behind NAT, and it needs no port forwarding.
+- With neither route available the node is still registered, offline, at its best guess of
+  an address — nothing is lost if the user forwards a port later.
+
+### What an enrolled node is
+
+A node enrolled this way has an **owner**, and that changes what it is:
+
+| | Fleet node | Enrolled node |
+| --- | --- | --- |
+| Visible to | everyone | its owner and global admins |
+| Servers placed by | anyone, and the scheduler | its owner only |
+| Renamed, drained, deleted by | global admins | its owner, or a global admin |
+| Overcommit and offload priority | global admins | global admins only |
+
+Nodes that existed before this have no owner and keep behaving exactly as they did: shared,
+visible, schedulable. Ownership is a single column, not a permission table — a machine has
+one hoster, and lending someone's home PC to strangers is not a feature.
+
+### Moving a world between machines
+
+**Server page → advanced mode → Move to another node.** The destination list holds every
+node the account may use: the shared fleet, and any machine the user has enrolled. So a
+world moves onto their PC and back again by the same route, and cannot be pushed onto
+anybody else's machine.
+
+The migration itself is unchanged and careful about it: the server is stopped, the whole
+directory is streamed across, file and byte counts are compared, the destination has to
+finish provisioning, and only then is the source copy deleted. Anything short of all four
+leaves the original where it is.
+
 ## Setting up a new node
 
 A node is any Windows machine that will actually run game servers. The panel talks
 to it over HTTP, so the two need to agree on an address and a shared key. Exporting
 the config from the panel is the quickest way to make them agree — it carries the
 key across so nobody retypes it.
+
+This is the administrator's route, and it produces a shared fleet node. For a machine
+that belongs to one account, see [Bringing your own machine](#bringing-your-own-machine)
+— that one needs no admin and no config file.
 
 **Before you start, on the node machine:**
 

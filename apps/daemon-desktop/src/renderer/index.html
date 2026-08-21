@@ -80,13 +80,43 @@
       <section class="panel" id="tab-connection">
         <div class="card">
           <div class="card-head">
+            <h2>Connect to a panel</h2>
+            <span class="badge hidden" id="enroll-badge"></span>
+          </div>
+          <p class="muted">
+            Sign in to the panel, open the Nodes rail and choose
+            <strong>Connect a machine of your own</strong>. It gives you a setup code; put it
+            here and this machine registers itself, works out how the panel can reach it, and
+            joins as a node you own.
+          </p>
+
+          <label class="field">
+            <span>Panel address</span>
+            <input id="inp-panel-url" placeholder="e.g. panel.example.com" />
+          </label>
+
+          <label class="field">
+            <span>Setup code</span>
+            <div class="row">
+              <input id="inp-enroll-code" class="mono" placeholder="ABCD-2345" maxlength="9" />
+              <button id="btn-enroll" class="btn small primary">Connect</button>
+            </div>
+            <small class="muted">Codes last 15 minutes and work once.</small>
+          </label>
+
+          <p class="error hidden" id="enroll-error"></p>
+          <p class="muted hidden" id="enroll-result"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
             <h2>Panel connection</h2>
             <button id="btn-import" class="btn small primary">Import config from panel…</button>
           </div>
           <p class="muted">
-            Fastest setup: in the panel, open Nodes and use the download icon on this node,
-            then import that file here — it fills in the key below for you. Otherwise copy
-            the address and key across by hand.
+            The manual route, for a node an administrator created in the panel: use the
+            download icon on that node and import the file here, or copy the address and key
+            across by hand.
           </p>
 
           <label class="field">

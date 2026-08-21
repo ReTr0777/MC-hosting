@@ -48,6 +48,8 @@ interface NodeCapacity {
 
 interface NodeDetail {
   id: string;
+  /** Null for a node the installation runs; set when a user enrolled their own machine. */
+  ownerId: string | null;
   name: string;
   host: string;
   port: number;
@@ -298,10 +300,14 @@ export default function NodeDetailPage() {
         name: form.name,
         host: form.host,
         port: form.port,
-        offloadPriority: form.offloadPriority,
-        overcommitRatio: form.overcommitRatio,
-        cpuOvercommitRatio: form.cpuOvercommitRatio,
       };
+      // Scheduling knobs are a fleet-wide judgement and the API refuses them from anyone
+      // else, so an owner saving their own machine must not send them at all.
+      if (isAdmin) {
+        payload.offloadPriority = form.offloadPriority;
+        payload.overcommitRatio = form.overcommitRatio;
+        payload.cpuOvercommitRatio = form.cpuOvercommitRatio;
+      }
       if (form.totalMemory !== '') payload.totalMemory = Number(form.totalMemory);
       if (form.totalCpu !== '') payload.totalCpu = Number(form.totalCpu);
       // Blank means "leave the stored key alone" — the form never shows the current one.
@@ -391,6 +397,14 @@ export default function NodeDetailPage() {
   }
 
   const draining = !!node.drainedAt;
+  /*
+   * Whoever enrolled this machine administers it: it is their hardware, and telling them
+   * to open a ticket to rename their own PC or take it out of service is what made
+   * self-hosting unusable. The scheduling knobs stay an admin's, and so does the whole of
+   * the shared fleet.
+   */
+  const isOwner = !!node.ownerId && node.ownerId === user?.id;
+  const canManage = isAdmin || isOwner;
   const ramTotal = node.liveRamTotal ?? node.totalMemory ?? 0;
   const ramPct = ramTotal > 0 ? Math.round(((node.liveRamUsed ?? 0) / ramTotal) * 100) : null;
   const diskPct =
@@ -502,21 +516,21 @@ export default function NodeDetailPage() {
             return (
               <button
                 key={game}
-                disabled={!isAdmin || savingGames}
+                disabled={!canManage || savingGames}
                 onClick={() => toggleGame(game)}
                 className={on ? 'cc-btn-primary' : 'cc-btn-ghost'}
-                style={{ opacity: !isAdmin || savingGames ? 0.5 : 1, cursor: isAdmin ? 'pointer' : 'not-allowed' }}
+                style={{ opacity: !canManage || savingGames ? 0.5 : 1, cursor: canManage ? 'pointer' : 'not-allowed' }}
               >
                 {on ? '✓ ' : ''}{GAME_LABELS[game]}
               </button>
             );
           })}
         </div>
-        {!isAdmin && <p className="cc-help" style={{ marginTop: '8px' }}>Only an admin can change this.</p>}
+        {!canManage && <p className="cc-help" style={{ marginTop: '8px' }}>Only an admin can change this.</p>}
       </Section>
 
       {/* ── Diagnostics ── */}
-      {isAdmin && (
+      {canManage && (
         <Section
           title="Diagnostics"
           hint="Offline is one bit, and a dead daemon, a wrong port and a rotated key all look identical from outside. This tells them apart."
@@ -570,7 +584,7 @@ export default function NodeDetailPage() {
       )}
 
       {/* ── Maintenance ── */}
-      {isAdmin && (
+      {canManage && (
         <Section
           title="Maintenance mode"
           hint="Takes the node out of the scheduler without touching anything running on it."
@@ -595,7 +609,7 @@ export default function NodeDetailPage() {
       )}
 
       {/* ── Settings ── */}
-      {isAdmin && (
+      {canManage && (
         <Section title="Settings">
           {formError && (
             <div style={{ marginBottom: '14px', fontSize: '0.75rem', color: 'var(--danger)', background: 'rgba(248,81,73,0.08)', padding: '10px 12px', borderRadius: '6px' }}>
@@ -620,9 +634,11 @@ export default function NodeDetailPage() {
               <input className="cc-input" type="password" placeholder="Leave blank to keep current key" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} />
             </Field>
 
-            <Field label="Smart offload priority (0–10)" hint="0 = main server, 10 = offload here first.">
-              <input className="cc-input" type="number" min="0" max="10" value={form.offloadPriority} onChange={(e) => setForm({ ...form, offloadPriority: parseInt(e.target.value, 10) || 0 })} />
-            </Field>
+            {isAdmin && (
+              <Field label="Smart offload priority (0–10)" hint="0 = main server, 10 = offload here first.">
+                <input className="cc-input" type="number" min="0" max="10" value={form.offloadPriority} onChange={(e) => setForm({ ...form, offloadPriority: parseInt(e.target.value, 10) || 0 })} />
+              </Field>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <Field label="Total memory (MB)">
@@ -638,13 +654,17 @@ export default function NodeDetailPage() {
               {node.liveRamTotal ? ` The node reports ${(node.liveRamTotal / 1024).toFixed(1)} GB.` : ''}
             </p>
 
-            <Field label="Memory overcommit (1.0 – 4.0)" hint="How much RAM this node may promise beyond what it has. 1.0 never oversubscribes; 1.5 allows 150% allocated, usually safe because servers rarely hold their full heap at once.">
-              <input className="cc-input" type="number" step="0.1" min="1" max="4" value={form.overcommitRatio} onChange={(e) => setForm({ ...form, overcommitRatio: e.target.value })} />
-            </Field>
+            {isAdmin && (
+              <>
+                <Field label="Memory overcommit (1.0 – 4.0)" hint="How much RAM this node may promise beyond what it has. 1.0 never oversubscribes; 1.5 allows 150% allocated, usually safe because servers rarely hold their full heap at once.">
+                  <input className="cc-input" type="number" step="0.1" min="1" max="4" value={form.overcommitRatio} onChange={(e) => setForm({ ...form, overcommitRatio: e.target.value })} />
+                </Field>
 
-            <Field label="CPU overcommit (1.0 – 16.0)" hint="Looser than RAM on purpose: a server's CPU limit caps bursts rather than reserving a core, and an idle or sleeping server uses almost none of it.">
-              <input className="cc-input" type="number" step="0.5" min="1" max="16" value={form.cpuOvercommitRatio} onChange={(e) => setForm({ ...form, cpuOvercommitRatio: e.target.value })} />
-            </Field>
+                <Field label="CPU overcommit (1.0 – 16.0)" hint="Looser than RAM on purpose: a server's CPU limit caps bursts rather than reserving a core, and an idle or sleeping server uses almost none of it.">
+                  <input className="cc-input" type="number" step="0.5" min="1" max="16" value={form.cpuOvercommitRatio} onChange={(e) => setForm({ ...form, cpuOvercommitRatio: e.target.value })} />
+                </Field>
+              </>
+            )}
 
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', paddingTop: '4px' }}>
               <button type="submit" className="cc-btn-primary" disabled={saving}>
@@ -653,16 +673,20 @@ export default function NodeDetailPage() {
               <button type="button" className="cc-btn-ghost" onClick={() => setShowBackupStorage(true)}>
                 Off-site backups
               </button>
-              <button type="button" className="cc-btn-ghost" onClick={exportConfig}>
-                Export config
-              </button>
+              {/* The export carries the daemon key in plaintext and stays admin-only, as
+                  the route itself does. An owner has the key in their own node app. */}
+              {isAdmin && (
+                <button type="button" className="cc-btn-ghost" onClick={exportConfig}>
+                  Export config
+                </button>
+              )}
             </div>
           </form>
         </Section>
       )}
 
       {/* ── Danger zone ── */}
-      {isAdmin && (
+      {canManage && (
         <Section title="Danger zone">
           <div style={{ border: '1px solid rgba(248,81,73,0.3)', borderRadius: '8px', padding: '14px' }}>
             <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>

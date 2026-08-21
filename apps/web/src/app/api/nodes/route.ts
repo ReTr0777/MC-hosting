@@ -5,6 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { isHealthOnline } from '@/lib/services/node-status';
 import { writeAudit } from '@/lib/audit';
 import { allNodeCapacities } from '@/lib/servers/node-capacity';
+import { visibleNodesWhere } from '@/lib/servers/node-access';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -12,11 +13,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  /*
+   * A node somebody enrolled themselves belongs to that account alone, so the list is
+   * filtered rather than showing the whole fleet to everyone. Shared nodes — the ones the
+   * installation runs — have no owner and stay visible to all, which is every node that
+   * existed before self-enrollment.
+   */
   const nodes = await prisma.node.findMany({
+    where: visibleNodesWhere(user),
     orderBy: { createdAt: 'desc' },
     select: {
       id: true,
       name: true,
+      ownerId: true,
       host: true,
       port: true,
       isOnline: true,

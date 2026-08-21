@@ -953,6 +953,7 @@ export default function ServerConsolePage() {
                   </div>
                   <p className="cc-section-sub" style={{ marginBottom: '16px' }}>
                     Transfers this server and every file it owns to a different machine. The server goes offline during the copy.
+                    Machines you host yourself are listed alongside ours, so this is also how a world moves onto your own PC and back.
                   </p>
                   <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <select
@@ -966,7 +967,12 @@ export default function ServerConsolePage() {
                         .filter((n) => n.id !== server.nodeId)
                         .map((n) => (
                           <option key={n.id} value={n.id} disabled={!n.isOnline}>
-                            {n.name} (Priority {n.offloadPriority}){n.isOnline ? '' : ' — offline'}
+                            {/* Offload priority is a scheduling knob only an operator can act on;
+                                whose machine it is answers the question a self-hoster is asking. */}
+                            {n.name}
+                            {n.ownerId && n.ownerId === user?.id ? ' — your machine' : ''}
+                            {user?.globalRole === 'GLOBAL_ADMIN' ? ` (Priority ${n.offloadPriority})` : ''}
+                            {n.isOnline ? '' : ' — offline'}
                           </option>
                         ))}
                     </select>

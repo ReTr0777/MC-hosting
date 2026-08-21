@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
 import { isHealthOnline } from '@/lib/services/node-status';
 import { parseGameList } from '@mc-manager/shared';
+import { canSeeNode } from '@/lib/servers/node-access';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -15,7 +16,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     where: { id: params.id },
   });
 
-  if (!node) {
+  // The dashboard polls every node it lists, so this follows the same visibility rule the
+  // list does — otherwise a stranger's machine could be probed by id alone.
+  if (!node || !canSeeNode(user, node)) {
     return NextResponse.json({ error: 'Node not found' }, { status: 404 });
   }
 

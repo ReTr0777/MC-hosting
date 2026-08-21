@@ -6,6 +6,7 @@ import { CreateServerContainerDto, javaSupportViolation } from '@mc-manager/shar
 import { registerServerWithProxy } from '@/lib/servers/proxy-sync';
 import { writeAudit } from '@/lib/audit';
 import { nodeCapacity, capacityViolation, diskSpaceViolation } from '@/lib/servers/node-capacity';
+import { nodeUseViolation } from '@/lib/servers/node-access';
 
 async function updateLimboTitle(title: string, subtitle: string) {
   try {
@@ -181,6 +182,17 @@ export async function POST(
     const destNode = await prisma.node.findUnique({ where: { id: destinationNodeId } });
     if (!destNode) {
       return NextResponse.json({ error: 'Destination node not found' }, { status: 404 });
+    }
+
+    /*
+     * Moving a server is placing it, so the destination has to be a node this account
+     * could have created it on in the first place. This is what makes the round trip
+     * work in both directions: a customer moves a world onto their own machine and back
+     * onto the shared fleet, and cannot push it onto anybody else's.
+     */
+    const notYours = nodeUseViolation(user, destNode);
+    if (notYours) {
+      return NextResponse.json({ error: notYours }, { status: 404 });
     }
 
     // Migration moves the server's whole allocation onto another machine, so it is a capacity

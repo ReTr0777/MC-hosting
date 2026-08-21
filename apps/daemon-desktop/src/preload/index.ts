@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppInfo, DaemonStatus, DockerStatus, LogLine, NodeConfig, UpdateStatus } from '../shared-types';
+import type { AppInfo, DaemonStatus, DockerStatus, EnrollResult, LogLine, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
  * The renderer runs with contextIsolation on and no Node access. Everything it can
@@ -10,6 +10,9 @@ const api = {
   readConfig: (): Promise<NodeConfig> => ipcRenderer.invoke('config:read'),
   writeConfig: (patch: Partial<NodeConfig>): Promise<NodeConfig> => ipcRenderer.invoke('config:write', patch),
   regenerateApiKey: (): Promise<string> => ipcRenderer.invoke('config:regenerate-key'),
+  /** Joins a panel with a setup code, registering this machine as a node of its own. */
+  enroll: (panelUrl: string, code: string): Promise<EnrollResult> =>
+    ipcRenderer.invoke('config:enroll', panelUrl, code),
   importConfig: (): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }> =>
     ipcRenderer.invoke('config:import'),
 

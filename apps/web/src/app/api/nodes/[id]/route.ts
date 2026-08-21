@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { writeAudit } from '@/lib/audit';
 import { nodeCapacity } from '@/lib/servers/node-capacity';
+import { canManageNode, canSeeNode, isNodeAdmin } from '@/lib/servers/node-access';
 
 /**
  * The node, the servers on it, and what it has promised them.
@@ -25,7 +26,7 @@ export async function GET(
   const node = await prisma.node.findUnique({
     where: { id: params.id },
     select: {
-      id: true, name: true, host: true, port: true, isOnline: true,
+      id: true, name: true, host: true, port: true, isOnline: true, ownerId: true,
       totalMemory: true, totalCpu: true, offloadPriority: true,
       overcommitRatio: true, cpuOvercommitRatio: true, enabledGames: true,
       drainedAt: true,
@@ -47,7 +48,9 @@ export async function GET(
     },
   });
 
-  if (!node) {
+  // A machine someone enrolled themselves is not part of the shared fleet, and to
+  // everybody else it is indistinguishable from a node that does not exist.
+  if (!node || !canSeeNode(user, node)) {
     return NextResponse.json({ error: 'Node not found' }, { status: 404 });
   }
 
@@ -77,8 +80,8 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   const user = await getUserFromRequest(req);
-  if (!user || user.globalRole !== 'GLOBAL_ADMIN') {
-    return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
@@ -94,8 +97,14 @@ export async function DELETE(
       }
     });
 
-    if (!node) {
+    if (!node || !canSeeNode(user, node)) {
       return NextResponse.json({ error: 'Node not found' }, { status: 404 });
+    }
+
+    // Someone who enrolled their own machine retires it themselves; the shared fleet
+    // stays an admin's to remove.
+    if (!canManageNode(user, node)) {
+      return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
     }
 
     if (node._count.servers > 0) {
@@ -121,8 +130,8 @@ export async function PUT(
   { params }: { params: { id: string } }
 ) {
   const user = await getUserFromRequest(req);
-  if (!user || user.globalRole !== 'GLOBAL_ADMIN') {
-    return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
@@ -134,11 +143,36 @@ export async function PUT(
       where: { id: nodeId }
     });
 
-    if (!existingNode) {
+    if (!existingNode || !canSeeNode(user, existingNode)) {
       return NextResponse.json({ error: 'Node not found' }, { status: 404 });
     }
 
+    if (!canManageNode(user, existingNode)) {
+      return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
+    }
+
     const { name, host, port, apiKey, offloadPriority, totalMemory, totalCpu, overcommitRatio, cpuOvercommitRatio, drained } = body;
+
+    /*
+     * Overcommit and offload priority decide how hard the scheduler leans on a machine
+     * relative to every other one. That is a fleet-wide judgement, so an owner tuning
+     * their own node cannot reach it — they set what their machine is and whether it
+     * takes work, not how the placement maths treats it against the rest.
+     */
+    if (!isNodeAdmin(user)) {
+      for (const [field, value] of [
+        ['overcommitRatio', overcommitRatio],
+        ['cpuOvercommitRatio', cpuOvercommitRatio],
+        ['offloadPriority', offloadPriority],
+      ] as const) {
+        if (value !== undefined) {
+          return NextResponse.json(
+            { error: `Only an administrator can change ${field} on a node.` },
+            { status: 403 }
+          );
+        }
+      }
+    }
 
     // 1.0 means "never promise more than the node has". Anything under that would make the node
     // pretend to be smaller than it is, which is what totalMemory is for; 4x is already reckless.

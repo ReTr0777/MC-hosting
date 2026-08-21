@@ -25,6 +25,10 @@ export interface DockerStatus {
 export interface NodeConfig {
   port: number;
   apiKey: string;
+  /** The panel this node has joined, when it joined one with a setup code. */
+  panelUrl: string;
+  /** What that panel calls this node, so the app can say more than "connected". */
+  nodeName: string;
   frpServerAddr: string;
   frpServerPort: number;
   frpToken: string;
@@ -32,6 +36,34 @@ export interface NodeConfig {
   frpApiRemotePort: number;
   enabledGames: string[];
   dataDir: string;
+}
+
+/** What a machine tells the panel about itself when redeeming a setup code. */
+export interface EnrollSubmission {
+  code: string;
+  apiKey: string;
+  port: number;
+  hostname: string;
+  /** Addresses the panel might reach this machine on directly, best first. */
+  addresses: string[];
+  enabledGames: string[];
+  memoryMb: number;
+  cpuCores: number;
+  agentVersion: string;
+}
+
+/**
+ * The panel's answer: which node this became, and how it will be reached.
+ *
+ * `tunnel` is present when the panel could not reach this machine directly and published
+ * it through the installation's FRP server instead — the normal case for a home PC behind
+ * NAT. The app writes those settings and restarts, which is what actually opens the route.
+ */
+export interface EnrollResult {
+  node: { id: string; name: string; host: string; port: number };
+  tunnel: { serverAddr: string; serverPort: number; token: string; apiRemotePort: number } | null;
+  reachability: 'direct' | 'tunnel' | 'unverified';
+  panelUrl: string;
 }
 
 export interface AppInfo {

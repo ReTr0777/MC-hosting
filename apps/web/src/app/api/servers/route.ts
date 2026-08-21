@@ -6,6 +6,7 @@ import { ServerType, ExecutionMode, Game, GAME_LABELS, isGame, parseTerrariaConf
 import { writeAudit } from '@/lib/audit';
 import { quotaSnapshot, quotaViolation } from '@/lib/servers/quota';
 import { computeCapacity, capacityViolation, nodeCapacity } from '@/lib/servers/node-capacity';
+import { nodeUseViolation, visibleNodesWhere } from '@/lib/servers/node-access';
 
 export async function GET(req: NextRequest) {
   try {
@@ -187,7 +188,11 @@ export async function POST(req: NextRequest) {
           // A draining node is deliberately excluded here and nowhere else: it keeps
           // running, keeps answering, and keeps hosting everything it already has. The
           // only thing it stops receiving is new work.
-          where: { isOnline: true, drainedAt: null },
+          //
+          // The visibility filter matters just as much: without it the scheduler would
+          // cheerfully place one customer's server on another customer's home PC, since
+          // from here a self-enrolled node looks like any other machine with room.
+          where: { isOnline: true, drainedAt: null, ...visibleNodesWhere(user) },
           include: {
             servers: {
               select: { id: true, memoryMb: true, cpuLimit: true, status: true },
@@ -321,6 +326,13 @@ export async function POST(req: NextRequest) {
       // arrive with an explicit nodeId from the wizard's dropdown and would otherwise
       // walk straight past it — a node held back for an image update would keep taking
       // new servers all the way through.
+      // The wizard only offers nodes this account may use, but a dropdown is not a
+      // security boundary — the Discord bot and any direct API caller reach this route too.
+      const notYours = nodeUseViolation(user, node);
+      if (notYours) {
+        return NextResponse.json({ error: notYours }, { status: 404 });
+      }
+
       if (node.drainedAt) {
         return NextResponse.json(
           {

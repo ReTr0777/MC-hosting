@@ -22,6 +22,9 @@ interface UpdateStatus { state: UpdateState; version: string | null; percent: nu
 interface NodeConfig {
   port: number;
   apiKey: string;
+  /** The panel this node joined with a setup code; empty when it never did. */
+  panelUrl: string;
+  nodeName: string;
   frpServerAddr: string;
   frpServerPort: number;
   frpToken: string;
@@ -39,12 +42,19 @@ interface AppInfo {
   availableGames: { id: string; label: string }[];
 }
 interface LogLine { ts: number; stream: 'out' | 'err' | 'app'; text: string }
+interface EnrollResult {
+  node: { id: string; name: string; host: string; port: number };
+  tunnel: { serverAddr: string; serverPort: number; token: string; apiRemotePort: number } | null;
+  reachability: 'direct' | 'tunnel' | 'unverified';
+  panelUrl: string;
+}
 
 interface NodeApi {
   getAppInfo(): Promise<AppInfo>;
   readConfig(): Promise<NodeConfig>;
   writeConfig(patch: Partial<NodeConfig>): Promise<NodeConfig>;
   regenerateApiKey(): Promise<string>;
+  enroll(panelUrl: string, code: string): Promise<EnrollResult>;
   importConfig(): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }>;
   getStatus(): Promise<DaemonStatus>;
   getLogs(): Promise<LogLine[]>;
@@ -239,7 +249,32 @@ function renderConfig(): void {
     row.appendChild(label);
   }
 
+  renderEnrollment();
   renderAddress();
+}
+
+/**
+ * What this node has already joined, if anything.
+ *
+ * Worth showing prominently: on a machine that is already a node, the commonest reason to
+ * open this tab is to check *which* panel it answers to before changing anything.
+ */
+function renderEnrollment(): void {
+  const badge = $('enroll-badge');
+  const joined = !!config.panelUrl;
+  badge.classList.toggle('hidden', !joined);
+  if (joined) {
+    badge.textContent = `Joined ${config.panelUrl}`;
+    badge.dataset.state = 'ok';
+  }
+
+  const result = $('enroll-result');
+  if (joined && result.classList.contains('hidden')) {
+    result.textContent =
+      `This machine is registered as "${config.nodeName || 'a node'}" on ${config.panelUrl}. ` +
+      'Entering a new code moves it to whichever panel issued that code.';
+    result.classList.remove('hidden');
+  }
 }
 
 async function saveGames(): Promise<void> {
@@ -301,6 +336,57 @@ function wire(): void {
     } catch (err) {
       // The main process throws a sentence meant for the user; show it verbatim.
       toast((err as Error).message.replace(/^Error invoking remote method '[^']+':\s*Error:\s*/, ''));
+    }
+  });
+
+  $('btn-enroll').addEventListener('click', async () => {
+    const button = $<HTMLButtonElement>('btn-enroll');
+    const error = $('enroll-error');
+    const result = $('enroll-result');
+    const panelUrl = $<HTMLInputElement>('inp-panel-url').value;
+    const code = $<HTMLInputElement>('inp-enroll-code').value;
+
+    error.classList.add('hidden');
+    result.classList.add('hidden');
+
+    if (!code.trim()) {
+      error.textContent = 'Enter the setup code the panel gave you.';
+      error.classList.remove('hidden');
+      return;
+    }
+
+    // The panel probes this machine before it answers, so this is not a quick request and
+    // a second click would spend a second code on the same node.
+    button.disabled = true;
+    button.textContent = 'Connecting…';
+
+    try {
+      const enrolled = await api.enroll(panelUrl, code);
+      config = await api.readConfig();
+      renderConfig();
+
+      const how =
+        enrolled.reachability === 'tunnel'
+          ? `The panel reaches it through the tunnel at ${enrolled.node.host}:${enrolled.node.port}.`
+          : enrolled.reachability === 'direct'
+            ? `The panel reaches it directly at ${enrolled.node.host}:${enrolled.node.port}.`
+            : 'The panel could not reach this machine yet — it is registered at ' +
+              `${enrolled.node.host}:${enrolled.node.port} and will come online once that address works.`;
+
+      result.textContent = `Connected as "${enrolled.node.name}". ${how} The node is restarting.`;
+      result.classList.remove('hidden');
+      $<HTMLInputElement>('inp-enroll-code').value = '';
+      toast(`Joined ${enrolled.panelUrl} as "${enrolled.node.name}".`);
+    } catch (err) {
+      // The main process throws a sentence meant for the user; Electron wraps it.
+      error.textContent = (err as Error).message.replace(
+        /^Error invoking remote method '[^']+':\s*Error:\s*/,
+        ''
+      );
+      error.classList.remove('hidden');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Connect';
     }
   });
 
