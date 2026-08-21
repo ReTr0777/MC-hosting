@@ -103,9 +103,35 @@ it except in the one request that registers it.
 **On the panel:** the Nodes rail → **Connect a machine of your own**. Name it if you like,
 and it hands you a code good for 15 minutes and one machine.
 
-**On that machine:** install [MC Hosting Node](https://github.com/ReTr0777/MC-hosting/releases)
-and Docker Desktop, open **Connection → Connect to a panel**, and enter the panel's address
-and the code. The dialog in the panel says so the moment the machine checks in.
+**On that machine:** install [MC Hosting Node](https://github.com/ReTr0777/MC-hosting/releases).
+On a fresh install the app opens its own setup and asks for everything in order — Docker,
+which games to host, how much of the machine to hand out, then the panel address and the
+code. The dialog in the panel says so the moment the machine checks in. (An established
+node never sees the wizard; **Connection → Connect to a panel** does the same job.)
+
+The limits step is worth pausing on: it decides what the panel records as the node's
+capacity, and it defaults to three quarters of the RAM and one core short of the total.
+This is somebody's PC as well as a node — registering it at its full size is how a machine
+ends up swapping with every server "fitting" perfectly. It is changed afterwards on the
+node's page in the panel, which its owner can now reach.
+
+### Keeping it up without anybody watching
+
+Two switches, and a node that survives a reboot needs both:
+
+- **Start this node when I sign in** (Overview tab) — the app's own login item. Note that
+  Windows matches a login item on its arguments as well as its path: the app registers
+  itself with `--hidden`, so anything reading the setting back has to say so too, or
+  Windows reports it as off while it is on.
+- **Start Docker Desktop when this app starts** (Overview tab, on by default) — the app
+  launches Docker and waits for the engine, which takes minutes on a cold boot. There is
+  also a button to set Docker's *own* start-at-sign-in, with its window suppressed; that
+  one is written into Docker's settings file and is best set while Docker is stopped,
+  since Docker rewrites that file when it exits.
+
+Without them the machine comes back from a reboot with a node that is either not running
+or running with no engine to put containers on — the servers stay down and the panel can
+only say the node is offline.
 
 What happens in between is the part worth knowing about:
 

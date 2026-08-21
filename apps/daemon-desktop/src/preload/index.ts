@@ -11,8 +11,13 @@ const api = {
   writeConfig: (patch: Partial<NodeConfig>): Promise<NodeConfig> => ipcRenderer.invoke('config:write', patch),
   regenerateApiKey: (): Promise<string> => ipcRenderer.invoke('config:regenerate-key'),
   /** Joins a panel with a setup code, registering this machine as a node of its own. */
-  enroll: (panelUrl: string, code: string): Promise<EnrollResult> =>
-    ipcRenderer.invoke('config:enroll', panelUrl, code),
+  enroll: (
+    panelUrl: string,
+    code: string,
+    limits?: { memoryMb?: number; cpuCores?: number }
+  ): Promise<EnrollResult> => ipcRenderer.invoke('config:enroll', panelUrl, code, limits),
+  /** Marks the first-run wizard finished, so it does not reappear. */
+  completeSetup: (): Promise<NodeConfig> => ipcRenderer.invoke('config:complete-setup'),
   importConfig: (): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }> =>
     ipcRenderer.invoke('config:import'),
 
@@ -33,6 +38,14 @@ const api = {
 
   checkDocker: (): Promise<DockerStatus> => ipcRenderer.invoke('docker:check'),
   openDockerDownload: (): Promise<void> => ipcRenderer.invoke('docker:download'),
+  /** Launches Docker Desktop and resolves once the engine answers, or the wait runs out. */
+  startDocker: (): Promise<DockerStatus> => ipcRenderer.invoke('docker:start'),
+  /** Sets Docker's own "start when you sign in", so a rebooted machine needs nobody. */
+  configureDockerAutoStart: (): Promise<{ ok: boolean; changed: boolean; detail: string }> =>
+    ipcRenderer.invoke('docker:configure-autostart'),
+  onDockerStatus: (cb: (s: DockerStatus) => void): void => {
+    ipcRenderer.on('docker:status', (_e, s: DockerStatus) => cb(s));
+  },
 
   setAutoStart: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke('app:set-auto-start', enabled),
   openDataDir: (): Promise<void> => ipcRenderer.invoke('app:open-data-dir'),

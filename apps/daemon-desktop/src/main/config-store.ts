@@ -69,6 +69,15 @@ export class ConfigStore {
       // in here — it may still be registered by hand, which the app cannot know about.
       panelUrl: typeof raw.panelUrl === 'string' ? raw.panelUrl : '',
       nodeName: typeof raw.nodeName === 'string' ? raw.nodeName : '',
+      // Default on. Every server is a container, so an installed node that comes up without
+      // Docker is a node that cannot do the one thing it exists for.
+      startDockerWithApp: raw.startDockerWithApp !== false,
+      /*
+       * Absent on a fresh install, which is what opens the wizard. Also treated as done
+       * when the node has already joined a panel, so an app that upgraded into this
+       * version does not greet an established node with a setup it finished long ago.
+       */
+      setupCompleted: raw.setupCompleted === true || typeof raw.panelUrl === 'string' && !!raw.panelUrl,
       frpServerAddr: typeof raw.frpServerAddr === 'string' ? raw.frpServerAddr : '',
       frpServerPort: typeof raw.frpServerPort === 'number' ? raw.frpServerPort : 7000,
       frpToken: typeof raw.frpToken === 'string' ? raw.frpToken : '',

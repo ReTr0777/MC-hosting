@@ -7,7 +7,7 @@
  */
 
 type DaemonState = 'stopped' | 'starting' | 'running' | 'crashed';
-type DockerState = 'ok' | 'not-running' | 'not-installed' | 'checking';
+type DockerState = 'ok' | 'not-running' | 'not-installed' | 'checking' | 'starting';
 
 interface DaemonStatus {
   state: DaemonState;
@@ -22,6 +22,8 @@ interface UpdateStatus { state: UpdateState; version: string | null; percent: nu
 interface NodeConfig {
   port: number;
   apiKey: string;
+  startDockerWithApp: boolean;
+  setupCompleted: boolean;
   /** The panel this node joined with a setup code; empty when it never did. */
   panelUrl: string;
   nodeName: string;
@@ -35,6 +37,8 @@ interface NodeConfig {
 }
 interface AppInfo {
   version: string;
+  machineMemoryMb: number;
+  machineCpuCores: number;
   dataRoot: string;
   addresses: string[];
   hostname: string;
@@ -54,7 +58,12 @@ interface NodeApi {
   readConfig(): Promise<NodeConfig>;
   writeConfig(patch: Partial<NodeConfig>): Promise<NodeConfig>;
   regenerateApiKey(): Promise<string>;
-  enroll(panelUrl: string, code: string): Promise<EnrollResult>;
+  enroll(
+    panelUrl: string,
+    code: string,
+    limits?: { memoryMb?: number; cpuCores?: number }
+  ): Promise<EnrollResult>;
+  completeSetup(): Promise<NodeConfig>;
   importConfig(): Promise<{ imported: boolean; nodeName?: string | null; panelUrl?: string | null }>;
   getStatus(): Promise<DaemonStatus>;
   getLogs(): Promise<LogLine[]>;
@@ -68,6 +77,9 @@ interface NodeApi {
   onUpdateStatus(cb: (s: UpdateStatus) => void): void;
   checkDocker(): Promise<DockerStatus>;
   openDockerDownload(): Promise<void>;
+  startDocker(): Promise<DockerStatus>;
+  configureDockerAutoStart(): Promise<{ ok: boolean; changed: boolean; detail: string }>;
+  onDockerStatus(cb: (s: DockerStatus) => void): void;
   setAutoStart(enabled: boolean): Promise<boolean>;
   openDataDir(): Promise<void>;
   openLogFile(): Promise<void>;
@@ -92,6 +104,16 @@ let info: AppInfo;
 let daemonStatus: DaemonStatus;
 
 /* ---------- helpers ---------- */
+
+/**
+ * The sentence the main process threw, without Electron's wrapper around it.
+ *
+ * Every handler here raises text meant to be read by whoever is at the keyboard; the IPC
+ * layer prefixes it with the channel name, which is noise to them and detail to us.
+ */
+function stripIpcPrefix(message: string): string {
+  return message.replace(/^Error invoking remote method '[^']+':\s*Error:\s*/, '');
+}
 
 function toast(message: string): void {
   const el = $('toast');
@@ -151,22 +173,52 @@ function renderAddress(): void {
 
 /* ---------- docker ---------- */
 
-async function refreshDocker(): Promise<void> {
-  const badge = $('docker-badge');
-  badge.textContent = 'Checking…';
-  badge.dataset.state = 'checking';
+const DOCKER_LABELS: Record<DockerState, string> = {
+  ok: 'Running',
+  'not-running': 'Not running',
+  'not-installed': 'Not installed',
+  checking: 'Checking…',
+  starting: 'Starting…',
+};
 
-  const d = await api.checkDocker();
-  const labels: Record<DockerState, string> = {
-    ok: 'Running',
-    'not-running': 'Not running',
-    'not-installed': 'Not installed',
-    checking: 'Checking…',
-  };
-  badge.textContent = labels[d.state];
-  badge.dataset.state = d.state;
-  $('docker-detail').textContent = d.detail;
-  $('btn-docker-download').classList.toggle('hidden', d.state !== 'not-installed');
+/**
+ * Paints Docker's state wherever it is shown.
+ *
+ * Both the Overview card and the wizard's copy of it, because the engine can take minutes
+ * to come up and the two must not disagree about what is happening while it does. Called
+ * from the poll and from the main process's own progress events alike.
+ */
+function renderDocker(d: DockerStatus): void {
+  for (const [badgeId, detailId] of [
+    ['docker-badge', 'docker-detail'],
+    ['wiz-docker-badge', 'wiz-docker-detail'],
+  ] as const) {
+    const badge = document.getElementById(badgeId);
+    const detail = document.getElementById(detailId);
+    if (!badge || !detail) continue;
+    badge.textContent = DOCKER_LABELS[d.state];
+    badge.dataset.state = d.state;
+    detail.textContent = d.detail;
+  }
+
+  const installed = d.state !== 'not-installed';
+  // Starting it again while it is starting achieves nothing but confusion.
+  const offerStart = d.state === 'not-running';
+  $('btn-docker-download').classList.toggle('hidden', installed);
+  $('btn-docker-start').classList.toggle('hidden', !offerStart);
+  $('wiz-docker-download').classList.toggle('hidden', installed);
+  $('wiz-docker-start').classList.toggle('hidden', !offerStart);
+}
+
+async function refreshDocker(): Promise<void> {
+  renderDocker({ state: 'checking', version: null, detail: 'Checking for Docker Desktop…' });
+  renderDocker(await api.checkDocker());
+}
+
+/** Launches Docker and keeps the UI honest for however long the engine takes. */
+async function startDocker(): Promise<void> {
+  renderDocker({ state: 'starting', version: null, detail: 'Starting Docker Desktop…' });
+  renderDocker(await api.startDocker());
 }
 
 /* ---------- updates ---------- */
@@ -288,6 +340,178 @@ async function saveGames(): Promise<void> {
   }
 }
 
+/* ---------- first-run wizard ---------- */
+
+/*
+ * Four steps, in the order a node actually needs them: Docker, what to host, how much of
+ * the machine to give away, and which panel to join. Enrolling is last because it is the
+ * only one that cannot be undone from in here — the code is spent once it is used.
+ */
+const WIZARD_STEPS = 4;
+let wizardStep = 1;
+/** Set once enrollment succeeds, so the last step turns into a summary rather than a retry. */
+let wizardJoined = false;
+
+function renderWizard(): void {
+  $('wizard-step-label').textContent = `Step ${wizardStep} of ${WIZARD_STEPS}`;
+  document.querySelectorAll<HTMLElement>('.wizard-step').forEach((el) => {
+    el.classList.toggle('hidden', Number(el.dataset.step) !== wizardStep);
+  });
+
+  ($('wiz-back') as HTMLButtonElement).disabled = wizardStep === 1;
+  const next = $('wiz-next') as HTMLButtonElement;
+  next.textContent = wizardStep < WIZARD_STEPS ? 'Next' : wizardJoined ? 'Finish' : 'Connect';
+}
+
+/** Game toggles, built from whatever games this build knows about. */
+function renderWizardGames(): void {
+  const row = $('wiz-games');
+  row.textContent = '';
+  for (const game of info.availableGames) {
+    const label = document.createElement('label');
+    label.className = 'check inline';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = game.id;
+    box.checked = config.enabledGames.includes(game.id);
+    const text = document.createElement('span');
+    text.textContent = game.label;
+    label.append(box, text);
+    row.appendChild(label);
+  }
+}
+
+function openWizard(): void {
+  wizardStep = 1;
+  wizardJoined = false;
+
+  renderWizardGames();
+
+  /*
+   * Suggested limits, not the whole machine.
+   *
+   * Three quarters of the RAM and one core held back: this is somebody's PC as well as a
+   * node, and a node registered at its full size is one the panel will fill until Windows
+   * starts swapping. Both are only defaults — the fields are there to be argued with.
+   */
+  const suggestedMemory = Math.max(512, Math.floor((info.machineMemoryMb * 0.75) / 512) * 512);
+  const suggestedCores = Math.max(1, info.machineCpuCores - 1);
+  $<HTMLInputElement>('wiz-memory').value = String(suggestedMemory);
+  $<HTMLInputElement>('wiz-cores').value = String(suggestedCores);
+  $('wiz-memory-hint').textContent = `This machine has ${(info.machineMemoryMb / 1024).toFixed(1)} GB.`;
+  $('wiz-cores-hint').textContent = `This machine has ${info.machineCpuCores} cores.`;
+
+  $<HTMLInputElement>('wiz-chk-docker').checked = config.startDockerWithApp;
+  $<HTMLInputElement>('wiz-chk-autostart').checked = true;
+
+  $('wizard').classList.remove('hidden');
+  renderWizard();
+  void refreshDocker();
+}
+
+async function closeWizard(): Promise<void> {
+  $('wizard').classList.add('hidden');
+  config = await api.completeSetup();
+  renderConfig();
+}
+
+/** Applies the choices made on the step being left, so Back never loses them. */
+async function commitWizardStep(step: number): Promise<void> {
+  if (step === 1) {
+    const withApp = $<HTMLInputElement>('wiz-chk-docker').checked;
+    config = await api.writeConfig({ startDockerWithApp: withApp });
+
+    if ($<HTMLInputElement>('wiz-chk-docker-login').checked) {
+      // Docker's own setting, which is the half that survives this app being closed.
+      const result = await api.configureDockerAutoStart();
+      if (!result.ok) toast(result.detail);
+    }
+  }
+
+  if (step === 2) {
+    const picked = Array.from($('wiz-games').querySelectorAll<HTMLInputElement>('input:checked')).map(
+      (b) => b.value
+    );
+    // writeConfig refuses an empty list, and rightly: a node hosting nothing is invisible
+    // to the panel. Keep whatever was already set rather than failing the step.
+    if (picked.length > 0) config = await api.writeConfig({ enabledGames: picked });
+  }
+}
+
+/** The last step: join the panel with the code, using the limits chosen on step 3. */
+async function wizardEnroll(): Promise<void> {
+  const next = $('wiz-next') as HTMLButtonElement;
+  const error = $('wiz-error');
+  const success = $('wiz-success');
+  error.classList.add('hidden');
+
+  const code = $<HTMLInputElement>('wiz-code').value;
+  if (!code.trim()) {
+    error.textContent = 'Enter the setup code from the panel, or skip setup and do it later.';
+    error.classList.remove('hidden');
+    return;
+  }
+
+  next.disabled = true;
+  next.textContent = 'Connecting…';
+  try {
+    const enrolled = await api.enroll($<HTMLInputElement>('wiz-panel-url').value, code, {
+      memoryMb: Number($<HTMLInputElement>('wiz-memory').value),
+      cpuCores: Number($<HTMLInputElement>('wiz-cores').value),
+    });
+
+    if ($<HTMLInputElement>('wiz-chk-autostart').checked) {
+      const applied = await api.setAutoStart(true);
+      $<HTMLInputElement>('chk-autostart').checked = applied;
+      if (!applied) toast('Windows would not accept the start-at-sign-in setting.');
+    }
+
+    config = await api.readConfig();
+    renderConfig();
+    wizardJoined = true;
+    success.textContent =
+      `Connected as "${enrolled.node.name}" — the panel reaches it at ` +
+      `${enrolled.node.host}:${enrolled.node.port}. This machine is ready to host.`;
+    success.classList.remove('hidden');
+    $<HTMLInputElement>('wiz-code').value = '';
+  } catch (err) {
+    error.textContent = stripIpcPrefix((err as Error).message);
+    error.classList.remove('hidden');
+  } finally {
+    next.disabled = false;
+    renderWizard();
+  }
+}
+
+function wireWizard(): void {
+  $('wiz-next').addEventListener('click', async () => {
+    if (wizardStep < WIZARD_STEPS) {
+      await commitWizardStep(wizardStep);
+      wizardStep++;
+      renderWizard();
+      return;
+    }
+    // Last step: connect, and then the same button finishes.
+    if (wizardJoined) return closeWizard();
+    await wizardEnroll();
+  });
+
+  $('wiz-back').addEventListener('click', () => {
+    if (wizardStep > 1) wizardStep--;
+    renderWizard();
+  });
+
+  // Skipping is legitimate: an admin may be registering this node by hand, and the
+  // Connection tab does everything the wizard does.
+  $('wiz-skip').addEventListener('click', () => {
+    void commitWizardStep(wizardStep).finally(closeWizard);
+  });
+
+  $('wiz-docker-start').addEventListener('click', startDocker);
+  $('wiz-docker-recheck').addEventListener('click', refreshDocker);
+  $('wiz-docker-download').addEventListener('click', () => api.openDockerDownload());
+}
+
 /* ---------- wiring ---------- */
 
 function wire(): void {
@@ -306,6 +530,21 @@ function wire(): void {
 
   $('btn-docker-recheck').addEventListener('click', refreshDocker);
   $('btn-docker-download').addEventListener('click', () => api.openDockerDownload());
+  $('btn-docker-start').addEventListener('click', startDocker);
+
+  $('chk-docker-autostart').addEventListener('change', async (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    config = await api.writeConfig({ startDockerWithApp: on });
+    toast(on ? 'Docker will start with this app.' : 'Docker will not be started automatically.');
+  });
+
+  $('btn-docker-login').addEventListener('click', async () => {
+    const result = await api.configureDockerAutoStart();
+    $('docker-login-detail').textContent = result.detail;
+    toast(result.ok ? 'Docker set to start at sign-in.' : 'Docker could not be configured.');
+  });
+
+  wireWizard();
 
   document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -335,7 +574,7 @@ function wire(): void {
       );
     } catch (err) {
       // The main process throws a sentence meant for the user; show it verbatim.
-      toast((err as Error).message.replace(/^Error invoking remote method '[^']+':\s*Error:\s*/, ''));
+      toast(stripIpcPrefix((err as Error).message));
     }
   });
 
@@ -379,10 +618,7 @@ function wire(): void {
       toast(`Joined ${enrolled.panelUrl} as "${enrolled.node.name}".`);
     } catch (err) {
       // The main process throws a sentence meant for the user; Electron wraps it.
-      error.textContent = (err as Error).message.replace(
-        /^Error invoking remote method '[^']+':\s*Error:\s*/,
-        ''
-      );
+      error.textContent = stripIpcPrefix((err as Error).message);
       error.classList.remove('hidden');
     } finally {
       button.disabled = false;
@@ -445,6 +681,9 @@ function wire(): void {
   $('btn-open-log').addEventListener('click', () => api.openLogFile());
   $('btn-clear-logs').addEventListener('click', () => api.clearLogs());
 
+  // Docker progress is pushed as well as polled: a launch takes minutes, and the app must
+  // not sit on "Not running" for the whole of it.
+  api.onDockerStatus(renderDocker);
   api.onStatus(renderStatus);
   api.onUpdateStatus(renderUpdate);
   api.onLog(appendLog);
@@ -459,13 +698,21 @@ async function init(): Promise<void> {
   $('host-line').textContent = `${info.hostname} · v${info.version}`;
   $('fact-datadir').textContent = info.dataRoot;
   $<HTMLInputElement>('chk-autostart').checked = info.autoStart;
+  $<HTMLInputElement>('chk-docker-autostart').checked = config.startDockerWithApp;
 
   wire();
   renderConfig();
   renderStatus(daemonStatus);
   renderUpdate(await api.getUpdateStatus());
   for (const line of await api.getLogs()) appendLog(line);
-  await refreshDocker();
+
+  /*
+   * A machine that has never been set up gets the wizard instead of four tabs of settings
+   * it has no way to rank. It opens the setup itself, so refreshDocker below is left to
+   * the wizard — starting two probes at once only makes the badge flicker.
+   */
+  if (!config.setupCompleted) openWizard();
+  else await refreshDocker();
 
   // Uptime is derived from a start timestamp, so it only advances if we re-render.
   window.setInterval(async () => renderStatus(await api.getStatus()), 1000);

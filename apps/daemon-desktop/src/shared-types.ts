@@ -13,7 +13,7 @@ export interface DaemonStatus {
   uptimeMs: number | null;
 }
 
-export type DockerState = 'ok' | 'not-running' | 'not-installed' | 'checking';
+export type DockerState = 'ok' | 'not-running' | 'not-installed' | 'checking' | 'starting';
 
 export interface DockerStatus {
   state: DockerState;
@@ -25,6 +25,10 @@ export interface DockerStatus {
 export interface NodeConfig {
   port: number;
   apiKey: string;
+  /** Launch Docker Desktop when this app starts. On by default: a node without it hosts nothing. */
+  startDockerWithApp: boolean;
+  /** Set once the first-run wizard has been through. Its absence is what opens the wizard. */
+  setupCompleted: boolean;
   /** The panel this node has joined, when it joined one with a setup code. */
   panelUrl: string;
   /** What that panel calls this node, so the app can say more than "connected". */
@@ -47,6 +51,7 @@ export interface EnrollSubmission {
   /** Addresses the panel might reach this machine on directly, best first. */
   addresses: string[];
   enabledGames: string[];
+  /** How much of the machine it may hand out to servers — not necessarily all of it. */
   memoryMb: number;
   cpuCores: number;
   agentVersion: string;
@@ -68,6 +73,9 @@ export interface EnrollResult {
 
 export interface AppInfo {
   version: string;
+  /** What this machine has, so the wizard can suggest what to hand out rather than ask blind. */
+  machineMemoryMb: number;
+  machineCpuCores: number;
   /** Where config.json and the server data directory live. */
   dataRoot: string;
   /** LAN addresses the panel can reach this node on. */

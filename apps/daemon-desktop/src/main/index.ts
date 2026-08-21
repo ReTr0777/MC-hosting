@@ -4,11 +4,18 @@ import os from 'os';
 import fs from 'fs';
 import { ConfigStore } from './config-store';
 import { DaemonProcess } from './daemon-process';
-import { checkDocker, DOCKER_DOWNLOAD_URL } from './docker';
+import {
+  checkDocker,
+  dockerDesktopPath,
+  DOCKER_DOWNLOAD_URL,
+  startDockerDesktop,
+  waitForDockerEngine,
+} from './docker';
+import { configureDockerAutoStart } from './docker-settings';
 import { FileLogger } from './logger';
 import { initAutoUpdates, type UpdaterControls } from './updater';
 import { enrollWithPanel, normalisePanelUrl } from './enroll';
-import type { AppInfo, DaemonStatus, EnrollResult, NodeConfig, UpdateStatus } from '../shared-types';
+import type { AppInfo, DaemonStatus, DockerStatus, EnrollResult, NodeConfig, UpdateStatus } from '../shared-types';
 
 /*
  * Bootstrap trace, written before anything else can fail.
@@ -95,15 +102,61 @@ function lanAddresses(): string[] {
   return out;
 }
 
+/*
+ * The login item, described the same way every time it is read or written.
+ *
+ * Windows matches the registry entry on the executable path *and* its arguments. Setting
+ * it with `--hidden` and then reading it back without saying so compares against a
+ * different entry, finds nothing, and reports openAtLogin: false — so the checkbox turned
+ * itself straight back off while the node did in fact start at the next sign-in. Both
+ * calls have to describe the same item.
+ */
+const LOGIN_ITEM = { path: process.execPath, args: ['--hidden'] };
+
+function autoStartEnabled(): boolean {
+  return app.getLoginItemSettings(LOGIN_ITEM).openAtLogin;
+}
+
 function appInfo(): AppInfo {
   return {
     version: app.getVersion(),
+    machineMemoryMb: Math.round(os.totalmem() / (1024 * 1024)),
+    machineCpuCores: os.cpus().length,
     dataRoot: store.dataRoot,
     addresses: lanAddresses(),
     hostname: os.hostname(),
-    autoStart: app.getLoginItemSettings().openAtLogin,
+    autoStart: autoStartEnabled(),
     availableGames: Object.entries(GAME_LABELS).map(([id, label]) => ({ id, label })),
   };
+}
+
+/**
+ * Brings Docker up and reports progress to the window, if one is open.
+ *
+ * Nothing here blocks: a node whose Docker takes three minutes to boot should still show
+ * its own state, its logs and its settings in the meantime.
+ */
+async function ensureDockerRunning(reason: string): Promise<DockerStatus> {
+  const current = await checkDocker();
+  if (current.state === 'ok') return current;
+
+  if (!dockerDesktopPath()) {
+    log.write('docker', `${reason}: Docker Desktop is not installed`);
+    return current;
+  }
+
+  log.write('docker', `${reason}: starting Docker Desktop`);
+  const launch = startDockerDesktop();
+  send('docker:status', { state: launch.started ? 'starting' : current.state, version: null, detail: launch.detail });
+  if (!launch.started) {
+    log.write('docker', launch.detail);
+    return current;
+  }
+
+  const settled = await waitForDockerEngine((status) => send('docker:status', status));
+  log.write('docker', settled.state === 'ok' ? `engine up: ${settled.version}` : settled.detail);
+  send('docker:status', settled);
+  return settled;
 }
 
 function send(channel: string, payload: unknown): void {
@@ -246,6 +299,7 @@ function registerIpc(): void {
     if (typeof patch.frpApiRemotePort === 'number') {
       clean.frpApiRemotePort = patch.frpApiRemotePort > 0 ? patch.frpApiRemotePort : 0;
     }
+    if (typeof patch.startDockerWithApp === 'boolean') clean.startDockerWithApp = patch.startDockerWithApp;
     // An empty list would make the node invisible to the panel's picker, with no
     // obvious way to recover from inside the app. Refuse instead of silently fixing.
     if (Array.isArray(patch.enabledGames)) {
@@ -282,7 +336,12 @@ function registerIpc(): void {
    * directly it has registered the node at a tunnel address, and that address only starts
    * answering once the agent comes back up with the new settings.
    */
-  ipcMain.handle('config:enroll', async (_e, panelUrlRaw: string, code: string): Promise<EnrollResult> => {
+  ipcMain.handle('config:enroll', async (
+    _e,
+    panelUrlRaw: string,
+    code: string,
+    limits?: { memoryMb?: number; cpuCores?: number }
+  ): Promise<EnrollResult> => {
     const panel = normalisePanelUrl(panelUrlRaw);
     if (!panel.ok) throw new Error(panel.error);
 
@@ -299,8 +358,14 @@ function registerIpc(): void {
       hostname: os.hostname(),
       addresses: lanAddresses(),
       enabledGames: config.enabledGames,
-      memoryMb: Math.round(os.totalmem() / (1024 * 1024)),
-      cpuCores: os.cpus().length,
+      /*
+       * What this machine may hand out, which is not the same as what it has. The wizard
+       * asks, because a PC that is also somebody's desktop cannot give every gigabyte to
+       * game servers — and a node registered at its full size is one the panel will
+       * cheerfully fill until Windows starts swapping.
+       */
+      memoryMb: Math.round(limits?.memoryMb || os.totalmem() / (1024 * 1024)),
+      cpuCores: Math.round(limits?.cpuCores || os.cpus().length),
       agentVersion: app.getVersion(),
     });
 
@@ -348,10 +413,25 @@ function registerIpc(): void {
   ipcMain.handle('update:install', () => updater?.installPending());
   ipcMain.handle('docker:check', () => checkDocker());
   ipcMain.handle('docker:download', () => shell.openExternal(DOCKER_DOWNLOAD_URL));
+  ipcMain.handle('docker:start', () => ensureDockerRunning('asked from the window'));
+  ipcMain.handle('docker:configure-autostart', async () => {
+    const status = await checkDocker();
+    return configureDockerAutoStart(status.state === 'ok');
+  });
 
   ipcMain.handle('app:set-auto-start', (_e, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] });
-    return app.getLoginItemSettings().openAtLogin;
+    app.setLoginItemSettings({ ...LOGIN_ITEM, openAtLogin: enabled });
+    const applied = autoStartEnabled();
+    log.write('app', `start at sign-in ${enabled ? 'enabled' : 'disabled'} (now ${applied})`);
+    return applied;
+  });
+
+  // The wizard is done with; nothing reopens it. Stored rather than inferred so that a
+  // node deliberately left unenrolled — one an admin will register by hand — is not asked
+  // to go through setup again on every launch.
+  ipcMain.handle('config:complete-setup', () => {
+    store.write({ setupCompleted: true });
+    return store.read();
   });
 
   ipcMain.handle('app:open-data-dir', () => shell.openPath(store.dataRoot));
@@ -395,6 +475,18 @@ app.whenReady().then(async () => {
   // The node exists to be online, so start the agent straight away. Docker not being
   // ready is surfaced in the UI rather than blocking the attempt.
   daemon.start();
+
+  /*
+   * Bring Docker up too, unless told not to.
+   *
+   * The agent starting is only half of a working node: every server is a container, and a
+   * machine that reboots overnight comes back with the node online and every world
+   * refusing to start. Not awaited — Docker takes minutes to boot and none of the rest of
+   * the app should wait on it.
+   */
+  if (store.read().startDockerWithApp) {
+    void ensureDockerRunning('startup').catch((err: Error) => log.write('docker', `startup: ${err.message}`));
+  }
 
   // Unpackaged builds have no installer to compare against, so a check would only
   // ever log an error.

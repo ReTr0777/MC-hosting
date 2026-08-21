@@ -41,7 +41,16 @@
           <p class="muted" id="docker-detail">Checking for Docker Desktop…</p>
           <div class="row">
             <button id="btn-docker-recheck" class="btn small">Check again</button>
+            <button id="btn-docker-start" class="btn small primary hidden">Start Docker</button>
             <button id="btn-docker-download" class="btn small hidden">Get Docker Desktop</button>
+          </div>
+          <label class="check inline spaced">
+            <input type="checkbox" id="chk-docker-autostart" />
+            <span>Start Docker Desktop when this app starts</span>
+          </label>
+          <div class="row spaced-tight">
+            <button id="btn-docker-login" class="btn small">Also start Docker at sign-in</button>
+            <span class="muted" id="docker-login-detail"></span>
           </div>
         </div>
 
@@ -209,6 +218,104 @@
         </div>
       </section>
     </main>
+
+    <!--
+      First-run setup.
+
+      Everything a new node needs, in the order it needs it, so that installing the exe is
+      the only step anybody has to work out for themselves. Hidden outright once done —
+      see setupCompleted in config.json.
+    -->
+    <div id="wizard" class="wizard hidden">
+      <div class="wizard-panel" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+        <div class="wizard-head">
+          <h2 id="wizard-title">Set up this machine</h2>
+          <span class="muted" id="wizard-step-label">Step 1 of 4</span>
+        </div>
+
+        <!-- 1: Docker -->
+        <section class="wizard-step" data-step="1">
+          <p class="muted">
+            Every server this machine hosts runs in a Docker container, so Docker Desktop has to
+            be installed and running. This app can start it for you from now on.
+          </p>
+          <div class="card">
+            <div class="card-head">
+              <h3>Docker</h3>
+              <span class="badge" id="wiz-docker-badge">Checking…</span>
+            </div>
+            <p class="muted" id="wiz-docker-detail">Checking…</p>
+            <div class="row">
+              <button id="wiz-docker-start" class="btn small primary hidden">Start Docker</button>
+              <button id="wiz-docker-download" class="btn small hidden">Get Docker Desktop</button>
+              <button id="wiz-docker-recheck" class="btn small">Check again</button>
+            </div>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="wiz-chk-docker" checked />
+            <span>Start Docker Desktop whenever this app starts</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="wiz-chk-docker-login" checked />
+            <span>Set Docker to start at sign-in too, with its window closed</span>
+          </label>
+        </section>
+
+        <!-- 2: Games -->
+        <section class="wizard-step hidden" data-step="2">
+          <p class="muted">Which games should this machine be offered for?</p>
+          <div class="row" id="wiz-games"></div>
+          <p class="muted">You can change this later on the Connection tab.</p>
+        </section>
+
+        <!-- 3: Limits -->
+        <section class="wizard-step hidden" data-step="3">
+          <p class="muted">
+            How much of this machine may go to game servers? Leave headroom if you use this PC
+            for anything else — the panel will fill up to whatever you set here.
+          </p>
+          <label class="field">
+            <span>Memory for servers (MB)</span>
+            <input id="wiz-memory" type="number" min="512" step="512" />
+            <small class="muted" id="wiz-memory-hint"></small>
+          </label>
+          <label class="field">
+            <span>CPU cores for servers</span>
+            <input id="wiz-cores" type="number" min="1" step="1" />
+            <small class="muted" id="wiz-cores-hint"></small>
+          </label>
+        </section>
+
+        <!-- 4: Join a panel -->
+        <section class="wizard-step hidden" data-step="4">
+          <p class="muted">
+            In the panel, open the Nodes rail and choose <strong>Connect a machine of your own</strong>.
+            Put the code it gives you here.
+          </p>
+          <label class="field">
+            <span>Panel address</span>
+            <input id="wiz-panel-url" placeholder="e.g. panel.example.com" />
+          </label>
+          <label class="field">
+            <span>Setup code</span>
+            <input id="wiz-code" class="mono" placeholder="ABCD-2345" maxlength="9" />
+          </label>
+          <label class="check">
+            <input type="checkbox" id="wiz-chk-autostart" checked />
+            <span>Start this node when I sign in to Windows</span>
+          </label>
+          <p class="error hidden" id="wiz-error"></p>
+          <p class="muted hidden" id="wiz-success"></p>
+        </section>
+
+        <div class="wizard-foot">
+          <button id="wiz-skip" class="btn small">Skip setup</button>
+          <span class="spacer"></span>
+          <button id="wiz-back" class="btn small">Back</button>
+          <button id="wiz-next" class="btn small primary">Next</button>
+        </div>
+      </div>
+    </div>
 
     <div id="toast" class="toast hidden"></div>
     <script src="renderer.js"></script>
