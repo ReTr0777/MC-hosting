@@ -141,7 +141,15 @@ What happens in between is the part worth knowing about:
   or a forwarded port — the node is registered at that address and no tunnel is involved.
 - Otherwise it allocates a port on the installation's frps and returns the tunnel settings.
   The node writes them, restarts, and is reachable at `frps:<allocated port>`. This is the
-  normal case for a home PC behind NAT, and it needs no port forwarding.
+  normal case for a home PC behind NAT, and it needs no port forwarding on the node's side.
+
+  **The tunnel server must publish that range.** frps accepts a proxy on any port it is
+  asked for and listens for it inside its own container, so a port Docker was never told to
+  publish is unreachable from where the panel dials it — and the node then sits offline
+  with a tunnel that looks healthy from every angle except the one that matters. The range
+  is `NODE_TUNNEL_PORT_RANGE` (default `25051-25100`, clear of the game servers' own
+  tunnels at `25000-25050`), and the compose files publish it on frps to match. Widening
+  one without the other is the failure this paragraph exists to prevent.
 - With neither route available the node is still registered, offline, at its best guess of
   an address — nothing is lost if the user forwards a port later.
 

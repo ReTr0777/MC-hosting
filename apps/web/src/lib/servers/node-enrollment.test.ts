@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_TUNNEL_API_RANGE,
   ENROLL_TTL_MS,
   TUNNEL_API_PORT_MAX,
   TUNNEL_API_PORT_MIN,
   allocateTunnelPort,
+  parseTunnelPortRange,
   directCandidates,
   enrollmentUsable,
   generateEnrollCode,
@@ -67,6 +69,30 @@ test('tunnel ports come from the reserved range and skip what is taken', () => {
   const everything = [];
   for (let p = TUNNEL_API_PORT_MIN; p <= TUNNEL_API_PORT_MAX; p++) everything.push(p);
   assert.equal(allocateTunnelPort(everything), null, 'exhausted range reports rather than wraps');
+});
+
+test('the default range sits inside what the shipped deployments publish', () => {
+  // frps publishes 25000-25100 in the Unraid template, and the game servers' own tunnels
+  // use 25000-25050. A default outside that band produces a node that registers happily
+  // and is unreachable forever — which is exactly what shipping 26000 did.
+  assert.ok(TUNNEL_API_PORT_MIN > 25050, 'must clear the game tunnel range');
+  assert.ok(TUNNEL_API_PORT_MAX <= 25100, 'must stay inside the published band');
+});
+
+test('a configured range is honoured, and nonsense falls back to the default', () => {
+  assert.deepEqual(parseTunnelPortRange('26000-26100'), { min: 26000, max: 26100 });
+  assert.deepEqual(parseTunnelPortRange('  25200 - 25300 '), { min: 25200, max: 25300 });
+  assert.equal(allocateTunnelPort([], parseTunnelPortRange('30000-30001')), 30000);
+  assert.equal(allocateTunnelPort([30000], parseTunnelPortRange('30000-30001')), 30001);
+  assert.equal(allocateTunnelPort([30000, 30001], parseTunnelPortRange('30000-30001')), null);
+
+  for (const bad of [undefined, null, '', 'nonsense', '25100-25000', '0-10', '70000-70100', '25000']) {
+    assert.deepEqual(
+      parseTunnelPortRange(bad),
+      DEFAULT_TUNNEL_API_RANGE,
+      `${String(bad)} should fall back rather than break enrollment`
+    );
+  }
 });
 
 test('the node name prefers what was asked for, then the hostname', () => {

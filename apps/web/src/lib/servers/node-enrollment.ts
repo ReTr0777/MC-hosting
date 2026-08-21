@@ -27,12 +27,48 @@ export const ENROLL_TTL_MS = 15 * 60_000;
 /**
  * Remote ports frps may hand out for node APIs.
  *
- * Deliberately clear of 24000-25000, which the create-server form draws game ports from.
- * A collision there would point the panel's control channel at somebody's Minecraft
- * server, and the failure would look like a broken node rather than a port clash.
+ * The constraint that matters is not "a free number" — it is that the tunnel server's
+ * container publishes the port on its host. frps will happily accept a proxy on any port
+ * it is asked for and listen inside its own network namespace; if Docker was never told
+ * to publish that port, the panel dials it from outside and reaches nothing. The node then
+ * sits offline forever with a tunnel it believes is up, which is exactly what a hardcoded
+ * 26000-26999 produced against a deployment publishing 25000-25100.
+ *
+ * So the range is configuration, and its default sits inside the band the shipped compose
+ * files and the Unraid template already publish — above 25000-25050, which the game
+ * servers' own tunnels use. Changing it means changing what frps publishes to match.
  */
-export const TUNNEL_API_PORT_MIN = 26000;
-export const TUNNEL_API_PORT_MAX = 26999;
+export const TUNNEL_API_PORT_MIN = 25051;
+export const TUNNEL_API_PORT_MAX = 25100;
+
+export interface PortRange {
+  min: number;
+  max: number;
+}
+
+export const DEFAULT_TUNNEL_API_RANGE: PortRange = {
+  min: TUNNEL_API_PORT_MIN,
+  max: TUNNEL_API_PORT_MAX,
+};
+
+/**
+ * Reads a "start-end" range, falling back to the default for anything unusable.
+ *
+ * Falls back rather than throws: this comes from an environment variable, and a typo in it
+ * must not take enrollment down — a node registered in the default range is a fixable
+ * mistake, a panel that refuses to enroll anything is not obviously one at all.
+ */
+export function parseTunnelPortRange(raw: string | null | undefined): PortRange {
+  const match = /^\s*(\d{1,5})\s*-\s*(\d{1,5})\s*$/.exec(raw ?? '');
+  if (!match) return DEFAULT_TUNNEL_API_RANGE;
+
+  const min = Number(match[1]);
+  const max = Number(match[2]);
+  const sane = (p: number) => Number.isInteger(p) && p > 0 && p < 65536;
+  if (!sane(min) || !sane(max) || max < min) return DEFAULT_TUNNEL_API_RANGE;
+
+  return { min, max };
+}
 
 /** A fresh code, formatted in two groups because eight unbroken characters mis-type. */
 export function generateEnrollCode(): string {
@@ -80,9 +116,12 @@ export function enrollmentUsable(
  * Lowest free port rather than a random one: the allocation is small enough to read at a
  * glance in frps' logs, and a node that re-enrolls tends to get its old port back.
  */
-export function allocateTunnelPort(used: Iterable<number>): number | null {
+export function allocateTunnelPort(
+  used: Iterable<number>,
+  range: PortRange = DEFAULT_TUNNEL_API_RANGE
+): number | null {
   const taken = new Set(used);
-  for (let port = TUNNEL_API_PORT_MIN; port <= TUNNEL_API_PORT_MAX; port++) {
+  for (let port = range.min; port <= range.max; port++) {
     if (!taken.has(port)) return port;
   }
   return null;

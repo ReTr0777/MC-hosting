@@ -606,7 +606,9 @@ function wire(): void {
 
       const how =
         enrolled.reachability === 'tunnel'
-          ? `The panel reaches it through the tunnel at ${enrolled.node.host}:${enrolled.node.port}.`
+          ? `The panel reaches it through the tunnel at ${enrolled.node.host}:${enrolled.node.port}. ` +
+            `If it stays offline, that port has to be published on the tunnel server — nothing else ` +
+            `about the tunnel will look wrong.`
           : enrolled.reachability === 'direct'
             ? `The panel reaches it directly at ${enrolled.node.host}:${enrolled.node.port}.`
             : 'The panel could not reach this machine yet — it is registered at ' +

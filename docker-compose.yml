@@ -39,6 +39,10 @@ services:
       # panel is on the same Docker network and reaches the same server by container
       # name, so it needs its own value. Leave unset to use the public address for both.
       FRP_PANEL_HOST: "mc_frps"
+      # Remote ports frps may publish node APIs on, for a machine the panel cannot reach
+      # directly. Must be a range frps actually publishes on its host, or the node
+      # registers against a port nothing is listening on and never comes online.
+      NODE_TUNNEL_PORT_RANGE: "25051-25100"
       PORT: 3000
     depends_on:
       - db
@@ -74,6 +78,9 @@ services:
     ports:
       - "7000:7000"
       - "25000-25010:25000-25010" # Reduced range for docker compose compatibility/performance
+      # Node APIs tunnelled here — see NODE_TUNNEL_PORT_RANGE on the web service. Published
+      # separately because these carry the panel's control channel, not player traffic.
+      - "25051-25100:25051-25100"
     volumes:
       - ./deploy/frps.toml:/etc/frp/frps.toml
 

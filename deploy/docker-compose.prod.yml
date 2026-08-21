@@ -34,6 +34,10 @@ services:
       # panel is on the same Docker network and reaches the same server by container
       # name, so it needs its own value. Leave unset to use the public address for both.
       FRP_PANEL_HOST: "${FRP_PANEL_HOST:-}"
+      # Remote ports frps may publish node APIs on, for a machine the panel cannot reach
+      # directly. Must be a range frps actually publishes on its host, or the node
+      # registers against a port nothing is listening on and never comes online.
+      NODE_TUNNEL_PORT_RANGE: "${NODE_TUNNEL_PORT_RANGE:-25051-25100}"
       PORT: 3000
 
   daemon:
@@ -78,6 +82,9 @@ services:
     ports:
       - "7000:7000"
       - "${TUNNEL_PORT_RANGE:-25000-25050}:${TUNNEL_PORT_RANGE:-25000-25050}"
+      # The node APIs of self-enrolled machines. frps will accept a proxy on any port it
+      # is asked for; unpublished, the panel dials it from outside and reaches nothing.
+      - "${NODE_TUNNEL_PORT_RANGE:-25051-25100}:${NODE_TUNNEL_PORT_RANGE:-25051-25100}"
     volumes:
       - ./frps.toml:/etc/frp/frps.toml
 

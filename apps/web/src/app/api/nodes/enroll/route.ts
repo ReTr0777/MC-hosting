@@ -13,6 +13,7 @@ import {
   hashEnrollCode,
   nodeNameFrom,
   normaliseEnrollCode,
+  parseTunnelPortRange,
 } from '@/lib/servers/node-enrollment';
 
 export const dynamic = 'force-dynamic';
@@ -198,10 +199,21 @@ export async function POST(req: NextRequest) {
   } else if (tunnelPreset) {
     const frpHost = panelFacingFrpHost(tunnelPreset.serverAddr);
     const used = await prisma.node.findMany({ where: { host: frpHost }, select: { port: true } });
-    const remotePort = allocateTunnelPort(used.map((n) => n.port));
+    /*
+     * The range has to be one the tunnel server actually publishes on its host. frps
+     * accepts a proxy on any port and listens for it inside its own container; a port
+     * Docker was never told to publish is unreachable from where the panel dials it, and
+     * the node stays offline with a tunnel that looks perfectly healthy from its end.
+     */
+    const range = parseTunnelPortRange(process.env.NODE_TUNNEL_PORT_RANGE);
+    const remotePort = allocateTunnelPort(used.map((n) => n.port), range);
     if (remotePort === null) {
       return NextResponse.json(
-        { error: 'The panel has no tunnel ports left to give this node. Ask an administrator.' },
+        {
+          error:
+            `The panel has no tunnel ports left to give this node — ${range.min}-${range.max} are all in use. ` +
+            'Ask an administrator to widen NODE_TUNNEL_PORT_RANGE and publish the wider range on the tunnel server.',
+        },
         { status: 503 }
       );
     }
