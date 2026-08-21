@@ -1,0 +1,24 @@
+name = "craftcontrol-status"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+# Every two minutes. Frequent enough that an outage is visible before anyone asks, and far
+# under the free plan's 100k requests/day — this is roughly 720 runs and 1,440 API calls.
+# Cloudflare's cron scheduler is best-effort, so treat the interval as a floor.
+[triggers]
+crons = ["*/2 * * * *"]
+
+[vars]
+# The panel's public URL — the one players and everyone else actually use. Checking a LAN
+# address instead would skip DNS, Cloudflare and the tunnel, which is most of what breaks.
+HEALTH_URL = "https://panel.example.com/api/health"
+
+# From the Instatus dashboard. Neither is secret: the page id appears in its own URL, and
+# component ids are visible to anyone who reads the public page's API.
+INSTATUS_PAGE_ID = ""
+COMPONENT_PANEL = ""
+# Optional. Leave empty to publish only the panel component.
+COMPONENT_NODES = ""
+
+# INSTATUS_API_KEY is a secret and must NOT go here — wrangler.toml is committed.
+#   npx wrangler secret put INSTATUS_API_KEY
