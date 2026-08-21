@@ -1,0 +1,16 @@
+<!--
+  Instatus → HTML → in-head-tag.html
+
+  The two fonts the panel uses. Without these, custom.css falls back to system-ui and the
+  page is recognisably *not* CraftControl — the fonts do more of that work than the colours.
+
+  preconnect first: the stylesheet request cannot start until the connection to the font
+  host is open, and this page is often loaded on a phone on a bad connection by someone who
+  has just failed to reach a server.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+  rel="stylesheet"
+/>

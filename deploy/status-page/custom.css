@@ -1,0 +1,158 @@
+/*
+ * CraftControl status page — paste into Instatus → HTML → custom.css
+ *
+ * Matches the panel's default "emerald" theme, so someone who lands here from the panel
+ * does not feel like they have been handed off to a third party. The colours are the same
+ * tokens: --bg #0d1117, --surface #161b22, --accent #00d97e, Inter and JetBrains Mono.
+ *
+ * A caveat worth knowing before you debug this: Instatus owns the markup, and class names
+ * on a hosted product can change without warning. Selectors here are deliberately broad —
+ * elements and attribute-contains matches rather than exact hashed classes — but if the
+ * page ever looks half-styled, that is the reason, not anything on your side. Open devtools
+ * on the live page and check what the elements are actually called.
+ */
+
+:root {
+  --cc-bg: #0d1117;
+  --cc-surface: #161b22;
+  --cc-surface-2: #1c2333;
+  --cc-border: #21262d;
+  --cc-border-2: #30363d;
+  --cc-text: #e6edf3;
+  --cc-muted: #8b949e;
+  --cc-accent: #00d97e;
+  --cc-warning: #f0883e;
+  --cc-danger: #f85149;
+  --cc-ui: 'Inter', system-ui, -apple-system, sans-serif;
+  --cc-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+}
+
+/* ── page ──────────────────────────────────────────────────────────────────────────── */
+
+body {
+  background: var(--cc-bg) !important;
+  color: var(--cc-text) !important;
+  font-family: var(--cc-ui) !important;
+  /*
+   * The faint wash the panel's dashboard has behind it. Fixed rather than scrolled so it
+   * does not band on a long incident history.
+   */
+  background-image:
+    radial-gradient(900px 500px at 50% -10%, rgba(0, 217, 126, 0.07), transparent 70%) !important;
+  background-attachment: fixed !important;
+}
+
+h1, h2, h3, h4 {
+  color: var(--cc-text) !important;
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--cc-accent) !important;
+  text-decoration: none;
+}
+a:hover { opacity: 0.85; }
+
+/* ── the big status banner ─────────────────────────────────────────────────────────── */
+
+/*
+ * The line everyone reads and nobody scrolls past. Given the panel's accent and a soft glow
+ * so "all systems operational" is legible from across a room, which is the one time this
+ * page gets looked at in a hurry.
+ */
+[class*='status'] h1,
+[class*='Status'] h1,
+[class*='summary'] h1 {
+  font-weight: 800 !important;
+  text-shadow: 0 0 24px rgba(0, 217, 126, 0.25);
+}
+
+/* ── component rows ────────────────────────────────────────────────────────────────── */
+
+[class*='component'],
+[class*='Component'] {
+  background: var(--cc-surface) !important;
+  border: 1px solid var(--cc-border) !important;
+  border-radius: 10px !important;
+}
+
+/* Component names read as things, not prose — the panel uses mono for the same reason. */
+[class*='component'] [class*='name'],
+[class*='Component'] [class*='name'] {
+  font-family: var(--cc-mono) !important;
+  font-size: 0.875rem !important;
+  letter-spacing: 0.01em;
+}
+
+/* ── uptime bars ───────────────────────────────────────────────────────────────────── */
+
+/*
+ * Instatus renders 90 days as one element per day. Rounding the ends and tightening the gap
+ * makes a long stretch of green read as a bar rather than as a barcode.
+ */
+[class*='bar'] > *,
+[class*='Bar'] > * {
+  border-radius: 2px !important;
+}
+
+/* ── incidents ─────────────────────────────────────────────────────────────────────── */
+
+[class*='incident'],
+[class*='Incident'] {
+  background: var(--cc-surface) !important;
+  border: 1px solid var(--cc-border) !important;
+  border-radius: 10px !important;
+}
+
+/* Timestamps are reference material, not reading material. */
+time,
+[class*='date'],
+[class*='time'] {
+  font-family: var(--cc-mono) !important;
+  font-size: 0.75rem !important;
+  color: var(--cc-muted) !important;
+}
+
+/* ── buttons and the subscribe control ─────────────────────────────────────────────── */
+
+button,
+[class*='button'],
+[class*='Button'] {
+  border-radius: 8px !important;
+  font-family: var(--cc-ui) !important;
+  font-weight: 600 !important;
+}
+
+/* ── footer ────────────────────────────────────────────────────────────────────────── */
+
+footer,
+[class*='footer'],
+[class*='Footer'] {
+  border-top: 1px solid var(--cc-border) !important;
+  color: var(--cc-muted) !important;
+  font-size: 0.75rem !important;
+}
+
+/* ── the link back to the panel (see below-footer.html) ────────────────────────────── */
+
+.cc-backlink {
+  display: block;
+  max-width: 700px;
+  margin: 28px auto 40px;
+  padding: 14px 18px;
+  text-align: center;
+  background: rgba(0, 217, 126, 0.08);
+  border: 1px solid rgba(0, 217, 126, 0.25);
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  color: var(--cc-muted);
+}
+.cc-backlink strong { color: var(--cc-accent); font-weight: 600; }
+
+/* ── small screens ─────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* Most people reading this are on a phone, having just failed to connect to something. */
+  [class*='component'] [class*='name'] { font-size: 0.8125rem !important; }
+  .cc-backlink { margin: 20px 12px 28px; }
+}
