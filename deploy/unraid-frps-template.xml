@@ -3,7 +3,7 @@
   <Name>CraftControl-FRP-Server</Name>
   <Repository>fatedier/frps:v0.58.0</Repository>
   <Registry>https://hub.docker.com/r/fatedier/frps</Registry>
-  <Network>bridge</Network>
+  <Network>host</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
@@ -14,6 +14,28 @@
   <WebUI/>
   <TemplateURL/>
   <Icon>https://raw.githubusercontent.com/fatedier/frp/dev/assets/frps/static/favicon.ico</Icon>
+  <!--
+    Host networking, deliberately.
+
+    frps needs whole ranges - the game servers' tunnels and, above them, the node APIs of
+    enrolled machines - and an Unraid template cannot express a range: a Port config maps
+    one port each, so a "range start" and a "range end" entry publish exactly those two
+    numbers and nothing between them. Every node allocated a port in the gap then gets a
+    tunnel frps accepts, listens for inside its own namespace, and that nothing outside can
+    dial. On host networking there is nothing to publish and nothing to keep in step.
+
+    What still has to be right is the router, and only for the panel's own network:
+
+      7000         forwarded, so nodes can dial in.
+      24000-25000  usually NOT forwarded. A server with a subdomain is reached through the
+                   Velocity proxy on 25565, and the proxy dials the backend from this same
+                   host. Only a server with no subdomain needs its port reachable from
+                   outside, because a direct connection is then the only way in.
+      25051-25100  never forwarded. These are node APIs, dialled only by the web panel from
+                   this same host. Match this range to NODE_TUNNEL_PORT_RANGE on the panel.
+
+    A node needs nothing open on its own network at all: frpc dials out to 7000.
+  -->
   <ExtraParams/>
   <PostArgs>-c /etc/frp/frps.toml</PostArgs>
   <CPUset/>
@@ -22,13 +44,10 @@
   <DonateLink/>
   <Requires/>
 
-  <!-- FRP Bind Port -->
-  <Config Name="FRP Bind Port" Target="7000" Default="7000" Mode="tcp" Description="FRP control port for daemon node connections" Type="Port" Display="always" Required="true" Mask="false">7000</Config>
-
-  <!-- Minecraft Tunnel Port Range -->
-  <Config Name="MC Tunnel Port Range Start" Target="25000" Default="25000" Mode="tcp" Description="Start of the port range for tunneled Minecraft servers" Type="Port" Display="always" Required="true" Mask="false">25000</Config>
-
-  <Config Name="MC Tunnel Port Range End" Target="25100" Default="25100" Mode="tcp" Description="End of the port range for tunneled Minecraft servers (supports up to 100 servers)" Type="Port" Display="always" Required="true" Mask="false">25100</Config>
+  <!--
+    No Port configs: on host networking Unraid's port mappings do nothing. frps binds
+    bindPort from frps.toml (7000) directly on the host.
+  -->
 
   <!-- FRP Config File Mount -->
   <Config Name="FRP Config File" Target="/etc/frp/frps.toml" Default="/mnt/user/appdata/craftcontrol-frps/frps.toml" Mode="rw" Description="Path to your frps.toml configuration file on the host" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/craftcontrol-frps/frps.toml</Config>

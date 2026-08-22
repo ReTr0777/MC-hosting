@@ -72,8 +72,8 @@ test('tunnel ports come from the reserved range and skip what is taken', () => {
 });
 
 test('the default range sits inside what the shipped deployments publish', () => {
-  // frps publishes 25000-25100 in the Unraid template, and the game servers' own tunnels
-  // use 25000-25050. A default outside that band produces a node that registers happily
+  // The game servers' own tunnels are allocated from 24000 upward, through 25000. A default
+  // that collided with those, or that frps did not publish, produces a node that registers happily
   // and is unreachable forever — which is exactly what shipping 26000 did.
   assert.ok(TUNNEL_API_PORT_MIN > 25050, 'must clear the game tunnel range');
   assert.ok(TUNNEL_API_PORT_MAX <= 25100, 'must stay inside the published band');

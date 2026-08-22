@@ -134,24 +134,32 @@ refused direct address is a firewall, a refused tunnel address is a port the tun
 is not publishing. Those need different fixes, and nothing else in the system distinguishes
 them.
 
-### Windows Firewall decides whether any of this works
+### Nodes need nothing open on their own network
 
-A node on the same network as the panel should be reached directly, and Windows blocks
-that by default. The symptom is peculiarly unhelpful: the node app says Running, the
-daemon answers everything asked of it locally, and the panel simply calls the node
-offline — the machine is invisible from every other host on the network, including during
-the enrollment probe, which then falls back to a tunnel that a deployment may not even
-route.
+A node reaches the panel through the hosting tunnel, and a tunnel is dialled **outbound**:
+frpc connects to frps on port 7000 and frps republishes the node's 3500 on a port of its
+own. So a machine joining as a node needs no forwarded router port, no static address, and
+no inbound firewall rule — which is the whole point, because the person plugging in their
+laptop is not going to arrange any of those.
 
-So the app checks for its own rule and offers to create one (Overview → *Reachable from
-the panel*, and step 2 of setup). That needs administrator rights, so Windows prompts; the
-rule is scoped to private and domain networks, never public. The log records the state at
-every start, which turns "offline for no reason" into one line.
+Only the panel's own network carries anything inbound, and less of it than you would
+expect: **7000** forwarded so nodes can dial in, and **25565** so players can reach the
+Velocity proxy. That is the whole of it for a server with a subdomain — the proxy dials the
+backend at `node.host:serverPort` from inside the network, so the game-server range never
+faces the internet. Only a server with **no** subdomain needs its own port forwarded, since
+a direct connection is then the only route to it.
 
-If the address a node was registered at stops being right — a new DHCP lease, a laptop on
-another network, or a firewall opened after enrollment — **Find this node again** on the
-node's page re-probes every address the machine reported when it joined and re-registers
-it wherever it answers. No new setup code, and a direct address is preferred over a tunnel.
+The port frps republishes a node's API on is dialled by the panel from the same host, so it
+stays inside the network and must never be forwarded.
+
+Windows Firewall therefore only matters for an installation with **no** tunnel configured,
+where the panel has to connect in directly. The node app still checks for its own rule and
+offers to create one (Overview → *Reachable from the panel*, and step 2 of setup, which is
+skippable), because a direct hop is one hop cheaper where it genuinely works.
+
+If a node stops answering, **Find this node again** on its page re-probes it — the tunnel
+first, then every address the machine reported when it joined, so a node that is reachable
+both ways stays on the route that survives it moving. No new setup code needed.
 
 ### Keeping it up without anybody watching
 
@@ -175,19 +183,38 @@ What happens in between is the part worth knowing about:
 
 - The node sends its own generated key, its port, its addresses and what the machine is
   (RAM, cores, games it hosts).
-- The panel tries each address in turn. If it can reach the machine directly — same LAN,
-  or a forwarded port — the node is registered at that address and no tunnel is involved.
-- Otherwise it allocates a port on the installation's frps and returns the tunnel settings.
-  The node writes them, restarts, and is reachable at `frps:<allocated port>`. This is the
-  normal case for a home PC behind NAT, and it needs no port forwarding on the node's side.
+- If the installation has a tunnel, the panel allocates a port on frps and returns the
+  tunnel settings. The node writes them, restarts, and is reachable at
+  `frps:<allocated port>` — its own daemon still on 3500 behind it. This happens even for a
+  machine on the panel's own LAN that a direct probe would have reached, because the
+  alternative needs a port open on the node and is registered against an address that stops
+  being true the moment the machine moves.
+- Only an installation with **no** tunnel probes the machine's own addresses and registers
+  it at whichever answers.
 
   **The tunnel server must publish that range.** frps accepts a proxy on any port it is
   asked for and listens for it inside its own container, so a port Docker was never told to
   publish is unreachable from where the panel dials it — and the node then sits offline
   with a tunnel that looks healthy from every angle except the one that matters. The range
   is `NODE_TUNNEL_PORT_RANGE` (default `25051-25100`, clear of the game servers' own
-  tunnels at `25000-25050`), and the compose files publish it on frps to match. Widening
-  one without the other is the failure this paragraph exists to prevent.
+  tunnels, which are allocated from `24000` upward through `25000`), and the compose files
+  publish it on frps to match. Widening one without the other is the failure this paragraph
+  exists to prevent.
+
+  On Unraid the frps container runs on **host networking** for exactly this reason. A
+  template's port mappings are one port each, so a "range start" and a "range end" entry
+  publish those two numbers and nothing between them — a whole range of nodes that enroll
+  cleanly and never come online. Host networking has nothing to publish and nothing to keep
+  in step. (`docker port` printing nothing for that container is what host mode looks like,
+  not a container that forgot to publish.)
+
+- **The panel needs its own address for frps**, which is rarely the one nodes use. Nodes
+  dial the public address from Settings, from outside the network. The panel dials frps
+  from inside it, where reaching that public address means asking the router to hairpin —
+  and a router that will not simply drops the probe. `FRP_PANEL_HOST` is what the panel dials
+  instead: the frps container's name where the two share a Docker network, and the host's
+  LAN address where they do not, as on Unraid's default bridge. Unset, the panel uses the
+  public address for both and every tunnelled node reads as offline.
 - With neither route available the node is still registered, offline, at its best guess of
   an address — nothing is lost if the user forwards a port later.
 
@@ -292,6 +319,7 @@ to online on its next refresh.
 | App says *Port 3500 is already in use* | Something else holds the port — often a daemon already running in Docker. Change it on the Connection tab, and change it on the node in the panel to match. |
 | App is *Running*, panel says offline | The panel cannot reach the machine. Check the Host value in the panel and the Windows firewall on port 3500. |
 | Panel says unauthorised | Key mismatch. Re-export from the panel and import again. |
+| Enrolled with a code, tunnel connected, panel still says offline | The panel is dialling a port frps does not publish, or dialling frps at an address it cannot reach from where it runs. Check `NODE_TUNNEL_PORT_RANGE` and `FRP_PANEL_HOST` on the panel container against what the frps container publishes (`docker port <frps container>`). |
 | Docker reads *Not installed* / *Not running* | Install or start Docker Desktop, then **Check again**. |
 
 The log behind **Logs → Open log file** (`%APPDATA%\MC Hosting Node\logs\node.log`)

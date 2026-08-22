@@ -48,7 +48,7 @@ services:
       - "${DAEMON_PORT:-3500}:3500"
       # The range game servers are allocated from. Published here rather than per server,
       # since the daemon hands ports out at runtime and compose is not around to hear it.
-      - "${SERVER_PORT_RANGE:-25000-25050}:${SERVER_PORT_RANGE:-25000-25050}"
+      - "${SERVER_PORT_RANGE:-24000-25000}:${SERVER_PORT_RANGE:-24000-25000}"
     environment:
       DAEMON_API_KEY: "${DAEMON_API_KEY}"
       DAEMON_PORT: 3500
@@ -81,7 +81,7 @@ services:
     command: -c /etc/frp/frps.toml
     ports:
       - "7000:7000"
-      - "${TUNNEL_PORT_RANGE:-25000-25050}:${TUNNEL_PORT_RANGE:-25000-25050}"
+      - "${TUNNEL_PORT_RANGE:-24000-25000}:${TUNNEL_PORT_RANGE:-24000-25000}"
       # The node APIs of self-enrolled machines. frps will accept a proxy on any port it
       # is asked for; unpublished, the panel dials it from outside and reaches nothing.
       - "${NODE_TUNNEL_PORT_RANGE:-25051-25100}:${NODE_TUNNEL_PORT_RANGE:-25051-25100}"

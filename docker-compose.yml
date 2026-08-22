@@ -77,7 +77,7 @@ services:
     command: -c /etc/frp/frps.toml
     ports:
       - "7000:7000"
-      - "25000-25010:25000-25010" # Reduced range for docker compose compatibility/performance
+      - "24000-24010:24000-24010" # Reduced range for docker compose compatibility/performance
       # Node APIs tunnelled here — see NODE_TUNNEL_PORT_RANGE on the web service. Published
       # separately because these carry the panel's control channel, not player traffic.
       - "25051-25100:25051-25100"

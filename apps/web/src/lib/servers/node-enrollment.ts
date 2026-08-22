@@ -34,9 +34,11 @@ export const ENROLL_TTL_MS = 15 * 60_000;
  * sits offline forever with a tunnel it believes is up, which is exactly what a hardcoded
  * 26000-26999 produced against a deployment publishing 25000-25100.
  *
- * So the range is configuration, and its default sits inside the band the shipped compose
- * files and the Unraid template already publish — above 25000-25050, which the game
- * servers' own tunnels use. Changing it means changing what frps publishes to match.
+ * So the range is configuration, and its default sits above the band the game servers' own
+ * tunnels use. Those are allocated from 24000 upward (see the servers route) through 25000,
+ * so 25051-25100 is clear of them with room to spare. Changing it means changing what frps
+ * publishes to match — or nothing at all where frps runs on host networking, which is what
+ * the Unraid template ships.
  */
 export const TUNNEL_API_PORT_MIN = 25051;
 export const TUNNEL_API_PORT_MAX = 25100;

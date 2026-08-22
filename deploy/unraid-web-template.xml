@@ -36,5 +36,30 @@
 
   <Config Name="Discord Bot Shared Secret" Target="DISCORD_BOT_SECRET" Default="" Description="Shared secret the standalone Discord bot authenticates with. Must match the same variable on the craftcontrol-discord-bot container. Left blank the integration is off and every bot command is rejected - which looks from Discord like a broken bot rather than a disabled feature." Type="Variable" Display="always" Required="false" Mask="true"></Config>
 
+  <!--
+    Where the panel dials the tunnel server when it has to publish a node it cannot reach
+    directly - a customer's laptop behind their own NAT, which is the case this exists for.
+
+    This is not the address nodes dial. Nodes dial the public address set in Settings ->
+    Tunnel, from the far side of the internet; the panel is on the same LAN as frps and
+    reaching that public address from inside means asking the router to hairpin, which many
+    do not. Left blank the panel uses the public address for both and a node that enrolled
+    perfectly sits offline forever with a tunnel that looks healthy from its own end.
+
+    Set it to the address of the machine running frps as seen from the panel container -
+    the Unraid host's LAN IP where both run on bridge, or the frps container name if they
+    share a user-defined Docker network.
+  -->
+  <Config Name="Tunnel Server Address (from the panel)" Target="FRP_PANEL_HOST" Default="" Description="How this container reaches the FRP server, e.g. 192.168.50.220. Nodes dial the public address from Settings; the panel needs the internal one. Leave blank to use the public address for both." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <!--
+    Must be a range frps actually publishes on its host - see ExtraParams on the
+    CraftControl-FRP-Server template. frps accepts a proxy on any port it is asked for and
+    listens for it inside its own network namespace, so a port Docker was never told to
+    publish is unreachable from where the panel dials it, and the node never comes online.
+    Kept clear of 24000-25000, which the game servers' own tunnels use.
+  -->
+  <Config Name="Node Tunnel Port Range" Target="NODE_TUNNEL_PORT_RANGE" Default="25051-25100" Description="Remote ports frps may publish self-enrolled node APIs on. Must match a range the FRP server container publishes." Type="Variable" Display="always" Required="false" Mask="false">25051-25100</Config>
+
   <Config Name="Port Environment Variable" Target="PORT" Default="3000" Description="Internal application listening port" Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
 </Container>
