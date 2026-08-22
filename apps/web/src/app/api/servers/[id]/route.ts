@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
+import { hostingHistory } from '@/lib/servers/hosting-history';
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -30,8 +31,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ error: 'Forbidden: You do not have access to this server' }, { status: 403 });
   }
 
+  /*
+   * Fetched after the access check rather than joined into the query above: it names the
+   * machines and the people who have hosted this world, which is not something to load
+   * for a caller who turns out not to be allowed to see the server at all.
+   */
+  const hosting = await hostingHistory(server.id);
+
   return NextResponse.json({
     server,
+    hosting,
     role: isGlobalAdmin ? 'GLOBAL_ADMIN' : userRole,
   });
 }

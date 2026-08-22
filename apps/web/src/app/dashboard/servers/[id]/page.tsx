@@ -66,6 +66,36 @@ interface ServerDetail {
   };
 }
 
+/**
+ * The machines that had this world before the one that has it now.
+ *
+ * Renders nothing when there is nothing to say. A server that has never moved has exactly
+ * one stay — the open one, describing its current node, which the line above already shows
+ * — and repeating it as "previously hosted on" would be wrong. A server from before this
+ * was recorded has none at all, and inventing "never moved" from that would be a guess
+ * dressed as a fact.
+ */
+function PreviousHosts({ stays }: { stays: HostingStay[] }) {
+  const past = stays.filter((s) => s.endedAt !== null);
+  if (past.length === 0) return null;
+
+  const when = (iso: string) =>
+    new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
+  return (
+    <div style={{ marginTop: '6px', fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+      {past.slice(0, 3).map((stay, i) => (
+        <div key={`${stay.nodeName}-${stay.startedAt}-${i}`}>
+          {i === 0 ? 'Previously on ' : 'Before that, '}
+          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{stay.nodeName}</span>
+          {/* A node with no owner is one of the fleet's, not somebody's own machine. */}
+          {stay.ownerName ? ` (${stay.ownerName})` : ''} until {when(stay.endedAt as string)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   const cls =
     status === 'RUNNING' ? 'cc-badge-running' :
@@ -160,6 +190,13 @@ function tabHint(tab: TabDef, game: Game): string {
   return (tab as { hintByGame?: Partial<Record<Game, string>> }).hintByGame?.[game] ?? tab.hint;
 }
 
+interface HostingStay {
+  nodeName: string;
+  ownerName: string | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 export default function ServerConsolePage() {
   const params = useParams();
   const router = useRouter();
@@ -172,6 +209,9 @@ export default function ServerConsolePage() {
 
   const [server, setServer] = useState<ServerDetail | null>(null);
   const [nodes, setNodes] = useState<any[]>([]);
+  /** Which machines have hosted this world. Empty also means "never recorded", so the
+   *  UI must not read it as "never moved" — see hosting-history.ts. */
+  const [hosting, setHosting] = useState<HostingStay[]>([]);
   const [userRole, setUserRole] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -310,6 +350,7 @@ export default function ServerConsolePage() {
       if (serverRes.ok) {
         const data = await serverRes.json();
         setServer(data.server);
+        setHosting(Array.isArray(data.hosting) ? data.hosting : []);
         setUserRole(data.role);
       } else {
         const errData = await serverRes.json().catch(() => ({}));
@@ -854,6 +895,7 @@ export default function ServerConsolePage() {
                         {server.node.isOnline ? '● online' : '● offline'}
                       </span>
                     </div>
+                    <PreviousHosts stays={hosting} />
                   </div>
                 )}
               </div>

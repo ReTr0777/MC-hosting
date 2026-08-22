@@ -278,6 +278,40 @@ model NodeEnrollment {
   @@map("node_enrollments")
 }
 
+/// One machine's turn at hosting a server.
+///
+/// The current host is already Server.nodeId; what this adds is every host before it,
+/// which is the question that matters once worlds live on customers' own PCs rather
+/// than on the fleet. "Whose machine was this world on last week" has no other answer:
+/// nodeId only ever holds the latest one.
+///
+/// Denormalised on purpose. A node somebody enrolled is deleted the day they leave, and
+/// their account can go with it — but "hosted on a machine that no longer exists" is
+/// precisely the row being looked for, so the names are copied in rather than joined to.
+/// nodeId is kept alongside them for as long as it resolves, and is allowed to dangle.
+model ServerHostingEvent {
+  id            String    @id @default(uuid())
+  serverId      String
+  server        Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  /// The node as it was, not as it is. Null owner means a fleet node rather than
+  /// somebody's own machine — the distinction the panel draws everywhere else.
+  nodeId        String?
+  nodeName      String
+  ownerName     String?
+
+  /// Open-ended while this machine still has it. Exactly one row per server should have
+  /// a null endedAt, and it should agree with Server.nodeId.
+  startedAt     DateTime  @default(now())
+  endedAt       DateTime?
+
+  /// Who moved it here. Null for the turn opened when the server was first created.
+  movedByUserId String?
+
+  @@index([serverId, startedAt])
+  @@map("server_hosting_events")
+}
+
 model Server {
   id                String             @id @default(uuid())
   uuid              String             @unique @default(uuid())
@@ -351,6 +385,7 @@ model Server {
   statSamples       ServerStatSample[]
   players           ServerPlayer[]
   playerSessions    PlayerSession[]
+  hostingEvents     ServerHostingEvent[]
 
   @@map("servers")
 }

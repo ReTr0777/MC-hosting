@@ -5,6 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { CreateServerContainerDto, javaSupportViolation } from '@mc-manager/shared';
 import { registerServerWithProxy } from '@/lib/servers/proxy-sync';
 import { writeAudit } from '@/lib/audit';
+import { recordHostingHandover } from '@/lib/servers/hosting-history';
 import { nodeCapacity, capacityViolation, diskSpaceViolation } from '@/lib/servers/node-capacity';
 import { nodeUseViolation } from '@/lib/servers/node-access';
 
@@ -399,6 +400,18 @@ export async function POST(
           action: 'SERVER_MIGRATE',
           details: { serverId: server.id, fromNodeId: server.nodeId, toNodeId: destNode.id },
         });
+
+        /*
+         * The server's page shows whose machine has had it, and this is the only moment
+         * that knows. The audit entry above records the same move by node id, in a stream
+         * nothing on that page reads and whose ids stop resolving once an enrolled node
+         * is deleted.
+         */
+        await recordHostingHandover(
+          server.id,
+          { id: destNode.id, name: destNode.name, ownerId: destNode.ownerId ?? null },
+          user.userId
+        );
 
         await updateLimboTitle('<green>Migration Complete</green>', '<gray>Cleaning up old node...</gray>');
         

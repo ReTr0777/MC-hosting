@@ -7,6 +7,7 @@ import { writeAudit } from '@/lib/audit';
 import { quotaSnapshot, quotaViolation } from '@/lib/servers/quota';
 import { computeCapacity, capacityViolation, nodeCapacity } from '@/lib/servers/node-capacity';
 import { nodeUseViolation, visibleNodesWhere } from '@/lib/servers/node-access';
+import { recordHostingHandover } from '@/lib/servers/hosting-history';
 
 export async function GET(req: NextRequest) {
   try {
@@ -419,6 +420,13 @@ export async function POST(req: NextRequest) {
         },
       });
       console.log(`[Web API /servers POST] ✓ Server created in DB: ${server.id}`);
+
+      /*
+       * Opens the server's hosting history on the machine it was created on. Without this
+       * the first entry only appears at the first migration, so a server that has never
+       * moved would read as having no host at all rather than as having had one all along.
+       */
+      await recordHostingHandover(server.id, { id: node.id, name: node.name, ownerId: node.ownerId ?? null });
     } catch (dbErr: any) {
       console.error('[Web API /servers POST] ❌ ERROR creating server in database');
       console.error('[Web API /servers POST] DB error:', dbErr.message);
