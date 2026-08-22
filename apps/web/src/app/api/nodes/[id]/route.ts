@@ -30,6 +30,10 @@ export async function GET(
       totalMemory: true, totalCpu: true, offloadPriority: true,
       overcommitRatio: true, cpuOvercommitRatio: true, enabledGames: true,
       drainedAt: true,
+      // The port the machine itself listens on, which is not `port` once the node is
+      // published through frps: `port` is then the remote port the panel dials, and the
+      // page has to be able to say so rather than label a tunnel port "daemon port".
+      candidatePort: true,
       liveCpuUsage: true, liveRamUsed: true, liveRamTotal: true,
       liveDiskUsed: true, liveDiskTotal: true, liveCpuModel: true,
       liveCpuCores: true, liveOsDistro: true, liveCpuTemp: true,

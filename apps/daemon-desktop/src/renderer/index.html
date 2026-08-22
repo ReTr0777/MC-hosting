@@ -276,8 +276,9 @@
         <!-- 2: Reachability -->
         <section class="wizard-step hidden" data-step="2">
           <p class="muted">
-            The panel reaches this machine over the network, and Windows blocks that by default.
-            Allowing it needs administrator rights, so Windows will ask.
+            Optional. A panel with a hosting tunnel reaches this machine through it, over a
+            connection this machine dials out, and nothing has to be open here for that. This
+            step only matters when the panel has no tunnel and has to connect in directly.
           </p>
           <div class="card">
             <div class="card-head">
@@ -291,8 +292,8 @@
             </div>
           </div>
           <p class="muted">
-            Skipping this is not fatal: a machine the panel cannot reach directly is published
-            through the hosting tunnel instead. Direct is simpler and faster where it works.
+            Allowing it needs administrator rights, so Windows will ask. Skip it if you would
+            rather not — the next step will say plainly whether the panel can see this machine.
           </p>
         </section>
 

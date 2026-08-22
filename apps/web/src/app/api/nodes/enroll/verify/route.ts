@@ -82,24 +82,28 @@ export async function POST(req: NextRequest) {
   const candidates = reported.length > 0 ? reported : directCandidates(node.candidateAddresses);
 
   /*
-   * The tunnel address goes first when there is one.
+   * A tunnelled node is asked about at its tunnel and nowhere else.
    *
-   * A tunnel that works is worth preferring: it keeps working when the node moves network
-   * or its lease changes, which a LAN address does not, and it is the only route at all for
-   * a machine that is not on the panel's network. Direct is the fallback rather than the
-   * ideal — but a fallback that is taken, not merely offered, because an unreachable
-   * preference is no preference at all.
+   * The registered port differing from the port the node says it listens on is what marks
+   * one: enrollment gave it a remote port on frps, and the node's own 3500 is what sits
+   * behind it.
+   *
+   * The LAN addresses are deliberately not tried as a fallback for those. A node on the
+   * panel's own network will often answer on both, and letting the direct probe win when
+   * the tunnel is a few seconds behind would quietly relocate the node onto an address that
+   * needs a port open on its side and stops being true the moment the machine moves — the
+   * exact arrangement the tunnel exists to avoid. Reporting the tunnel as unreachable is
+   * the more useful answer too: it names the thing that is actually broken instead of
+   * hiding it behind a route that happens to work today.
    */
-  const tunnelAttempt =
-    node.candidatePort && node.port !== node.candidatePort
-      ? [{ host: node.host, port: node.port, via: 'tunnel' as const }]
-      : [];
-  const attempts = [
-    ...tunnelAttempt,
-    ...candidates.map((host) => ({ host, port: localPort, via: 'direct' as const })),
-    // Whatever it is registered at now, if neither list already covers it.
-    ...(tunnelAttempt.length === 0 ? [{ host: node.host, port: node.port, via: 'direct' as const }] : []),
-  ];
+  const tunnelled = Boolean(node.candidatePort && node.port !== node.candidatePort);
+  const attempts = tunnelled
+    ? [{ host: node.host, port: node.port, via: 'tunnel' as const }]
+    : [
+        ...candidates.map((host) => ({ host, port: localPort, via: 'direct' as const })),
+        // Whatever it is registered at now, if the candidate list does not already cover it.
+        { host: node.host, port: node.port, via: 'direct' as const },
+      ];
 
   const results = await Promise.all(attempts.map((a) => probe(a.host, a.port, apiKey, a.via)));
   // First success in list order, so the preference above decides rather than the network's

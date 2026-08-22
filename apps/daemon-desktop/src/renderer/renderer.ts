@@ -85,12 +85,24 @@ function verdict(enrolled: EnrollResult): string {
   const direct = tried.filter((t) => t.via === 'direct').map((t) => t.address);
   const tunnel = tried.filter((t) => t.via === 'tunnel').map((t) => t.address);
 
+  /*
+   * The tunnel is the only address a tunnelled node is asked about, so it is usually the
+   * whole of the failure rather than one line in a list — and it points at a specific,
+   * fixable thing on the panel's side, which "could not reach this machine" does not.
+   */
   let why = 'The panel could not reach this machine at any address.';
-  if (direct.length > 0) {
-    why += ` Nothing answered at ${direct.join(', ')} — usually Windows Firewall; the Overview tab can open the port.`;
-  }
   if (tunnel.length > 0) {
-    why += ` The tunnel address ${tunnel.join(', ')} was refused too, which means the tunnel server is not publishing that port.`;
+    why =
+      `The panel could not reach this machine through the tunnel at ${tunnel.join(', ')}. ` +
+      'The node dialled out and the tunnel server accepted it, so the usual cause is that ' +
+      'the tunnel server is not publishing that port — an administrator has to check its ' +
+      'published range against NODE_TUNNEL_PORT_RANGE on the panel.';
+  }
+  if (direct.length > 0) {
+    why +=
+      tunnel.length > 0
+        ? ` Nothing answered directly at ${direct.join(', ')} either.`
+        : ` Nothing answered at ${direct.join(', ')} — usually Windows Firewall; the Overview tab can open the port.`;
   }
 
   return (

@@ -46,7 +46,10 @@ export async function firewallStatus(port: number): Promise<FirewallStatus> {
   if (!ok || /No rules match/i.test(stdout)) {
     return {
       state: 'missing',
-      detail: `Windows Firewall is blocking port ${port}. The panel cannot reach this node until it is allowed through.`,
+      detail:
+        `Windows Firewall is blocking inbound connections on port ${port}. That is only a problem ` +
+        'for a panel with no hosting tunnel, which has to connect in directly; through the tunnel ' +
+        'this node dials out and nothing needs to be open here.',
     };
   }
 

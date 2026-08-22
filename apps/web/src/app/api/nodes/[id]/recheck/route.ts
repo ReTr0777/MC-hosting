@@ -20,9 +20,12 @@ export const dynamic = 'force-dynamic';
  * perfectly and the panel is knocking at the wrong door, with "offline" as the only
  * symptom and a fresh setup code as the only cure.
  *
- * Preference is deliberate: a direct address wins over the tunnel it is currently
- * registered at, because a direct hop needs no tunnel server to stay up and costs a hop
- * less on every single call the panel makes.
+ * Preference is deliberate, and it is the tunnel: a node published through frps needs
+ * nothing open on its own side and keeps answering when the machine changes network or
+ * lease, neither of which is true of the LAN address it also happens to respond on today.
+ * Direct is tried after it rather than instead of it, so a node whose tunnel is genuinely
+ * down is still found — this is a button somebody pressed to locate a node, and returning
+ * nothing when the machine is plainly reachable would be the wrong answer.
  */
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -64,12 +67,23 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
    * Conflating the two probes a LAN address at a port nothing on that machine uses.
    */
   const localPort = node.candidatePort ?? node.port;
-  const attempts: Array<{ host: string; port: number }> = [
-    ...directCandidates(node.candidateAddresses).map((host) => ({ host, port: localPort })),
-    // Last, because it is what is already recorded: reaching it changes nothing but does
-    // confirm the node is alive where the panel thought it was.
-    { host: node.host, port: node.port },
-  ];
+  /*
+   * The registered port differing from the port the node reports listening on is what marks
+   * a tunnelled node: enrollment gave it a remote port on frps, with its own 3500 behind.
+   */
+  const tunnelled = Boolean(node.candidatePort && node.port !== node.candidatePort);
+  const registered = { host: node.host, port: node.port };
+  const directAttempts = directCandidates(node.candidateAddresses).map((host) => ({
+    host,
+    port: localPort,
+  }));
+  const attempts: Array<{ host: string; port: number }> = tunnelled
+    ? // The tunnel first, so a node that is reachable both ways stays on the route that
+      // survives it moving.
+      [registered, ...directAttempts]
+    : // Nothing to prefer, so the candidates lead and the recorded address comes last:
+      // reaching it changes nothing but does confirm the node is alive where it was.
+      [...directAttempts, registered];
 
   const results = await Promise.all(attempts.map((a) => probe(a.host, a.port, node.apiKey)));
   const answer = results.find((r): r is Answer => r !== null);

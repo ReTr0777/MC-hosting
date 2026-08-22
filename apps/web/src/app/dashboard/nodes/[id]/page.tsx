@@ -52,7 +52,10 @@ interface NodeDetail {
   ownerId: string | null;
   name: string;
   host: string;
+  /** What the panel dials. For a tunnelled node this is frps' remote port, not the daemon's. */
   port: number;
+  /** The port the machine itself listens on. Differs from `port` exactly when tunnelled. */
+  candidatePort: number | null;
   isOnline: boolean;
   totalMemory: number;
   totalCpu: number;
@@ -283,7 +286,6 @@ export default function NodeDetailPage() {
   const toggleDrain = async () => {
     if (!node) return;
     const draining = !!node.drainedAt;
-
     if (!draining) {
       const ok = await confirm({
         title: `Put ${node.name} into maintenance mode?`,
@@ -421,6 +423,13 @@ export default function NodeDetailPage() {
 
   const draining = !!node.drainedAt;
   /*
+   * A node published through frps is registered at the tunnel server's address and the
+   * remote port allocated for it, while its daemon carries on listening on its own port
+   * behind that. Labelling the pair "host" and "daemon port" then reads as though the
+   * daemon had moved to 25051, which is the first thing anybody asks about it.
+   */
+  const tunnelled = !!node.candidatePort && node.candidatePort !== node.port;
+  /*
    * Whoever enrolled this machine administers it: it is their hardware, and telling them
    * to open a ticket to rename their own PC or take it out of service is what made
    * self-hosting unusable. The scheduling knobs stay an admin's, and so does the whole of
@@ -452,6 +461,7 @@ export default function NodeDetailPage() {
         </div>
         <div style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', marginTop: '4px' }}>
           {node.host}:{node.port}
+          {tunnelled ? ` · via tunnel → :${node.candidatePort}` : ''}
           {node.liveOsDistro ? ` · ${node.liveOsDistro}` : ''}
           {node.liveCpuModel ? ` · ${node.liveCpuModel}` : ''}
           {node.liveCpuCores ? ` (${node.liveCpuCores}C)` : ''}
@@ -655,10 +665,17 @@ export default function NodeDetailPage() {
             </Field>
 
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '10px' }}>
-              <Field label="Host IP / hostname">
+              <Field label={tunnelled ? 'Tunnel server address' : 'Host IP / hostname'}>
                 <input className="cc-input" required value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} />
               </Field>
-              <Field label="Daemon port">
+              <Field
+                label={tunnelled ? 'Tunnel port' : 'Daemon port'}
+                hint={
+                  tunnelled
+                    ? `The port frps republishes this node on. The daemon itself still listens on ${node.candidatePort}; changing this only changes where the panel dials.`
+                    : undefined
+                }
+              >
                 <input className="cc-input" type="number" required value={form.port} onChange={(e) => setForm({ ...form, port: parseInt(e.target.value, 10) })} />
               </Field>
             </div>

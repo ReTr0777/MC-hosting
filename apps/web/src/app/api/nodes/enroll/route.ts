@@ -168,35 +168,63 @@ export async function POST(req: NextRequest) {
   /*
    * How the panel will reach this machine, decided here rather than left to the user.
    *
-   * A node on the same network as the panel is reachable at its own address, and a direct
-   * hop is worth having: no tunnel to keep up, no extra process. Everything else — a home
-   * PC behind NAT, which is the normal case for a customer self-hosting — has no address
-   * the panel could dial, so it is published through the installation's frps instead and
-   * registered at the port allocated for it here.
+   * The tunnel comes first whenever the installation has one, even for a machine sitting on
+   * the panel's own LAN that a direct probe would have reached.
+   *
+   * Direct used to win that contest, and it is the worse answer for the machine this route
+   * exists for. It needs an inbound port open on the node — a Windows Firewall rule at
+   * least, a forwarded router port once the machine is anywhere else — which is exactly what
+   * somebody plugging their own laptop in should never have to arrange. And it is registered
+   * against an address that stops being true the moment the laptop goes home: a DHCP lease
+   * expires, the machine joins another network, and the panel keeps dialling a host that now
+   * belongs to somebody else's toaster.
+   *
+   * The tunnel is dialled outbound by the node, so it needs nothing open on the node's side
+   * and survives the machine moving. Only the port frps republishes it on has to be
+   * reachable, and only from the panel — which sits beside frps, so that stays inside the
+   * network rather than on the router.
    */
   const candidates = directCandidates(body.addresses);
-  const direct = await probeDirect(candidates, port, apiKey);
 
   const settings = await prisma.systemSetting.findMany({
     where: { key: { in: [FRP_ADDR_KEY, FRP_PORT_KEY, FRP_TOKEN_KEY] } },
   });
   const byKey = Object.fromEntries(settings.map((s) => [s.key, s.value]));
-  const tunnelPreset = buildFrpPreset(
-    byKey[FRP_ADDR_KEY],
-    byKey[FRP_PORT_KEY],
-    tryDecryptSecret(byKey[FRP_TOKEN_KEY] || '').value
-  );
+  const frpToken = tryDecryptSecret(byKey[FRP_TOKEN_KEY] || '');
+  const tunnelPreset = buildFrpPreset(byKey[FRP_ADDR_KEY], byKey[FRP_PORT_KEY], frpToken.value);
+
+  /*
+   * A token that will not decrypt must not be handed over as no token at all.
+   *
+   * tryDecryptSecret answers 'undecryptable' with an empty value, and an empty token is a
+   * legitimate configuration - an frps with no auth - so nothing downstream can tell the
+   * two apart. The node writes a config with no [auth] block, frpc logs in anonymously,
+   * and frps answers "token in login doesn't match token from configuration". Which reads
+   * as the node having the wrong token, when in fact the panel never sent one and cannot
+   * read its own. That is a diagnosis worth hours, so it is refused here instead.
+   */
+  if (tunnelPreset && frpToken.status === 'undecryptable') {
+    return NextResponse.json(
+      {
+        error:
+          'The panel cannot decrypt its stored tunnel token, so it has nothing valid to give this ' +
+          'node — SECRET_ENCRYPTION_KEY (or JWT_SECRET, if that is what the panel falls back to) ' +
+          'changed since the token was saved. An administrator has to paste the tunnel token again ' +
+          'under Settings → Tunnel, then this code can be used again.',
+      },
+      { status: 503 }
+    );
+  }
 
   let host: string;
   let registeredPort = port;
   let tunnel: { serverAddr: string; serverPort: number; token: string; apiRemotePort: number } | null =
     null;
   let reachability: 'direct' | 'tunnel' | 'unverified';
+  /* Only probed when there is no tunnel to prefer; see above. */
+  let direct: ProbeResult | null = null;
 
-  if (direct) {
-    host = direct.host;
-    reachability = 'direct';
-  } else if (tunnelPreset) {
+  if (tunnelPreset) {
     const frpHost = panelFacingFrpHost(tunnelPreset.serverAddr);
     const used = await prisma.node.findMany({ where: { host: frpHost }, select: { port: true } });
     /*
@@ -222,24 +250,35 @@ export async function POST(req: NextRequest) {
     tunnel = { ...tunnelPreset, apiRemotePort: remotePort };
     reachability = 'tunnel';
   } else {
-    /*
-     * No route found and no tunnel configured. The node is still registered, at its best
-     * guess of an address, because refusing here would leave the user with an installed
-     * app, a used-up code and nothing in the panel — and the address may well start
-     * working once they forward a port. It registers offline and says why.
-     */
-    host = candidates[0] || '';
-    if (!host) {
-      return NextResponse.json(
-        {
-          error:
-            'The panel could not reach this machine and this installation has no tunnel configured. ' +
-            'Ask an administrator to set up the FRP tunnel, or add the node by hand.',
-        },
-        { status: 409 }
-      );
+    direct = await probeDirect(candidates, port, apiKey);
+
+    if (direct) {
+      /*
+       * No tunnel in this installation, but the machine answers on its own address. Worth
+       * taking, with the caveat above: it lasts exactly as long as that address does.
+       */
+      host = direct.host;
+      reachability = 'direct';
+    } else {
+      /*
+       * No route found and no tunnel configured. The node is still registered, at its best
+       * guess of an address, because refusing here would leave the user with an installed
+       * app, a used-up code and nothing in the panel — and the address may well start
+       * working once they forward a port. It registers offline and says why.
+       */
+      host = candidates[0] || '';
+      if (!host) {
+        return NextResponse.json(
+          {
+            error:
+              'The panel could not reach this machine and this installation has no tunnel configured. ' +
+              'Ask an administrator to set up the FRP tunnel, or add the node by hand.',
+          },
+          { status: 409 }
+        );
+      }
+      reachability = 'unverified';
     }
-    reachability = 'unverified';
   }
 
   const health = direct?.health;
