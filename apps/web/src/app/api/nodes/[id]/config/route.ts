@@ -52,11 +52,25 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     where: { key: { in: [FRP_ADDR_KEY, FRP_PORT_KEY, FRP_TOKEN_KEY] } },
   });
   const byKey = Object.fromEntries(settings.map((s) => [s.key, s.value]));
-  const tunnel = buildFrpPreset(
-    byKey[FRP_ADDR_KEY],
-    byKey[FRP_PORT_KEY],
-    tryDecryptSecret(byKey[FRP_TOKEN_KEY] || '').value
-  );
+  const frpToken = tryDecryptSecret(byKey[FRP_TOKEN_KEY] || '');
+  const tunnel = buildFrpPreset(byKey[FRP_ADDR_KEY], byKey[FRP_PORT_KEY], frpToken.value);
+
+  /*
+   * Same trap as in the enrollment route: an undecryptable token reads as an empty one,
+   * and an empty one is a valid "frps with no auth". Exporting it would write a config
+   * whose tunnel is rejected at login, blaming the node for a key the panel could not read.
+   */
+  if (tunnel && frpToken.status === 'undecryptable') {
+    return NextResponse.json(
+      {
+        error:
+          'The stored tunnel token could not be decrypted, so this config would carry no token ' +
+          'and the node would be refused at login. Paste the tunnel token again under ' +
+          'Settings → Tunnel, then export.',
+      },
+      { status: 503 }
+    );
+  }
 
   const config = {
     format: NODE_CONFIG_FORMAT,

@@ -35,6 +35,8 @@ class TunnelManager {
   private failureReported = false;
   /** True while we are taking frpc down on purpose, so its exit is not treated as a fault. */
   private intentionalStop = false;
+  /** frpc retries login every ten seconds; the explanation is only worth printing once. */
+  private authHintPrinted = false;
   private restartTimer: NodeJS.Timeout | null = null;
   private restartDelayMs = RESTART_MIN_MS;
   private startedAt = 0;
@@ -79,6 +81,19 @@ class TunnelManager {
     if (!serverAddr) {
       console.log('[TunnelManager] FRP Server Address not configured. Tunneling disabled.');
       return;
+    }
+
+    /*
+     * No token is a real configuration - an frps with auth turned off — so this cannot be
+     * an error. It is worth saying out loud all the same, because the failure it causes
+     * against an frps that *does* want a token is reported by frps as a token mismatch,
+     * which sends everyone looking for a wrong token rather than a missing one.
+     */
+    if (!token) {
+      console.warn(
+        '[TunnelManager] No tunnel token configured. That is correct only if the tunnel server ' +
+          'has authentication turned off; if it does not, it will reject this node at login.'
+      );
     }
 
     /*
@@ -149,11 +164,15 @@ remotePort = ${apiPort}
     this.frpcProcess.on('error', (err: NodeJS.ErrnoException) => this.reportSpawnFailure(err, binary));
 
     this.frpcProcess.stdout?.on('data', (data) => {
-      console.log(`[frpc] ${data.toString().trim()}`);
+      const line = data.toString().trim();
+      console.log(`[frpc] ${line}`);
+      this.explainAuthFailure(line, Boolean(token));
     });
 
     this.frpcProcess.stderr?.on('data', (data) => {
-      console.error(`[frpc error] ${data.toString().trim()}`);
+      const line = data.toString().trim();
+      console.error(`[frpc error] ${line}`);
+      this.explainAuthFailure(line, Boolean(token));
     });
 
     this.startedAt = Date.now();
@@ -334,6 +353,30 @@ remotePort = ${apiPort}
     } else {
       console.error(`[TunnelManager] frpc failed to start: ${err.message}. ${tail}`);
     }
+  }
+
+  /**
+   * Says what frps' login rejection actually means, once per tunnel start.
+   *
+   * "token in login doesn't match token from configuration" is frps describing its own
+   * side, and it is equally true when this node sent no token at all — which is what a
+   * panel that could not decrypt its stored one hands over. The two need different fixes
+   * and frpc cannot tell them apart, so the distinction is drawn here, where the config
+   * that was just written is known.
+   */
+  private explainAuthFailure(line: string, hasToken: boolean): void {
+    if (this.authHintPrinted || !/token in login doesn't match/i.test(line)) return;
+    this.authHintPrinted = true;
+
+    console.error(
+      hasToken
+        ? '[TunnelManager] The tunnel server rejected the token this node sent. It must match the ' +
+            'token configured on the tunnel server itself — check it in the panel under ' +
+            'Settings → Tunnel.'
+        : '[TunnelManager] The tunnel server wants a token and this node was given none. The panel ' +
+            'sends one when it enrolls a node; an empty one usually means the panel could not decrypt ' +
+            'its stored tunnel token, so it has to be pasted again under Settings → Tunnel.'
+    );
   }
 
   private writeConfig() {
