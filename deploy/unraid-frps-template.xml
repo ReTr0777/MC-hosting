@@ -27,10 +27,11 @@
     What still has to be right is the router, and only for the panel's own network:
 
       7000         forwarded, so nodes can dial in.
-      24000-25000  usually NOT forwarded. A server with a subdomain is reached through the
-                   Velocity proxy on 25565, and the proxy dials the backend from this same
-                   host. Only a server with no subdomain needs its port reachable from
-                   outside, because a direct connection is then the only way in.
+      24000-25000  forwarded only when the Velocity proxy is NOT deployed, which is the
+                   case in an installation running just the panel, frps and nodes. Players
+                   then connect straight to a server's own port. With the proxy running,
+                   forward 25565 instead and leave this range internal - the proxy dials
+                   the backend from this same host.
       25051-25100  never forwarded. These are node APIs, dialled only by the web panel from
                    this same host. Match this range to NODE_TUNNEL_PORT_RANGE on the panel.
 

@@ -142,12 +142,21 @@ own. So a machine joining as a node needs no forwarded router port, no static ad
 no inbound firewall rule — which is the whole point, because the person plugging in their
 laptop is not going to arrange any of those.
 
-Only the panel's own network carries anything inbound, and less of it than you would
-expect: **7000** forwarded so nodes can dial in, and **25565** so players can reach the
-Velocity proxy. That is the whole of it for a server with a subdomain — the proxy dials the
-backend at `node.host:serverPort` from inside the network, so the game-server range never
-faces the internet. Only a server with **no** subdomain needs its own port forwarded, since
-a direct connection is then the only route to it.
+Only the panel's own network carries anything inbound, and how much depends on whether
+the Velocity proxy is deployed. **7000** is forwarded either way, so nodes can dial in.
+
+**With the proxy** (`apps/proxy` plus `apps/nanolimbo`): forward **25565** as well, and
+that is the whole of it for a server with a subdomain. The proxy dials the backend at
+`node.host:serverPort` from inside the network, so the game-server range never faces the
+internet. Only a server with **no** subdomain needs its own port forwarded.
+
+**Without the proxy** — it is optional, and an installation can run the panel, frps and
+nodes without ever starting it — every server is reached by a direct connection to
+`<public address>:<serverPort>`, so the **whole game-server range has to be forwarded**.
+Subdomains do not route, and a player connecting to a machine that is powered off gets a
+refused connection rather than the limbo screen, because the thing that would have held
+them is the proxy. Sleep-on-empty still works: the daemon's own sleeper holds the port
+(`apps/daemon/src/services/presence/sleeper.ts`) and owes nothing to Velocity.
 
 The port frps republishes a node's API on is dialled by the panel from the same host, so it
 stays inside the network and must never be forwarded.
