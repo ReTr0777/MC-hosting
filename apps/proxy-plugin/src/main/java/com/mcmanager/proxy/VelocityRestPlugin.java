@@ -175,8 +175,19 @@ public class VelocityRestPlugin {
         long timeout = sleeperAnswered ? BOOT_TIMEOUT_MS : OFFLINE_TIMEOUT_MS;
         routing.await(player.getUniqueId(), target.getServerInfo().getName(), System.currentTimeMillis() + timeout);
 
-        player.sendMessage(Component.text("Your server is starting — you will be moved across automatically.")
-            .color(NamedTextColor.YELLOW));
+        /*
+         * What they are actually waiting for, which is not the same in both cases.
+         *
+         * "Your server is starting" was sent to everybody, including the player whose host
+         * machine is simply off. Nothing was starting for them: they were told to expect a
+         * move, waited the thirty seconds out, and were then disconnected with the opposite
+         * message. Saying less at this point is more honest than saying the wrong thing.
+         */
+        player.sendMessage(sleeperAnswered
+            ? Component.text("Your server is starting — you will be moved across automatically.")
+                .color(NamedTextColor.YELLOW)
+            : Component.text("Your server is not responding. Checking whether it comes back…")
+                .color(NamedTextColor.YELLOW));
 
         if (sleeperAnswered) requestWake(player.getUniqueId(), target);
     }
