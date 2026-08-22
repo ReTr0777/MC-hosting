@@ -1,0 +1,19 @@
+[Unit]
+# Pulls the current :daemon image and recreates the node only if it actually changed.
+# Type=oneshot driven by craftcontrol-node-update.timer; the node container itself is
+# kept alive by Docker's own `--restart always`, not by this unit.
+Description=Update the CraftControl daemon node
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/run-node.sh
+
+# A failed update must leave the running node alone. It already restarts itself, and a
+# pull that failed on a transient registry error is not a reason to take a node down.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

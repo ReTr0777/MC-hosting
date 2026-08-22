@@ -1,0 +1,18 @@
+[Unit]
+Description=Check nightly for a new CraftControl daemon image
+
+[Timer]
+# 05:00 local time, when nobody is playing. Updating restarts the agent and blinks the
+# node offline in the panel for a few seconds; the game servers themselves are separate
+# containers with their own restart policies and are not touched.
+OnCalendar=*-*-* 05:00:00
+
+# Spread across an hour so several nodes on the same schedule do not all pull at once.
+RandomizedDelaySec=1h
+
+# A node that was powered off at 05:00 still takes the update once it is back, rather
+# than waiting a full day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
