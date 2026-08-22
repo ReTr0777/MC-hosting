@@ -245,6 +245,28 @@ directory is streamed across, file and byte counts are compared, the destination
 finish provisioning, and only then is the source copy deleted. Anything short of all four
 leaves the original where it is.
 
+### Taking turns hosting
+
+A group who play together can pass one world between their own PCs, which the rule above
+otherwise forbids — and forbids for a good reason, since it is what stops a forty-gigabyte
+modpack landing on somebody's SSD unasked.
+
+The consent is moved rather than removed. **Server page → advanced → Machines that may host
+this server**: the owner of a machine offers it, once, for that one server. After that any
+of the server's owners or admins can move it between the offered machines without asking
+again. Offering grants nothing else in either direction — the machine's owner gets no say
+over the server, and the server's admins get no access to the machine.
+
+Withdrawing an offer only removes the permission. A server running there is left alone,
+because stopping somebody's game the moment its host changes their mind about *future*
+handoffs is not what withdrawing consent should mean; moving it off is a handoff like any
+other.
+
+**The machine holding the world has to be online to give it up.** A migration reads the
+files off that daemon, so a host who has gone away takes the server with them until they
+come back. No backup is substituted: the copy on their disk is newer than any backup, and
+silently swapping one for the other loses whatever was played in between.
+
 ## Setting up a new node
 
 A node is any Windows machine that will actually run game servers. The panel talks

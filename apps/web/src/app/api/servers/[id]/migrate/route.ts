@@ -7,7 +7,7 @@ import { registerServerWithProxy } from '@/lib/servers/proxy-sync';
 import { writeAudit } from '@/lib/audit';
 import { recordHostingHandover } from '@/lib/servers/hosting-history';
 import { nodeCapacity, capacityViolation, diskSpaceViolation } from '@/lib/servers/node-capacity';
-import { nodeUseViolation } from '@/lib/servers/node-access';
+import { placementViolation } from '@/lib/servers/hosting-pool';
 
 async function updateLimboTitle(title: string, subtitle: string) {
   try {
@@ -187,13 +187,43 @@ export async function POST(
 
     /*
      * Moving a server is placing it, so the destination has to be a node this account
-     * could have created it on in the first place. This is what makes the round trip
-     * work in both directions: a customer moves a world onto their own machine and back
-     * onto the shared fleet, and cannot push it onto anybody else's.
+     * could have created it on — the shared fleet, or a machine they enrolled themselves.
+     * That is what stops a world being pushed onto somebody else's hardware.
+     *
+     * The one way past it is that hardware's owner having volunteered it for this server,
+     * which is how a group takes turns hosting: the consent is given once, by the person
+     * whose disk it is, and the server's admins move it between pooled machines after that.
      */
-    const notYours = nodeUseViolation(user, destNode);
-    if (notYours) {
-      return NextResponse.json({ error: notYours }, { status: 404 });
+    const cannotPlace = await placementViolation(user, destNode, server.id);
+    if (cannotPlace) {
+      return NextResponse.json({ error: cannotPlace }, { status: 403 });
+    }
+
+    /*
+     * The machine holding the world has to be reachable, and this is checked before
+     * anything is promised rather than discovered in the background.
+     *
+     * A migration reads the world off the source daemon. When that machine is off there is
+     * nothing to copy — no backup is substituted, because the copy on that disk is newer
+     * than any backup and quietly replacing one with the other loses whatever was played
+     * in between. Without this check the request was accepted, answered "migration
+     * started", and then failed out of sight; for a server being passed around a group,
+     * whose current host being offline is an ordinary Tuesday, that is the common case
+     * rather than the rare one.
+     */
+    const sourceReachable = await new DaemonClient(server.node)
+      .getHealth(8000)
+      .then((h) => !!h)
+      .catch(() => false);
+    if (!sourceReachable) {
+      return NextResponse.json(
+        {
+          error:
+            `${server.node.name} is not reachable, and it holds this server's files. ` +
+            'Whoever runs that machine has to bring it online before the server can be moved.',
+        },
+        { status: 409 }
+      );
     }
 
     // Migration moves the server's whole allocation onto another machine, so it is a capacity

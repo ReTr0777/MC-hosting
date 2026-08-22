@@ -242,6 +242,7 @@ model Node {
   updatedAt       DateTime @updatedAt
 
   servers         Server[]
+  hostingPool     ServerHostingPoolMember[]
   enrollments     NodeEnrollment[]
 
   @@index([ownerId])
@@ -310,6 +311,35 @@ model ServerHostingEvent {
 
   @@index([serverId, startedAt])
   @@map("server_hosting_events")
+}
+
+/// A machine its owner has volunteered to host one particular server on.
+///
+/// Migration destinations are normally limited to nodes the mover could have created the
+/// server on: the shared fleet, and their own machines. That rule exists so nobody can
+/// drop a forty-gigabyte modpack onto a friend's SSD unasked, and it is the reason a
+/// group of friends could not pass a world between their PCs.
+///
+/// This is the exception, and it is granted by the person who owns the hardware rather
+/// than by whoever wants to move the server. Opting in once says "this world may live on
+/// my machine"; after that the server's admins move it freely between pooled machines,
+/// which is what makes juggling it bearable. Opting out again only removes the
+/// permission - a server already running there is not evicted by it.
+model ServerHostingPoolMember {
+  id        String   @id @default(uuid())
+  serverId  String
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  nodeId    String
+  node      Node     @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  /// Whoever opted the machine in. Kept so the panel can say who volunteered it, and so
+  /// a permission granted by an admin on someone's behalf is distinguishable later.
+  addedById String?
+  createdAt DateTime @default(now())
+
+  @@unique([serverId, nodeId])
+  @@index([nodeId])
+  @@map("server_hosting_pool")
 }
 
 model Server {
@@ -386,6 +416,7 @@ model Server {
   players           ServerPlayer[]
   playerSessions    PlayerSession[]
   hostingEvents     ServerHostingEvent[]
+  hostingPool       ServerHostingPoolMember[]
 
   @@map("servers")
 }

@@ -96,6 +96,82 @@ function PreviousHosts({ stays }: { stays: HostingStay[] }) {
   );
 }
 
+/**
+ * The machines this server is allowed to live on, and the way onto that list.
+ *
+ * Two audiences in one card, which is why it is one card. Everyone on the server sees
+ * where it may go, because that is what tells them who can take a turn hosting. Only the
+ * owner of a machine sees a control for that machine, because offering somebody else's
+ * hardware is not a thing anyone should be able to do from here.
+ */
+function HostingPoolCard({
+  pool,
+  myNodes,
+  onToggle,
+}: {
+  pool: PoolMachine[];
+  myNodes: Array<{ id: string; name: string }>;
+  onToggle: (nodeId: string, pooled: boolean) => void;
+}) {
+  const pooledIds = new Set(pool.map((p) => p.nodeId));
+
+  return (
+    <div className="cc-card" style={{ padding: '20px 24px' }}>
+      <div style={{ fontWeight: 700, fontSize: '0.9375rem', marginBottom: '6px' }}>
+        Machines that may host this server
+      </div>
+      <p className="cc-section-sub" style={{ marginBottom: '14px' }}>
+        A world can be passed between the machines listed here without asking again. Only the
+        owner of a machine can put it on the list — offering your PC is your decision, and
+        moving the server between the machines already on it is the server admins&apos;.
+      </p>
+
+      {pool.length === 0 ? (
+        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '14px' }}>
+          Nobody has offered a machine yet. Until somebody does, this server can only move
+          between our fleet and machines you own yourself.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
+          {pool.map((p) => (
+            <div
+              key={p.nodeId}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem' }}
+            >
+              <span style={{ color: p.isOnline ? 'var(--accent)' : 'var(--danger)', fontSize: '0.7rem' }}>
+                ●
+              </span>
+              <span style={{ fontWeight: 600 }}>{p.nodeName}</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                {p.ownerName ? `${p.ownerName}'s machine` : 'hosting fleet'}
+                {p.isOnline ? '' : ' · offline'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {myNodes.length > 0 && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {myNodes.map((n) => {
+            const pooled = pooledIds.has(n.id);
+            return (
+              <button
+                key={n.id}
+                onClick={() => onToggle(n.id, pooled)}
+                className={pooled ? 'cc-btn-ghost' : 'cc-btn-primary'}
+                style={{ fontSize: '0.78rem', padding: '7px 14px' }}
+              >
+                {pooled ? `Withdraw ${n.name}` : `Offer ${n.name}`}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   const cls =
     status === 'RUNNING' ? 'cc-badge-running' :
@@ -190,6 +266,13 @@ function tabHint(tab: TabDef, game: Game): string {
   return (tab as { hintByGame?: Partial<Record<Game, string>> }).hintByGame?.[game] ?? tab.hint;
 }
 
+interface PoolMachine {
+  nodeId: string;
+  nodeName: string;
+  isOnline: boolean;
+  ownerName: string | null;
+}
+
 interface HostingStay {
   nodeName: string;
   ownerName: string | null;
@@ -212,6 +295,9 @@ export default function ServerConsolePage() {
   /** Which machines have hosted this world. Empty also means "never recorded", so the
    *  UI must not read it as "never moved" — see hosting-history.ts. */
   const [hosting, setHosting] = useState<HostingStay[]>([]);
+  /** Machines other people have volunteered for this server. They are not in /api/nodes,
+   *  which only ever lists the fleet and this account's own machines. */
+  const [pool, setPool] = useState<PoolMachine[]>([]);
   const [userRole, setUserRole] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -342,10 +428,16 @@ export default function ServerConsolePage() {
 
   const fetchServerDetails = async () => {
     try {
-      const [serverRes, nodesRes] = await Promise.all([
+      const [serverRes, nodesRes, poolRes] = await Promise.all([
         fetch(`/api/servers/${serverId}`),
         fetch(`/api/nodes`),
+        fetch(`/api/servers/${serverId}/hosting-pool`),
       ]);
+
+      if (poolRes.ok) {
+        const data = await poolRes.json().catch(() => ({}));
+        setPool(Array.isArray(data.pool) ? data.pool : []);
+      }
 
       if (serverRes.ok) {
         const data = await serverRes.json();
@@ -426,6 +518,52 @@ export default function ServerConsolePage() {
       setTimeout(() => setCopied(false), 1800);
     } catch {
       toast.info('Copy failed', `Connect manually using ${connectAddress}`);
+    }
+  };
+
+  /**
+   * Volunteers one of this account's own machines to host this server, or takes the
+   * offer back.
+   *
+   * Deliberately the only way into the pool from the UI: the server's admins decide where
+   * it goes, but only the person whose disk it is decides whether their disk is on the
+   * list at all.
+   */
+  const togglePooled = async (nodeId: string, pooled: boolean) => {
+    try {
+      const res = await fetch(
+        pooled
+          ? `/api/servers/${serverId}/hosting-pool?nodeId=${encodeURIComponent(nodeId)}`
+          : `/api/servers/${serverId}/hosting-pool`,
+        pooled
+          ? { method: 'DELETE' }
+          : {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ nodeId }),
+            }
+      );
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error('Could not change that', err.error || 'The panel refused the request.');
+        return;
+      }
+
+      const refreshed = await fetch(`/api/servers/${serverId}/hosting-pool`);
+      if (refreshed.ok) {
+        const data = await refreshed.json().catch(() => ({}));
+        setPool(Array.isArray(data.pool) ? data.pool : []);
+      }
+
+      toast.success(
+        pooled ? 'Machine withdrawn' : 'Machine offered',
+        pooled
+          ? 'It is no longer a destination for this server. Anything running on it stays put.'
+          : "The server's admins can now move this server onto it."
+      );
+    } catch {
+      toast.error('Could not change that', 'The panel could not be reached.');
     }
   };
 
@@ -1017,6 +1155,18 @@ export default function ServerConsolePage() {
                             {n.isOnline ? '' : ' — offline'}
                           </option>
                         ))}
+                      {/* Somebody else's machine, volunteered for this server. Filtered
+                          against `nodes` because an admin sees every node in both lists,
+                          and a duplicated <option> is a duplicated destination. */}
+                      {pool
+                        .filter((p) => p.nodeId !== server.nodeId && !nodes.some((n) => n.id === p.nodeId))
+                        .map((p) => (
+                          <option key={p.nodeId} value={p.nodeId} disabled={!p.isOnline}>
+                            {p.nodeName}
+                            {p.ownerName ? ` — ${p.ownerName}'s machine` : ''}
+                            {p.isOnline ? '' : ' — offline'}
+                          </option>
+                        ))}
                     </select>
                     <button
                       onClick={handleMigrate}
@@ -1027,6 +1177,13 @@ export default function ServerConsolePage() {
                     </button>
                   </div>
                 </div>
+
+                {/* Whose machines this server is allowed to live on */}
+                <HostingPoolCard
+                  pool={pool}
+                  myNodes={nodes.filter((n) => n.ownerId && n.ownerId === user?.id)}
+                  onToggle={togglePooled}
+                />
 
                 {/* Export / Import */}
                 <ExportImportCard serverId={server.id} canManage={canManage} />
