@@ -5,6 +5,7 @@ import { DaemonClient } from '@/lib/services/daemon-client';
 import { isHealthOnline } from '@/lib/services/node-status';
 import { parseGameList } from '@mc-manager/shared';
 import { canSeeNode } from '@/lib/servers/node-access';
+import { reportedCapacityPatch } from '@/lib/nodes/reported-capacity';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getUserFromRequest(req);
@@ -41,8 +42,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       where: { id: node.id },
       data: {
         isOnline,
-        // Update totalMemory from live data so Smart Scheduler stays accurate
-        ...(health.memoryUsage?.total ? { totalMemory: health.memoryUsage.total } : {}),
+        // Capacity from live data so Smart Scheduler stays accurate — the node's own
+        // allowance when it caps itself, its hardware otherwise.
+        ...reportedCapacityPatch(health),
         // A daemon older than this field reports nothing, which must mean "leave the
         // stored list alone" — writing an empty array would hide the node from the
         // create wizard entirely, every 5 seconds, with no way for the operator to see why.

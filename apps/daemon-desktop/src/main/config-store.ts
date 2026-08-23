@@ -53,9 +53,16 @@ export class ConfigStore {
       patch.enabledGames = ['MINECRAFT'];
     }
 
-    // dataDir is absolute in config.json so the daemon writes servers next to the
-    // config rather than beside whatever the working directory happens to be.
-    if (raw.dataDir !== this.serversDir) patch.dataDir = this.serversDir;
+    /*
+     * dataDir is absolute in config.json so the daemon writes servers next to the config
+     * rather than beside whatever the working directory happens to be.
+     *
+     * Only written when it is missing. It used to be forced back to the default on every
+     * launch, which meant a node whose owner moved their servers to another drive was
+     * quietly moved back to the system disk the next time the app started — with the data
+     * still on the other drive, so every server looked empty.
+     */
+    if (typeof raw.dataDir !== 'string' || !raw.dataDir) patch.dataDir = this.serversDir;
 
     if (Object.keys(patch).length > 0) this.write(patch);
   }
@@ -85,7 +92,11 @@ export class ConfigStore {
       // the API off the tunnel entirely.
       frpApiRemotePort: typeof raw.frpApiRemotePort === 'number' ? raw.frpApiRemotePort : 0,
       enabledGames: Array.isArray(raw.enabledGames) ? (raw.enabledGames as string[]) : ['MINECRAFT'],
-      dataDir: typeof raw.dataDir === 'string' ? raw.dataDir : this.serversDir,
+      dataDir: typeof raw.dataDir === 'string' && raw.dataDir ? raw.dataDir : this.serversDir,
+      // 0 means "no limit": the node offers whatever the machine has. See
+      // apps/daemon/src/services/allowance.ts, which is what actually enforces these.
+      maxMemoryMb: typeof raw.maxMemoryMb === 'number' ? raw.maxMemoryMb : 0,
+      maxCpuCores: typeof raw.maxCpuCores === 'number' ? raw.maxCpuCores : 0,
     };
   }
 

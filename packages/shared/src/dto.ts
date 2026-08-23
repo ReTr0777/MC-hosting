@@ -46,6 +46,22 @@ export interface DaemonHealthDto {
     swapTotal: number;
   };
   dockerAvailable: boolean;
+  /**
+   * How much of this machine its owner is willing to hand out to servers.
+   *
+   * Distinct from memoryUsage.total, which is what the hardware has. A node running on
+   * somebody's own PC is usually not offered whole: the panel budgets placements against
+   * this, so a machine capped at 8 of its 32 GB stops accepting servers at 8 rather than
+   * competing with the games its owner is playing.
+   *
+   * Absent from a node that predates the setting, which the panel reads as "all of it".
+   */
+  allowance?: {
+    memoryMb: number;
+    cpuCores: number;
+    /** False when the figures above are simply the whole machine, so nothing was capped. */
+    capped: boolean;
+  };
   diskUsage?: {
     used: number;
     total: number;

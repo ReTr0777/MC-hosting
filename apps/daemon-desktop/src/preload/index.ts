@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppInfo, DaemonStatus, DockerStatus, EnrollResult, LogLine, NodeConfig, UpdateStatus } from '../shared-types';
+import type {
+  AppInfo,
+  DaemonStatus,
+  DockerStatus,
+  EnrollResult,
+  LogLine,
+  MoveDataResult,
+  NodeConfig,
+  StorageInfo,
+  UpdateStatus,
+} from '../shared-types';
 
 /*
  * The renderer runs with contextIsolation on and no Node access. Everything it can
@@ -56,6 +66,20 @@ const api = {
   /** Opens the port, prompting for administrator rights. */
   openFirewall: (): Promise<{ ok: boolean; detail: string; status: { state: string; detail: string } }> =>
     ipcRenderer.invoke('firewall:open'),
+
+  /** Where the servers live, how big they are, and how much room is left on that drive. */
+  getStorageInfo: (): Promise<StorageInfo> => ipcRenderer.invoke('storage:info'),
+  /** Opens the folder picker; null when the user backed out. Nothing is moved yet. */
+  chooseStorageDir: (): Promise<{ path: string; ok: boolean; message: string } | null> =>
+    ipcRenderer.invoke('storage:choose'),
+  /** Stops the agent, moves the data, points the config at it, starts the agent. */
+  moveStorageDir: (target: string): Promise<MoveDataResult> => ipcRenderer.invoke('storage:move', target),
+  onStorageProgress: (cb: (message: string) => void): void => {
+    ipcRenderer.on('storage:progress', (_e, message: string) => cb(message));
+  },
+  /** Caps what servers may use of this machine. 0 for either means no cap. */
+  setLimits: (limits: { maxMemoryMb?: number; maxCpuCores?: number }): Promise<NodeConfig> =>
+    ipcRenderer.invoke('limits:set', limits),
 
   setAutoStart: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke('app:set-auto-start', enabled),
   openDataDir: (): Promise<void> => ipcRenderer.invoke('app:open-data-dir'),

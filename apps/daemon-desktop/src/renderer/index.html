@@ -27,6 +27,7 @@
       <button class="tab active" data-tab="overview" role="tab">Overview</button>
       <button class="tab" data-tab="connection" role="tab">Connection</button>
       <button class="tab" data-tab="tunnel" role="tab">Tunnel</button>
+      <button class="tab" data-tab="resources" role="tab">Resources</button>
       <button class="tab" data-tab="logs" role="tab">Logs</button>
     </nav>
 
@@ -210,6 +211,62 @@
             <button id="btn-save-tunnel" class="btn primary">Save and restart node</button>
             <span id="tunnel-saved" class="muted hidden">Saved.</span>
           </div>
+        </div>
+      </section>
+
+      <!-- Resources -->
+      <section class="panel" id="tab-resources">
+        <div class="card">
+          <div class="card-head"><h2>Where servers are stored</h2></div>
+          <p class="muted">
+            Worlds, modpacks and backups. Everything else this app keeps — the node key, the
+            panel it joined — stays on the system drive, so this folder can live anywhere.
+          </p>
+          <label class="field">
+            <span>Folder</span>
+            <div class="row">
+              <input id="inp-data-dir" class="mono" readonly />
+              <button class="btn small" id="btn-choose-data-dir">Change…</button>
+              <button class="btn small" id="btn-open-data-2">Open</button>
+            </div>
+            <small class="muted" id="storage-detail">Reading…</small>
+          </label>
+          <div class="row hidden" id="storage-move-row">
+            <button id="btn-move-data" class="btn primary">Move the servers</button>
+            <button id="btn-cancel-move" class="btn small">Cancel</button>
+          </div>
+          <p class="muted hidden" id="storage-pending"></p>
+          <p class="error hidden" id="storage-error"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>How much of this machine servers may use</h2></div>
+          <p class="muted">
+            The panel budgets against these figures, so it stops placing servers here once
+            they are full instead of competing with whatever else you do on this PC. Leave
+            them at the maximum to offer the whole machine.
+          </p>
+          <label class="field">
+            <span>Memory for servers</span>
+            <div class="row">
+              <input id="rng-max-memory" type="range" min="1" max="1" step="1" />
+              <span class="mono" id="lbl-max-memory">—</span>
+            </div>
+            <small class="muted" id="hint-max-memory"></small>
+          </label>
+          <label class="field">
+            <span>CPU cores for servers</span>
+            <div class="row">
+              <input id="rng-max-cpu" type="range" min="1" max="1" step="1" />
+              <span class="mono" id="lbl-max-cpu">—</span>
+            </div>
+            <small class="muted" id="hint-max-cpu"></small>
+          </label>
+          <div class="row">
+            <button id="btn-save-limits" class="btn primary">Save and restart node</button>
+            <span id="limits-saved" class="muted hidden">Saved.</span>
+          </div>
+          <p class="error hidden" id="limits-error"></p>
         </div>
       </section>
 

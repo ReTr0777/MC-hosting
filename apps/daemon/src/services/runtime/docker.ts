@@ -5,6 +5,7 @@ import AdmZip from 'adm-zip';
 import { execSync } from 'child_process';
 import { CreateServerContainerDto } from '@mc-manager/shared';
 import { getConfig } from '../../config';
+import { allowanceRefusal } from '../allowance';
 import { sanitizeMrpack, DENYLIST_PATH_SUBSTRINGS } from '../content/modrinth';
 import { readInstalledModpack } from '../content/modrinth-provision';
 import { buildServerWithServerPackCreator } from '../content/serverpackcreator';
@@ -339,6 +340,11 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
   if (!dto.eulaAccepted) {
     throw new Error('EULA must be accepted before creating or running server container.');
   }
+
+  // Refused before the image is pulled: the panel budgets against what this node reports,
+  // but its copy of that can be stale — the owner may have lowered the cap since.
+  const refusal = allowanceRefusal(dto.memoryMb, dto.cpuLimit);
+  if (refusal) throw new Error(refusal);
 
   const targetImage = getItzgImageTag(dto.mcVersion);
   await ensureDockerImage(targetImage);

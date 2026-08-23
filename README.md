@@ -373,6 +373,32 @@ The installed app starts the daemon as a child process, keeps it in the system t
 the address and API key to paste into the panel, tunnel settings, and a live log.
 It can start itself at sign-in.
 
+### Storage and resource limits
+
+The **Resources** tab decides how much of the machine the node gives away. It matters
+most on a node that is also somebody's own PC, which is the normal case here.
+
+- **Where servers are stored.** Worlds, modpacks and backups default to
+  `%APPDATA%/mc-hosting-node/data/servers` and can be moved to any drive. The move
+  stops the agent, copies, verifies every file by name and size, and only then deletes
+  the original — a failure at any point leaves everything readable at the old path.
+  `config.json` stays on the system drive on purpose: it holds the node key and the
+  enrolment, and a node whose identity lived on a removable drive would lose it the
+  first time that drive was missing at boot. If the configured drive is absent at
+  startup the app says so in its log rather than quietly reverting, because reverting
+  would show every server as empty when the data is fine and merely elsewhere.
+- **Memory and CPU for servers.** Both default to the whole machine. Lower either and
+  the node reports the smaller figure to the panel as its capacity, so the scheduler
+  stops placing servers here at that point instead of competing with whatever else the
+  owner does with the PC. Stored as `maxMemoryMb` / `maxCpuCores` in `config.json`, or
+  `DAEMON_MAX_MEMORY_MB` / `DAEMON_MAX_CPU_CORES` for a node run from Docker; `0` means
+  no limit. The daemon also refuses outright to create a container larger than the whole
+  allowance, which catches the case where the panel's copy of the capacity is stale.
+
+The first-run wizard asks the same two questions, and its answers are now kept: they
+used to be sent to the panel once and forgotten, so the next health check overwrote the
+capacity with the machine's full hardware seconds later.
+
 **Docker Desktop is still required** — game servers are containers either way. The
 app detects it and links to the download if it is missing.
 

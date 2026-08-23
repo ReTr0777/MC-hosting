@@ -10,6 +10,7 @@ import { evaluateCrashRestart, attemptAutoRestart } from '@/lib/servers/crash-re
 import { serverStartBlock } from '@/lib/servers/suspension';
 import { pruneBackupsForServer } from '@/lib/servers/backup-retention';
 import { syncProxyServers } from '@/lib/servers/proxy-sync';
+import { reportedCapacityPatch } from '@/lib/nodes/reported-capacity';
 
 export const dynamic = 'force-dynamic';
 
@@ -155,7 +156,7 @@ export async function POST(request: NextRequest) {
         data: nodeOnline
           ? {
               isOnline: true,
-              ...(health?.memoryUsage?.total ? { totalMemory: health.memoryUsage.total } : {}),
+              ...reportedCapacityPatch(health),
               liveCpuUsage: health?.cpuUsage ?? null,
               liveRamUsed: health?.memoryUsage?.used ?? null,
               liveRamTotal: health?.memoryUsage?.total ?? null,

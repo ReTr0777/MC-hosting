@@ -13,10 +13,20 @@ import {
 } from './docker';
 import { configureDockerAutoStart } from './docker-settings';
 import { firewallStatus, openFirewall } from './firewall';
+import { checkMove, inspectDataDir, moveDataDir } from './data-dir';
 import { FileLogger } from './logger';
 import { initAutoUpdates, type UpdaterControls } from './updater';
 import { enrollWithPanel, normalisePanelUrl, verifyWithPanel } from './enroll';
-import type { AppInfo, DaemonStatus, DockerStatus, EnrollResult, NodeConfig, UpdateStatus } from '../shared-types';
+import type {
+  AppInfo,
+  DaemonStatus,
+  DockerStatus,
+  EnrollResult,
+  MoveDataResult,
+  NodeConfig,
+  StorageInfo,
+  UpdateStatus,
+} from '../shared-types';
 
 /*
  * Bootstrap trace, written before anything else can fail.
@@ -128,6 +138,7 @@ function appInfo(): AppInfo {
     hostname: os.hostname(),
     autoStart: autoStartEnabled(),
     availableGames: Object.entries(GAME_LABELS).map(([id, label]) => ({ id, label })),
+    defaultDataDir: store.serversDir,
   };
 }
 
@@ -371,6 +382,22 @@ function registerIpc(): void {
     });
 
     store.applyEnrollment(result);
+
+    /*
+     * Keep what the wizard was told, not just what the panel was told.
+     *
+     * These figures used to be sent once and forgotten, so the node went on reporting its
+     * full hardware in every health check — and the panel overwrote the capacity it had
+     * just been given, seconds after enrolment. Storing them makes the wizard's answer the
+     * node's actual limit, which is what the person answering it thought they were doing.
+     */
+    if (limits?.memoryMb || limits?.cpuCores) {
+      store.write({
+        ...(limits.memoryMb ? { maxMemoryMb: Math.round(limits.memoryMb) } : {}),
+        ...(limits.cpuCores ? { maxCpuCores: Math.round(limits.cpuCores) } : {}),
+      });
+    }
+
     log.write(
       'config',
       `enrolled with ${result.panelUrl} as "${result.node.name}" ` +
@@ -473,8 +500,125 @@ function registerIpc(): void {
     return store.read();
   });
 
-  ipcMain.handle('app:open-data-dir', () => shell.openPath(store.dataRoot));
+  // The folder the servers are actually in, which is not store.dataRoot once it has
+  // been moved to another drive.
+  ipcMain.handle('app:open-data-dir', () => shell.openPath(store.read().dataDir));
   ipcMain.handle('app:open-log', () => shell.openPath(log.path));
+
+  /* ---------- Resources: where servers are stored, and how much of the machine they get ---------- */
+
+  ipcMain.handle('storage:info', async (): Promise<StorageInfo> => {
+    const info = await inspectDataDir(store.read().dataDir);
+    return {
+      path: info.path,
+      sizeBytes: info.sizeBytes,
+      freeBytes: info.freeBytes,
+      serverCount: info.serverCount,
+      writable: info.writable,
+    };
+  });
+
+  /** Opens the folder picker and says whether that choice would work, without doing it. */
+  ipcMain.handle('storage:choose', async (): Promise<{ path: string; ok: boolean; message: string } | null> => {
+    const current = store.read().dataDir;
+    const picked = await dialog.showOpenDialog(win ?? undefined!, {
+      title: 'Where should servers be stored?',
+      defaultPath: fs.existsSync(current) ? current : undefined,
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Use this folder',
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return null;
+
+    const target = picked.filePaths[0];
+    const check = await checkMove(current, target);
+    return {
+      path: target,
+      ok: check.ok,
+      message: check.ok
+        ? [
+            check.from.sizeBytes ? `${(check.from.sizeBytes / 1024 ** 3).toFixed(1)} GB to move.` : 'Nothing to move yet.',
+            check.warning,
+          ]
+            .filter(Boolean)
+            .join(' ')
+        : check.reason ?? 'That folder cannot be used.',
+    };
+  });
+
+  /**
+   * Moves the servers, then points the config at their new home.
+   *
+   * The daemon is stopped for the duration and started again afterwards, because copying
+   * a world out from under a running server is how you get a corrupt region file. The
+   * config is written last: until the data is verified in the new place, the only path
+   * recorded anywhere is the one the data is still at.
+   */
+  ipcMain.handle('storage:move', async (_e, target: string): Promise<MoveDataResult> => {
+    if (typeof target !== 'string' || !target.trim()) throw new Error('Pick a folder first.');
+
+    const from = store.read().dataDir;
+    const wasRunning = daemon.getStatus().state === 'running';
+    if (wasRunning) {
+      log.write('storage', `stopping the agent to move ${from} to ${target}`);
+      await daemon.stop();
+    }
+
+    try {
+      const result = await moveDataDir(from, target, (message) => {
+        log.write('storage', message);
+        win?.webContents.send('storage:progress', message);
+      });
+
+      if (result.ok) {
+        store.write({ dataDir: result.path });
+        log.write('storage', `servers now at ${result.path}`);
+      } else {
+        log.write('storage', `move failed: ${result.detail}`);
+      }
+      return result;
+    } finally {
+      // Started again whatever happened. A failed move leaves everything where it was,
+      // and a node that stays down because a copy went wrong is the worse outcome.
+      if (wasRunning) daemon.start();
+    }
+  });
+
+  /**
+   * Sets how much of this machine servers may use.
+   *
+   * Restarts the agent: the figures are read from config.json at startup and reported to
+   * the panel in every health check, so without a restart the panel would keep budgeting
+   * against the old number while the node refused placements against the new one.
+   */
+  ipcMain.handle('limits:set', async (_e, limits: { maxMemoryMb?: number; maxCpuCores?: number }) => {
+    const patch: Record<string, unknown> = {};
+
+    if (typeof limits?.maxMemoryMb === 'number') {
+      const machine = Math.round(os.totalmem() / (1024 * 1024));
+      const asked = Math.round(limits.maxMemoryMb);
+      // 0 is the way to say "no limit", so it is not an error. Anything else has to be
+      // enough to run at least one small server, and no more than the machine holds.
+      if (asked !== 0 && (asked < 1024 || asked > machine)) {
+        throw new Error(`Choose between 1024 MB and ${machine} MB, or 0 for no limit.`);
+      }
+      patch.maxMemoryMb = asked;
+    }
+
+    if (typeof limits?.maxCpuCores === 'number') {
+      const machine = os.cpus().length || 1;
+      const asked = Math.round(limits.maxCpuCores * 10) / 10;
+      if (asked !== 0 && (asked < 0.5 || asked > machine)) {
+        throw new Error(`Choose between 0.5 and ${machine} cores, or 0 for no limit.`);
+      }
+      patch.maxCpuCores = asked;
+    }
+
+    if (Object.keys(patch).length === 0) throw new Error('Nothing to save.');
+
+    store.write(patch);
+    await daemon.restart();
+    return store.read();
+  });
 }
 
 app.on('second-instance', showWindow);
@@ -487,6 +631,24 @@ app.whenReady().then(async () => {
 
   store = new ConfigStore(app.getPath('userData'));
   store.ensureInitialised();
+
+  /*
+   * A moved data directory that is not there any more.
+   *
+   * Servers can live on a second drive, and a second drive can be unplugged, failed, or
+   * simply not mounted yet when the app launches at sign-in. The node is left pointing at
+   * it deliberately — silently falling back to the system drive would have it come up with
+   * every world apparently empty, and the panel would show servers whose data is fine and
+   * merely elsewhere. Better to say so and let the owner plug the drive back in.
+   */
+  const configured = store.read().dataDir;
+  if (configured !== store.serversDir && !fs.existsSync(configured)) {
+    log.write(
+      'app',
+      `server data directory ${configured} is not reachable — servers stored there cannot start ` +
+        'until that drive is back. Change it under Resources if it has moved for good.'
+    );
+  }
 
   daemon = new DaemonProcess(
     daemonEntry,

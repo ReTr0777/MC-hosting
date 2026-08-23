@@ -7,6 +7,7 @@ import { DaemonHealthDto, DEFAULT_ENABLED_GAMES } from '@mc-manager/shared';
 import { getConfig } from '../config';
 import { detectBestJavaMajor } from './runtime/java-version';
 import { freeSpaceMb, diskSizeMb } from '../utils/disk';
+import { resolveAllowance } from './allowance';
 
 const docker = new Docker();
 
@@ -248,6 +249,7 @@ async function collectSystemHealth(): Promise<DaemonHealthDto> {
       swapTotal: Math.round(swap.swaptotal / (1024 * 1024)),
     },
     dockerAvailable,
+    allowance: resolveAllowance(),
     cpuModel: `${cpuInfo.manufacturer} ${cpuInfo.brand}`.trim(),
     cpuCores: cpuInfo.physicalCores,
     cpuThreads: cpuInfo.cores,

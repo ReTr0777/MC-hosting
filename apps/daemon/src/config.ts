@@ -33,6 +33,16 @@ export interface DaemonConfig {
   s3RetainLocal?: boolean;
   /** Games this node will host. See DEFAULT_ENABLED_GAMES for why it is never empty. */
   enabledGames?: Game[];
+  /**
+   * Most RAM, in MB, this node will hand out to servers, or 0/unset for the whole machine.
+   *
+   * A node on somebody's own desktop shares the machine with whatever else they do with
+   * it. Reported to the panel as the node's capacity, so placements are refused against
+   * this number rather than against the RAM the hardware happens to have.
+   */
+  maxMemoryMb?: number;
+  /** Same, in CPU cores. 0/unset means every core. */
+  maxCpuCores?: number;
 }
 
 const dataBaseDir = process.env.DAEMON_DATA_DIR ? path.dirname(process.env.DAEMON_DATA_DIR) : path.join(process.cwd(), 'data');
@@ -50,6 +60,8 @@ const defaultConfig: DaemonConfig = {
   frpApiRemotePort: process.env.FRP_DAEMON_API_PORT ? parseInt(process.env.FRP_DAEMON_API_PORT, 10) : undefined,
   s3RetainLocal: true,
   enabledGames: [...DEFAULT_ENABLED_GAMES],
+  maxMemoryMb: parseInt(process.env.DAEMON_MAX_MEMORY_MB || '0', 10) || 0,
+  maxCpuCores: parseFloat(process.env.DAEMON_MAX_CPU_CORES || '0') || 0,
 };
 
 let loadedConfig: DaemonConfig = { ...defaultConfig };

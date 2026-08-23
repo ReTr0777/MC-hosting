@@ -39,7 +39,31 @@ export interface NodeConfig {
   /** Tunnel-server port that maps back to this node's API; 0 when not published. */
   frpApiRemotePort: number;
   enabledGames: string[];
+  /** Where server files are kept. Movable to another drive; see main/data-dir.ts. */
   dataDir: string;
+  /** Most RAM this node will hand out to servers, in MB. 0 means the whole machine. */
+  maxMemoryMb: number;
+  /** Most CPU cores it will hand out. 0 means all of them. */
+  maxCpuCores: number;
+}
+
+/** What the Resources tab needs to draw: the current folder, and the drive it sits on. */
+export interface StorageInfo {
+  path: string;
+  /** Bytes the servers currently occupy, or null when the folder could not be walked. */
+  sizeBytes: number | null;
+  /** Free space on that drive, or null when it could not be read. */
+  freeBytes: number | null;
+  serverCount: number;
+  writable: boolean;
+}
+
+/** The outcome of moving the data directory, in words meant for the person who asked. */
+export interface MoveDataResult {
+  ok: boolean;
+  detail: string;
+  /** Where the servers are now — the same as before when the move failed. */
+  path: string;
 }
 
 /** What a machine tells the panel about itself when redeeming a setup code. */
@@ -101,6 +125,8 @@ export interface AppInfo {
   hostname: string;
   autoStart: boolean;
   availableGames: { id: string; label: string }[];
+  /** The default server folder, so the UI can offer to go back to it. */
+  defaultDataDir: string;
 }
 
 export interface UpdateStatus {

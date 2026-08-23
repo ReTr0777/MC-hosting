@@ -237,7 +237,29 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
    * totalMemory quietly refuses servers it could hold, or accepts ones it cannot. Neither
    * shows up anywhere else.
    */
-  if (health?.memoryUsage?.total && node.totalMemory) {
+  const allowance = health?.allowance;
+  if (allowance?.capped) {
+    /*
+     * A capped node is not drifting, it is doing as it was told. Comparing its stored
+     * capacity to its physical RAM would warn about every machine whose owner kept some
+     * of it back — which is the normal case for a node on somebody's own PC.
+     */
+    checks.push({
+      id: 'capacity-drift',
+      label: 'Recorded capacity',
+      level: node.totalMemory === Math.round(allowance.memoryMb) ? 'ok' : 'warn',
+      detail:
+        `This machine offers ${(allowance.memoryMb / 1024).toFixed(1)} GB and ${allowance.cpuCores} cores ` +
+        `of its ${((health?.memoryUsage?.total ?? 0) / 1024).toFixed(1)} GB` +
+        (node.totalMemory === Math.round(allowance.memoryMb)
+          ? '.'
+          : `, but is registered here as ${(node.totalMemory / 1024).toFixed(1)} GB.`),
+      remedy:
+        node.totalMemory === Math.round(allowance.memoryMb)
+          ? undefined
+          : 'The next health poll corrects this. Change the limit in the node app itself, under Resources.',
+    });
+  } else if (health?.memoryUsage?.total && node.totalMemory) {
     const drift = Math.abs(health.memoryUsage.total - node.totalMemory) / health.memoryUsage.total;
     if (drift > 0.1) {
       checks.push({

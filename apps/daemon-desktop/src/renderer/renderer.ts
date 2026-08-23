@@ -34,6 +34,10 @@ interface NodeConfig {
   frpApiRemotePort: number;
   enabledGames: string[];
   dataDir: string;
+  /** Cap on RAM handed to servers, in MB; 0 for the whole machine. */
+  maxMemoryMb: number;
+  /** Cap on cores handed to servers; 0 for all of them. */
+  maxCpuCores: number;
 }
 interface AppInfo {
   version: string;
@@ -44,7 +48,16 @@ interface AppInfo {
   hostname: string;
   autoStart: boolean;
   availableGames: { id: string; label: string }[];
+  defaultDataDir: string;
 }
+interface StorageInfo {
+  path: string;
+  sizeBytes: number | null;
+  freeBytes: number | null;
+  serverCount: number;
+  writable: boolean;
+}
+interface MoveDataResult { ok: boolean; detail: string; path: string }
 interface LogLine { ts: number; stream: 'out' | 'err' | 'app'; text: string }
 interface FirewallStatus { state: 'open' | 'missing' | 'unknown'; detail: string }
 interface VerifyResult {
@@ -141,6 +154,11 @@ interface NodeApi {
   startDocker(): Promise<DockerStatus>;
   configureDockerAutoStart(): Promise<{ ok: boolean; changed: boolean; detail: string }>;
   onDockerStatus(cb: (s: DockerStatus) => void): void;
+  getStorageInfo(): Promise<StorageInfo>;
+  chooseStorageDir(): Promise<{ path: string; ok: boolean; message: string } | null>;
+  moveStorageDir(target: string): Promise<MoveDataResult>;
+  onStorageProgress(cb: (message: string) => void): void;
+  setLimits(limits: { maxMemoryMb?: number; maxCpuCores?: number }): Promise<NodeConfig>;
   setAutoStart(enabled: boolean): Promise<boolean>;
   openDataDir(): Promise<void>;
   openLogFile(): Promise<void>;
@@ -408,6 +426,7 @@ function renderConfig(): void {
 
   renderEnrollment();
   renderAddress();
+  renderLimits();
 }
 
 /**
@@ -431,6 +450,172 @@ function renderEnrollment(): void {
       `This machine is registered as "${config.nodeName || 'a node'}" on ${config.panelUrl}. ` +
       'Entering a new code moves it to whichever panel issued that code.';
     result.classList.remove('hidden');
+  }
+}
+
+/* ---------- resources ---------- */
+
+/** Where the user has said to move the servers, before they confirm it. Null when idle. */
+let pendingDataDir: string | null = null;
+
+function gb(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/**
+ * The storage line: what is stored, and whether the drive can take much more.
+ *
+ * Free space is the number that matters. A node that fills its drive stops mid-save, and
+ * the first anyone hears of it is a world that will not load.
+ */
+async function renderStorage(): Promise<void> {
+  $<HTMLInputElement>('inp-data-dir').value = config.dataDir;
+
+  const detail = $('storage-detail');
+  detail.textContent = 'Reading…';
+  try {
+    const store = await api.getStorageInfo();
+    const parts: string[] = [];
+    parts.push(
+      store.serverCount === 1 ? '1 server stored here' : `${store.serverCount} servers stored here`
+    );
+    if (store.sizeBytes !== null) parts.push(`using ${gb(store.sizeBytes)}`);
+    if (store.freeBytes !== null) parts.push(`${gb(store.freeBytes)} free on that drive`);
+    if (!store.writable) parts.push('— this folder cannot be written to');
+    detail.textContent = `${parts.join(', ')}.`;
+  } catch (err: any) {
+    detail.textContent = stripIpcPrefix(err.message);
+  }
+}
+
+/**
+ * The two allowance sliders.
+ *
+ * Both run to the machine's own size, and sitting at the top means "no limit" — which is
+ * stored as 0 rather than as the current hardware figure, so the node still offers the
+ * whole machine after a RAM upgrade instead of being pinned to what it had that day.
+ */
+function renderLimits(): void {
+  const memory = $<HTMLInputElement>('rng-max-memory');
+  // Whole gigabytes: nobody wants to aim a slider at 6144 MB, and the daemon rounds anyway.
+  const machineGb = Math.max(1, Math.floor(info.machineMemoryMb / 1024));
+  memory.min = '1';
+  memory.max = String(machineGb);
+  memory.step = '1';
+  memory.value = String(config.maxMemoryMb > 0 ? Math.max(1, Math.round(config.maxMemoryMb / 1024)) : machineGb);
+
+  const cpu = $<HTMLInputElement>('rng-max-cpu');
+  cpu.min = '1';
+  cpu.max = String(info.machineCpuCores);
+  cpu.step = '1';
+  cpu.value = String(config.maxCpuCores > 0 ? Math.max(1, Math.round(config.maxCpuCores)) : info.machineCpuCores);
+
+  renderLimitLabels();
+}
+
+function renderLimitLabels(): void {
+  const machineGb = Math.max(1, Math.floor(info.machineMemoryMb / 1024));
+  const gbValue = Number($<HTMLInputElement>('rng-max-memory').value);
+  const cores = Number($<HTMLInputElement>('rng-max-cpu').value);
+
+  $('lbl-max-memory').textContent = `${gbValue} GB`;
+  $('lbl-max-cpu').textContent = cores === 1 ? '1 core' : `${cores} cores`;
+
+  $('hint-max-memory').textContent =
+    gbValue >= machineGb
+      ? `The whole machine (${machineGb} GB). Servers can use all of it.`
+      : `${machineGb - gbValue} GB of this machine's ${machineGb} GB stays yours.`;
+  $('hint-max-cpu').textContent =
+    cores >= info.machineCpuCores
+      ? `Every core (${info.machineCpuCores}).`
+      : `${info.machineCpuCores - cores} of ${info.machineCpuCores} cores stay yours.`;
+}
+
+async function chooseDataDir(): Promise<void> {
+  const error = $('storage-error');
+  error.classList.add('hidden');
+
+  const picked = await api.chooseStorageDir();
+  if (!picked) return;
+
+  if (!picked.ok) {
+    error.textContent = picked.message;
+    error.classList.remove('hidden');
+    return;
+  }
+
+  // Chosen but not moved. The move stops the node and rewrites hundreds of gigabytes;
+  // it does not happen because somebody clicked through a folder picker.
+  pendingDataDir = picked.path;
+  const pending = $('storage-pending');
+  pending.textContent = `Move to ${picked.path}? ${picked.message} The node stops while this runs.`;
+  pending.classList.remove('hidden');
+  $('storage-move-row').classList.remove('hidden');
+}
+
+function cancelMove(): void {
+  pendingDataDir = null;
+  $('storage-pending').classList.add('hidden');
+  $('storage-move-row').classList.add('hidden');
+  $('storage-error').classList.add('hidden');
+}
+
+async function moveDataDir(): Promise<void> {
+  if (!pendingDataDir) return;
+
+  const button = $<HTMLButtonElement>('btn-move-data');
+  const pending = $('storage-pending');
+  const error = $('storage-error');
+  button.disabled = true;
+  error.classList.add('hidden');
+  pending.textContent = 'Stopping the node…';
+
+  try {
+    const result = await api.moveStorageDir(pendingDataDir);
+    if (result.ok) {
+      config = await api.readConfig();
+      cancelMove();
+      await renderStorage();
+      toast(result.detail);
+    } else {
+      error.textContent = result.detail;
+      error.classList.remove('hidden');
+      pending.classList.add('hidden');
+    }
+  } catch (err: any) {
+    error.textContent = stripIpcPrefix(err.message);
+    error.classList.remove('hidden');
+    pending.classList.add('hidden');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveLimits(): Promise<void> {
+  const machineGb = Math.max(1, Math.floor(info.machineMemoryMb / 1024));
+  const gbValue = Number($<HTMLInputElement>('rng-max-memory').value);
+  const cores = Number($<HTMLInputElement>('rng-max-cpu').value);
+  const error = $('limits-error');
+  error.classList.add('hidden');
+
+  try {
+    config = await api.setLimits({
+      // At the top of the slider the answer is "no limit", not "exactly what this
+      // machine has today".
+      maxMemoryMb: gbValue >= machineGb ? 0 : gbValue * 1024,
+      maxCpuCores: cores >= info.machineCpuCores ? 0 : cores,
+    });
+    renderLimits();
+    $('limits-saved').classList.remove('hidden');
+    window.setTimeout(() => $('limits-saved').classList.add('hidden'), 4000);
+    toast(
+      config.maxMemoryMb || config.maxCpuCores
+        ? 'Limits saved. The panel picks them up at its next health check.'
+        : 'Limits removed. This node offers the whole machine again.'
+    );
+  } catch (err: any) {
+    error.textContent = stripIpcPrefix(err.message);
+    error.classList.remove('hidden');
   }
 }
 
@@ -772,6 +957,20 @@ function wire(): void {
   });
 
   $('btn-open-data').addEventListener('click', () => api.openDataDir());
+  $('btn-open-data-2').addEventListener('click', () => api.openDataDir());
+  $('btn-choose-data-dir').addEventListener('click', chooseDataDir);
+  $('btn-move-data').addEventListener('click', moveDataDir);
+  $('btn-cancel-move').addEventListener('click', cancelMove);
+  $('btn-save-limits').addEventListener('click', saveLimits);
+  $('rng-max-memory').addEventListener('input', renderLimitLabels);
+  $('rng-max-cpu').addEventListener('input', renderLimitLabels);
+
+  // A move of any size takes minutes, so the app says which stage it is at rather than
+  // sitting on one message while nothing visibly happens.
+  api.onStorageProgress((message) => {
+    $('storage-pending').textContent = message;
+    $('storage-pending').classList.remove('hidden');
+  });
 
   $('btn-update-check').addEventListener('click', async () => {
     await api.checkForUpdate();
@@ -820,6 +1019,9 @@ async function init(): Promise<void> {
 
   wire();
   renderConfig();
+  // Walks the whole server folder, so it is left to finish on its own rather than
+  // holding up the window.
+  void renderStorage();
   renderStatus(daemonStatus);
   renderUpdate(await api.getUpdateStatus());
   for (const line of await api.getLogs()) appendLog(line);
