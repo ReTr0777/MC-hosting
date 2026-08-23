@@ -58,7 +58,15 @@ export interface DaemonHealthDto {
    */
   allowance?: {
     memoryMb: number;
-    cpuCores: number;
+    /**
+     * Logical processors, i.e. threads — the same unit as `docker run --cpus` and as a
+     * server's own cpuLimit, not the physical core count in `cpuCores` above.
+     *
+     * Named for the unit rather than for the hardware on purpose. On an SMT chip the two
+     * differ by a factor of two, and a field called cpuCores holding 16 next to another
+     * called cpuCores holding 8 is a bug waiting to be written.
+     */
+    cpus: number;
     /** False when the figures above are simply the whole machine, so nothing was capped. */
     capped: boolean;
   };

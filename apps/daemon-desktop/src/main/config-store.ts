@@ -96,7 +96,7 @@ export class ConfigStore {
       // 0 means "no limit": the node offers whatever the machine has. See
       // apps/daemon/src/services/allowance.ts, which is what actually enforces these.
       maxMemoryMb: typeof raw.maxMemoryMb === 'number' ? raw.maxMemoryMb : 0,
-      maxCpuCores: typeof raw.maxCpuCores === 'number' ? raw.maxCpuCores : 0,
+      maxCpus: typeof raw.maxCpus === 'number' ? raw.maxCpus : 0,
     };
   }
 

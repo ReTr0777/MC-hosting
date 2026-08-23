@@ -390,10 +390,17 @@ most on a node that is also somebody's own PC, which is the normal case here.
 - **Memory and CPU for servers.** Both default to the whole machine. Lower either and
   the node reports the smaller figure to the panel as its capacity, so the scheduler
   stops placing servers here at that point instead of competing with whatever else the
-  owner does with the PC. Stored as `maxMemoryMb` / `maxCpuCores` in `config.json`, or
-  `DAEMON_MAX_MEMORY_MB` / `DAEMON_MAX_CPU_CORES` for a node run from Docker; `0` means
-  no limit. The daemon also refuses outright to create a container larger than the whole
+  owner does with the PC. Stored as `maxMemoryMb` / `maxCpus` in `config.json`, or
+  `DAEMON_MAX_MEMORY_MB` / `DAEMON_MAX_CPUS` for a node run from Docker; `0` means no
+  limit. The daemon also refuses outright to create a container larger than the whole
   allowance, which catches the case where the panel's copy of the capacity is stale.
+
+  **CPU is counted in logical processors — threads — not physical cores.** That is the
+  unit `docker run --cpus` takes and the unit a server's own CPU limit is already in, so
+  budgeting in anything else would mean converting at every boundary. An 8-core chip with
+  SMT offers 16. Note that the health report's `cpuCores` field means the *physical* count
+  and `cpuThreads` the logical one; the allowance deliberately calls its own figure `cpus`
+  rather than reusing either name.
 
 The first-run wizard asks the same two questions, and its answers are now kept: they
 used to be sent to the panel once and forgotten, so the next health check overwrote the

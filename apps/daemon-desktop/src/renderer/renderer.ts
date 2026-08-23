@@ -36,8 +36,8 @@ interface NodeConfig {
   dataDir: string;
   /** Cap on RAM handed to servers, in MB; 0 for the whole machine. */
   maxMemoryMb: number;
-  /** Cap on cores handed to servers; 0 for all of them. */
-  maxCpuCores: number;
+  /** Cap on CPU handed to servers, in logical processors; 0 for all of them. */
+  maxCpus: number;
 }
 interface AppInfo {
   version: string;
@@ -158,7 +158,7 @@ interface NodeApi {
   chooseStorageDir(): Promise<{ path: string; ok: boolean; message: string } | null>;
   moveStorageDir(target: string): Promise<MoveDataResult>;
   onStorageProgress(cb: (message: string) => void): void;
-  setLimits(limits: { maxMemoryMb?: number; maxCpuCores?: number }): Promise<NodeConfig>;
+  setLimits(limits: { maxMemoryMb?: number; maxCpus?: number }): Promise<NodeConfig>;
   setAutoStart(enabled: boolean): Promise<boolean>;
   openDataDir(): Promise<void>;
   openLogFile(): Promise<void>;
@@ -508,7 +508,7 @@ function renderLimits(): void {
   cpu.min = '1';
   cpu.max = String(info.machineCpuCores);
   cpu.step = '1';
-  cpu.value = String(config.maxCpuCores > 0 ? Math.max(1, Math.round(config.maxCpuCores)) : info.machineCpuCores);
+  cpu.value = String(config.maxCpus > 0 ? Math.max(1, Math.round(config.maxCpus)) : info.machineCpuCores);
 
   renderLimitLabels();
 }
@@ -519,16 +519,23 @@ function renderLimitLabels(): void {
   const cores = Number($<HTMLInputElement>('rng-max-cpu').value);
 
   $('lbl-max-memory').textContent = `${gbValue} GB`;
-  $('lbl-max-cpu').textContent = cores === 1 ? '1 core' : `${cores} cores`;
+  $('lbl-max-cpu').textContent = cores === 1 ? '1 CPU' : `${cores} CPUs`;
 
   $('hint-max-memory').textContent =
     gbValue >= machineGb
       ? `The whole machine (${machineGb} GB). Servers can use all of it.`
       : `${machineGb - gbValue} GB of this machine's ${machineGb} GB stays yours.`;
+  /*
+   * "CPUs", not "cores".
+   *
+   * This counts logical processors — threads — because that is what Docker limits a
+   * container to and what a server's own CPU figure means. On a chip with SMT it is twice
+   * the core count, so calling it cores would have an 8-core machine reporting 16 of them.
+   */
   $('hint-max-cpu').textContent =
     cores >= info.machineCpuCores
-      ? `Every core (${info.machineCpuCores}).`
-      : `${info.machineCpuCores - cores} of ${info.machineCpuCores} cores stay yours.`;
+      ? `Everything this machine has (${info.machineCpuCores} logical processors).`
+      : `${info.machineCpuCores - cores} of ${info.machineCpuCores} logical processors stay yours.`;
 }
 
 async function chooseDataDir(): Promise<void> {
@@ -603,13 +610,13 @@ async function saveLimits(): Promise<void> {
       // At the top of the slider the answer is "no limit", not "exactly what this
       // machine has today".
       maxMemoryMb: gbValue >= machineGb ? 0 : gbValue * 1024,
-      maxCpuCores: cores >= info.machineCpuCores ? 0 : cores,
+      maxCpus: cores >= info.machineCpuCores ? 0 : cores,
     });
     renderLimits();
     $('limits-saved').classList.remove('hidden');
     window.setTimeout(() => $('limits-saved').classList.add('hidden'), 4000);
     toast(
-      config.maxMemoryMb || config.maxCpuCores
+      config.maxMemoryMb || config.maxCpus
         ? 'Limits saved. The panel picks them up at its next health check.'
         : 'Limits removed. This node offers the whole machine again.'
     );
@@ -694,7 +701,9 @@ function openWizard(): void {
   $<HTMLInputElement>('wiz-memory').value = String(suggestedMemory);
   $<HTMLInputElement>('wiz-cores').value = String(suggestedCores);
   $('wiz-memory-hint').textContent = `This machine has ${(info.machineMemoryMb / 1024).toFixed(1)} GB.`;
-  $('wiz-cores-hint').textContent = `This machine has ${info.machineCpuCores} cores.`;
+  // Threads, not cores — see renderLimitLabels. The old wording claimed an 8-core chip
+  // with SMT had 16 cores.
+  $('wiz-cores-hint').textContent = `This machine has ${info.machineCpuCores} logical processors.`;
 
   $<HTMLInputElement>('wiz-chk-docker').checked = config.startDockerWithApp;
   $<HTMLInputElement>('wiz-chk-autostart').checked = true;

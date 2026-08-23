@@ -43,8 +43,11 @@ export interface NodeConfig {
   dataDir: string;
   /** Most RAM this node will hand out to servers, in MB. 0 means the whole machine. */
   maxMemoryMb: number;
-  /** Most CPU cores it will hand out. 0 means all of them. */
-  maxCpuCores: number;
+  /**
+   * Most CPU it will hand out, in logical processors (threads) — the unit Docker's
+   * --cpus takes. Not physical cores. 0 means all of them.
+   */
+  maxCpus: number;
 }
 
 /** What the Resources tab needs to draw: the current folder, and the drive it sits on. */
@@ -117,6 +120,7 @@ export interface AppInfo {
   version: string;
   /** What this machine has, so the wizard can suggest what to hand out rather than ask blind. */
   machineMemoryMb: number;
+  /** Logical processors on this machine: os.cpus() counts threads, not cores. */
   machineCpuCores: number;
   /** Where config.json and the server data directory live. */
   dataRoot: string;

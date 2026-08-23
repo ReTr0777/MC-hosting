@@ -21,9 +21,13 @@ export function reportedCapacityPatch(
   if (allowance?.capped && allowance.memoryMb > 0) {
     return {
       totalMemory: Math.round(allowance.memoryMb),
-      // Docker takes fractional NanoCpus, but the capacity budget counts whole cores;
-      // rounding up would hand out a core the owner held back.
-      ...(allowance.cpuCores > 0 ? { totalCpu: Math.max(1, Math.floor(allowance.cpuCores)) } : {}),
+      /*
+       * totalCpu counts logical processors, the same unit as a server's cpuLimit and as
+       * the figure a node sends when it enrols — not the physical core count the health
+       * report calls cpuCores. Docker takes fractional CPUs but the budget counts whole
+       * ones, and rounding up would hand back a thread the owner held in reserve.
+       */
+      ...(allowance.cpus > 0 ? { totalCpu: Math.max(1, Math.floor(allowance.cpus)) } : {}),
     };
   }
 

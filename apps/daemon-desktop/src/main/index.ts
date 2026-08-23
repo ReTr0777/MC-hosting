@@ -394,7 +394,7 @@ function registerIpc(): void {
     if (limits?.memoryMb || limits?.cpuCores) {
       store.write({
         ...(limits.memoryMb ? { maxMemoryMb: Math.round(limits.memoryMb) } : {}),
-        ...(limits.cpuCores ? { maxCpuCores: Math.round(limits.cpuCores) } : {}),
+        ...(limits.cpuCores ? { maxCpus: Math.round(limits.cpuCores) } : {}),
       });
     }
 
@@ -590,7 +590,7 @@ function registerIpc(): void {
    * the panel in every health check, so without a restart the panel would keep budgeting
    * against the old number while the node refused placements against the new one.
    */
-  ipcMain.handle('limits:set', async (_e, limits: { maxMemoryMb?: number; maxCpuCores?: number }) => {
+  ipcMain.handle('limits:set', async (_e, limits: { maxMemoryMb?: number; maxCpus?: number }) => {
     const patch: Record<string, unknown> = {};
 
     if (typeof limits?.maxMemoryMb === 'number') {
@@ -604,13 +604,14 @@ function registerIpc(): void {
       patch.maxMemoryMb = asked;
     }
 
-    if (typeof limits?.maxCpuCores === 'number') {
+    if (typeof limits?.maxCpus === 'number') {
+      // os.cpus() counts logical processors, which is the unit Docker limits in.
       const machine = os.cpus().length || 1;
-      const asked = Math.round(limits.maxCpuCores * 10) / 10;
+      const asked = Math.round(limits.maxCpus * 10) / 10;
       if (asked !== 0 && (asked < 0.5 || asked > machine)) {
-        throw new Error(`Choose between 0.5 and ${machine} cores, or 0 for no limit.`);
+        throw new Error(`Choose between 0.5 and ${machine} CPUs, or 0 for no limit.`);
       }
-      patch.maxCpuCores = asked;
+      patch.maxCpus = asked;
     }
 
     if (Object.keys(patch).length === 0) throw new Error('Nothing to save.');

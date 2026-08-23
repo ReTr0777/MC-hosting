@@ -41,8 +41,11 @@ export interface DaemonConfig {
    * this number rather than against the RAM the hardware happens to have.
    */
   maxMemoryMb?: number;
-  /** Same, in CPU cores. 0/unset means every core. */
-  maxCpuCores?: number;
+  /**
+   * Same, in logical processors (threads) — the unit Docker's --cpus takes, and the unit
+   * a server's cpuLimit is already in. Not physical cores. 0/unset means all of them.
+   */
+  maxCpus?: number;
 }
 
 const dataBaseDir = process.env.DAEMON_DATA_DIR ? path.dirname(process.env.DAEMON_DATA_DIR) : path.join(process.cwd(), 'data');
@@ -61,7 +64,7 @@ const defaultConfig: DaemonConfig = {
   s3RetainLocal: true,
   enabledGames: [...DEFAULT_ENABLED_GAMES],
   maxMemoryMb: parseInt(process.env.DAEMON_MAX_MEMORY_MB || '0', 10) || 0,
-  maxCpuCores: parseFloat(process.env.DAEMON_MAX_CPU_CORES || '0') || 0,
+  maxCpus: parseFloat(process.env.DAEMON_MAX_CPUS || '0') || 0,
 };
 
 let loadedConfig: DaemonConfig = { ...defaultConfig };

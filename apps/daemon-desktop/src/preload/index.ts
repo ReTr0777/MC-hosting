@@ -78,7 +78,7 @@ const api = {
     ipcRenderer.on('storage:progress', (_e, message: string) => cb(message));
   },
   /** Caps what servers may use of this machine. 0 for either means no cap. */
-  setLimits: (limits: { maxMemoryMb?: number; maxCpuCores?: number }): Promise<NodeConfig> =>
+  setLimits: (limits: { maxMemoryMb?: number; maxCpus?: number }): Promise<NodeConfig> =>
     ipcRenderer.invoke('limits:set', limits),
 
   setAutoStart: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke('app:set-auto-start', enabled),

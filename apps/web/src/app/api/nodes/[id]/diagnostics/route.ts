@@ -249,7 +249,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       label: 'Recorded capacity',
       level: node.totalMemory === Math.round(allowance.memoryMb) ? 'ok' : 'warn',
       detail:
-        `This machine offers ${(allowance.memoryMb / 1024).toFixed(1)} GB and ${allowance.cpuCores} cores ` +
+        `This machine offers ${(allowance.memoryMb / 1024).toFixed(1)} GB and ${allowance.cpus} CPUs ` +
         `of its ${((health?.memoryUsage?.total ?? 0) / 1024).toFixed(1)} GB` +
         (node.totalMemory === Math.round(allowance.memoryMb)
           ? '.'
