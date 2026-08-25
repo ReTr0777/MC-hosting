@@ -104,13 +104,93 @@ class ProcessManager extends EventEmitter {
     const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
     const targetJarPath = path.join(serverDir, 'server.jar');
 
-    // Always preserve / write metadata to ensure version is never lost on restart
-    let meta: any = { mcVersion, serverType, installedVersion: mcVersion, serverPort: dto.serverPort };
+    /*
+     * What the directory was last built as, read before anything overwrites it.
+     *
+     * This used to be merged first — `meta = { ...existing, ...meta }` with the requested
+     * version on top — and then compared against the requested version to decide whether
+     * the contents were stale. It never differed, because the merge had just made them
+     * equal. The rescue below could not fire at all, which is why leftovers from a previous
+     * loader kept being launched.
+     */
+    let existingMeta: any = {};
     if (fs.existsSync(metaPath)) {
       try {
-        const existing = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        meta = { ...existing, ...meta };
+        existingMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       } catch (e) {}
+    }
+    const recordedVersion = existingMeta.installedVersion || existingMeta.mcVersion;
+    const recordedLoader = String(existingMeta.installedLoader || existingMeta.serverType || '').toUpperCase();
+
+    // Always preserve / write metadata to ensure version is never lost on restart
+    const meta: any = {
+      ...existingMeta,
+      mcVersion,
+      serverType,
+      installedVersion: mcVersion,
+      serverPort: dto.serverPort,
+    };
+
+    /*
+     * Clear what a previous loader or version left behind, before deciding what to launch.
+     *
+     * Moved ahead of the detection below, which is loader-blind and takes the first thing
+     * it recognises: a fabric-server-launch.jar from an earlier attempt was picked for a
+     * Forge server and started Fabric, which then died loading a Minecraft 26.2 bundler on
+     * Java 8. Everything is renamed rather than deleted, for the same reason as always —
+     * a guess about staleness is not grounds for destroying anyone's files.
+     *
+     * The world moves only when the Minecraft version changed. A loader change leaves it
+     * alone: the preflight offers that separately, as a decision rather than a side effect.
+     */
+    const versionChanged = Boolean(recordedVersion && recordedVersion !== mcVersion);
+    const loaderChanged = Boolean(recordedLoader && recordedLoader !== serverType);
+
+    if (versionChanged || loaderChanged) {
+      const reason = [
+        versionChanged ? `version ${recordedVersion} -> ${mcVersion}` : null,
+        loaderChanged ? `loader ${recordedLoader} -> ${serverType}` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      const rescueDir = path.join(serverDir, '.version_mismatch_rescue', `${recordedVersion || recordedLoader}_${Date.now()}`);
+      console.log(`[ProcessManager] Server directory is stale (${reason}). Moving old build into '${rescueDir}'.`);
+      fs.mkdirSync(rescueDir, { recursive: true });
+
+      const stale = [
+        'server.jar',
+        'libraries',
+        // Fabric's launcher and its marker directory. Left in place, these were preferred
+        // over anything Forge produced.
+        'fabric-server-launch.jar',
+        'fabric-server-launcher.jar',
+        'fabric-server-launcher.properties',
+        '.fabric',
+        // Launch scripts and args files, which name an absolute classpath for a build that
+        // is no longer here.
+        'run.sh',
+        'run.bat',
+        'user_args.txt',
+        'unix_args.txt',
+        'user_jvm_args.txt',
+        ...(versionChanged ? ['world'] : []),
+      ];
+
+      for (const name of stale) {
+        const src = path.join(serverDir, name);
+        if (!fs.existsSync(src)) continue;
+        try {
+          fs.renameSync(src, path.join(rescueDir, name));
+        } catch (e) {
+          // Cross-device or lock: fall back to a recursive copy+remove so nothing is lost.
+          fs.cpSync(src, path.join(rescueDir, name), { recursive: true });
+          fs.rmSync(src, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        }
+      }
+
+      meta.installedLoader = serverType;
+      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
     }
 
     // 1. Check for launch scripts (modpack preferred executables). A 0-byte run.sh is a
@@ -130,43 +210,26 @@ class ProcessManager extends EventEmitter {
 
     // 1b. If the archive's run.sh is missing/corrupt but an intact Forge/NeoForge
     // libraries/ tree survived, reconstruct run.sh from the installer's own args files.
-    if (synthesizeForgeRunScript(serverDir, dto.memoryMb)) {
+    if ((serverType === 'FORGE' || serverType === 'NEOFORGE') && synthesizeForgeRunScript(serverDir, dto.memoryMb)) {
       return 'run.sh';
     }
 
-    // 2. Check for custom fabric/forge launcher jars
-    if (fs.existsSync(path.join(serverDir, 'fabric-server-launch.jar'))) {
-      return 'fabric-server-launch.jar';
-    }
-    if (fs.existsSync(path.join(serverDir, 'user_args.txt')) || fs.existsSync(path.join(serverDir, 'unix_args.txt'))) {
-      return '@user_args.txt';
-    }
-
-    // 2. Version Mismatch Rescue: if the requested mcVersion doesn't match what's recorded,
-    // the old JAR/libraries/world can't be reused — but rather than deleting them outright
-    // (this path can be hit by any server start, not just an intentional engine update, e.g.
-    // if the daemon's on-disk meta ever drifts from the requested version), move them into a
-    // timestamped rescue folder so a world is never silently destroyed.
-    const recordedVer = meta.installedVersion || meta.mcVersion;
-    if (recordedVer && recordedVer !== mcVersion) {
-      const rescueDir = path.join(serverDir, '.version_mismatch_rescue', `${recordedVer}_${Date.now()}`);
-      console.log(`[ProcessManager] Minecraft version mismatch (recorded '${recordedVer}' vs requested '${mcVersion}'). Moving old JAR, libraries, and world to rescue folder '${rescueDir}' instead of deleting...`);
-      fs.mkdirSync(rescueDir, { recursive: true });
-      for (const name of ['server.jar', 'world', 'libraries']) {
-        const src = path.join(serverDir, name);
-        if (fs.existsSync(src)) {
-          try {
-            fs.renameSync(src, path.join(rescueDir, name));
-          } catch (e) {
-            // Cross-device or lock: fall back to a recursive copy+remove so nothing is lost.
-            fs.cpSync(src, path.join(rescueDir, name), { recursive: true });
-            fs.rmSync(src, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-          }
-        }
+    /*
+     * 2. Loader-specific launch targets, each only for the loader that produces it.
+     *
+     * These used to be tested regardless of what the server was set to, so whichever
+     * artefact happened to exist won. A Forge server with a leftover fabric-server-launch
+     * .jar launched Fabric and reported the loader mismatch as a class-version error.
+     */
+    if (serverType === 'FABRIC' || serverType === 'QUILT') {
+      if (fs.existsSync(path.join(serverDir, 'fabric-server-launch.jar'))) {
+        return 'fabric-server-launch.jar';
       }
-      meta.installedVersion = mcVersion;
-      meta.mcVersion = mcVersion;
-      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    }
+    if (serverType === 'FORGE' || serverType === 'NEOFORGE') {
+      if (fs.existsSync(path.join(serverDir, 'user_args.txt')) || fs.existsSync(path.join(serverDir, 'unix_args.txt'))) {
+        return '@user_args.txt';
+      }
     }
 
     // If server.jar already exists in the server folder and version matches, use it immediately
