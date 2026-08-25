@@ -194,3 +194,44 @@ test('an old Forge pack on a node with only Java 17 is still blocked', () => {
   assert.equal(findings.length, 1);
   assert.equal(findings[0].id, 'java-too-new');
 });
+
+test('a Fabric pack pinned to an old version is caught before it is started', () => {
+  /*
+   * The StarT case. A Fabric launcher jar carries no version in its name, so nothing in
+   * the directory said which Minecraft this pack was for — it started, resolved LATEST to
+   * the newest release, and the loader refused every mod. The mods knew all along.
+   */
+  const AdmZip = require('adm-zip');
+  const dir = dirWith(['fabric-server-launch.jar']);
+  fs.mkdirSync(path.join(dir, 'mods'), { recursive: true });
+  const zip = new AdmZip();
+  zip.addFile(
+    'fabric.mod.json',
+    Buffer.from(JSON.stringify({ id: 'ftbquestsfreezefix', depends: { minecraft: '1.20.1', 'fabric-api': '*' } }))
+  );
+  zip.writeZip(path.join(dir, 'mods', 'ftbquestsfreezefix.jar'));
+
+  const findings = preflight({ serverDir: dir, serverType: 'FABRIC', mcVersion: '26.2', availableJava: 21 });
+
+  const version = find(findings, 'pack-version-mismatch');
+  assert.ok(version, 'the pack version was not checked');
+  assert.equal(version!.fix?.mcVersion, '1.20.1');
+  assert.equal(version!.fix?.serverType, 'FABRIC');
+  // The mods are not the problem, and the wording has to say so.
+  assert.match(version!.detail, /the version is/);
+
+  const api = find(findings, 'fabric-api-missing');
+  assert.ok(api, 'the missing Fabric API was not reported');
+  assert.equal(api!.fix, undefined, 'this one needs a jar downloaded, so there is nothing to click');
+});
+
+test('a pack on the version it asks for raises nothing', () => {
+  const AdmZip = require('adm-zip');
+  const dir = dirWith(['fabric-server-launch.jar']);
+  fs.mkdirSync(path.join(dir, 'mods'), { recursive: true });
+  const zip = new AdmZip();
+  zip.addFile('fabric.mod.json', Buffer.from(JSON.stringify({ id: 'a', depends: { minecraft: '1.20.1' } })));
+  zip.writeZip(path.join(dir, 'mods', 'a.jar'));
+
+  assert.deepEqual(preflight({ serverDir: dir, serverType: 'FABRIC', mcVersion: '1.20.1', availableJava: 21 }), []);
+});

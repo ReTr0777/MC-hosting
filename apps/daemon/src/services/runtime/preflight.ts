@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { javaTooNewViolation, maxJavaMajor, requiredJavaMajor } from '@mc-manager/shared';
 import { detectServerType } from './server-type';
+import { packRequirements } from './pack-requirements';
 
 /**
  * Everything knowable about why a server will not work, before it is started.
@@ -108,8 +109,51 @@ export function preflight(input: PreflightInput): PreflightFinding[] {
     });
   }
 
+  /*
+   * --- 1b. What the pack's own mods say they need ---
+   *
+   * Read before the version checks below, because for a Fabric pack this is the only
+   * source of a version at all: the launcher jar's name carries none. A pack pinned to
+   * 1.20.1 and left on LATEST starts, resolves to the newest release, and is refused by
+   * the loader with a wall of per-mod complaints — every one of which was knowable here.
+   */
+  const requirements = packRequirements(serverDir);
+  const packVersion = requirements.minecraftVersion;
+
+  if (packVersion && effectiveVersion && packVersion !== effectiveVersion) {
+    findings.push({
+      id: 'pack-version-mismatch',
+      severity: 'block',
+      title: `These mods are for Minecraft ${packVersion}, but this server is set to ${effectiveVersion}`,
+      detail:
+        `${requirements.pinnedBy} of the ${requirements.modsScanned} mods here pin Minecraft ${packVersion} ` +
+        `exactly. Started on ${effectiveVersion} the loader refuses them all — the mods are not broken, ` +
+        `the version is.`,
+      fix: {
+        action: 'set-engine',
+        label: `Set Minecraft ${packVersion}`,
+        serverType: detected.loader || configured || undefined,
+        mcVersion: packVersion,
+      },
+    });
+  }
+
+  if (requirements.fabricApiMissing) {
+    findings.push({
+      id: 'fabric-api-missing',
+      severity: 'block',
+      // No fix action: this needs a jar downloaded and dropped into mods, and picking a
+      // build of it is a decision about the pack rather than a correction to it.
+      title: 'These mods need the Fabric API, and it is not installed',
+      detail:
+        'Fabric API is a mod like any other and has to be in the mods folder — it is not part of the ' +
+        'loader. Add the build that matches the Minecraft version this pack runs on, from ' +
+        'modrinth.com/mod/fabric-api, through the Mods tab or the Files tab.',
+    });
+  }
+
   // --- 2. An old pack left on LATEST ---
-  if ((!mcVersion || mcVersion === 'LATEST') && detected.version) {
+  if ((!mcVersion || mcVersion === 'LATEST') && detected.version && !packVersion) {
     findings.push({
       id: 'version-latest',
       severity: 'block',
