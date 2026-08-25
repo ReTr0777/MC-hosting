@@ -15,6 +15,7 @@ import {
   javaVersionProblem,
   explainClassVersionError,
 } from './java-version';
+import { findForgeInstaller, runForgeInstaller, serverJarCandidates } from './server-type';
 
 export interface ManagedProcess {
   serverId: string;
@@ -151,9 +152,31 @@ class ProcessManager extends EventEmitter {
 
     // Check if any other jar file exists in the root (e.g., fabric-server.jar, forge.jar, etc.)
     if (!fs.existsSync(targetJarPath)) {
-      const rootJars = fs.readdirSync(serverDir).filter((f: string) => 
-        f.toLowerCase().endsWith('.jar') && f.toLowerCase() !== 'server.jar'
-      );
+      let rootJars = serverJarCandidates(serverDir, ['server.jar']);
+
+      /*
+       * Nothing runnable, but an installer sitting there.
+       *
+       * This is the normal shape of a Forge server pack that has never been started: the
+       * installer is the only jar, and first boot is supposed to expand it. Taking it as
+       * the server instead — which is what listing every .jar and using the first one did
+       * — launches the installer's Swing wizard, and in a container with no display that
+       * dies inside FontManagerFactory with a stack trace that names AWT, Swing and fonts
+       * and never once names Forge.
+       */
+      if (rootJars.length === 0) {
+        const installer = findForgeInstaller(serverDir);
+        if (installer && runForgeInstaller(serverDir, installer)) {
+          // Modern Forge installs a run.sh rather than a jar; prefer it if it appeared.
+          const producedRunSh = path.join(serverDir, 'run.sh');
+          if (fs.existsSync(producedRunSh) && fs.statSync(producedRunSh).size > 0) {
+            console.log(`[ProcessManager] Installer produced run.sh, using it`);
+            return 'run.sh';
+          }
+          rootJars = serverJarCandidates(serverDir, ['server.jar']);
+        }
+      }
+
       if (rootJars.length > 0) {
         console.log(`[ProcessManager] Using found jar file: ${rootJars[0]}`);
         return rootJars[0];

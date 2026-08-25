@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 
 /**
  * Working out what a pre-built server directory actually is.
@@ -101,4 +102,68 @@ export function detectServerType(serverDir: string): TypeDetection {
   }
 
   return { loader: null, version: null, evidence: null };
+}
+
+
+/**
+ * Jar names that are never the server, however alone they are in the directory.
+ *
+ * An installer is the trap this exists for. Forge and NeoForge ship one, it is often the
+ * only jar a server pack contains before first boot, and running it with no arguments
+ * opens a Swing wizard — which in a container with no display and no fonts dies inside
+ * FontManagerFactory with an InternalError that never mentions Forge at all.
+ */
+export const NON_SERVER_JAR = /(installer|sources|javadoc|serverpackcreator|-slim|-extra|-client)\.?[^/]*\.jar$/i;
+
+/** The jars in a directory that could plausibly be run as a server, best first. */
+export function serverJarCandidates(dir: string, exclude: string[] = []): string[] {
+  const skip = new Set(exclude.map((n) => n.toLowerCase()));
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((f: string) => f.toLowerCase().endsWith('.jar'))
+      .filter((f: string) => !skip.has(f.toLowerCase()))
+      .filter((f: string) => !NON_SERVER_JAR.test(f))
+      // A universal or server jar is the real thing; anything else is a guess.
+      .sort((a: string, b: string) => Number(/universal|server/i.test(b)) - Number(/universal|server/i.test(a)));
+  } catch {
+    return [];
+  }
+}
+
+/** The Forge or NeoForge installer sitting in a directory, if there is one. */
+export function findForgeInstaller(dir: string): string | null {
+  try {
+    return fs.readdirSync(dir).find((f: string) => /^(neo)?forge-.*installer.*\.jar$/i.test(f)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Turns a Forge/NeoForge installer into an actual server, the way it is meant to be used.
+ *
+ * `--installServer` is what makes it headless: without it the jar assumes a desktop and
+ * opens its wizard. Forcing java.awt.headless too means a future installer that still
+ * reaches for the toolkit fails with something legible rather than a font stack trace.
+ *
+ * Failure is not fatal. The caller falls back to whatever else it can find, so a pack that
+ * cannot be installed reports through the ordinary "no server jar" path.
+ */
+export function runForgeInstaller(dir: string, installerJar: string): boolean {
+  console.log(`[Forge] ${installerJar} is an installer, not a server. Running it with --installServer...`);
+  try {
+    execSync(`java -Djava.awt.headless=true -jar "${installerJar}" --installServer`, {
+      cwd: dir,
+      // Forge downloads its whole library tree here; on a cold cache that is minutes.
+      timeout: 10 * 60 * 1000,
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: 'pipe',
+    });
+    console.log(`[Forge] Installer finished. Directory now: ${fs.readdirSync(dir).join(', ')}`);
+    return true;
+  } catch (e: any) {
+    console.warn(`[Forge] Installer failed: ${e?.stderr?.toString?.() || e.message}`);
+    return false;
+  }
 }

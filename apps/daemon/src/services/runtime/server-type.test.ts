@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { detectServerType, versionFromJarName } from './server-type';
+import { detectServerType, findForgeInstaller, serverJarCandidates, versionFromJarName } from './server-type';
 
 /** Builds a throwaway server directory containing exactly the given entries. */
 function dirWith(entries: string[]): string {
@@ -98,4 +98,37 @@ test('the Minecraft version is taken from the jar name, not the loader build', (
   assert.equal(versionFromJarName('forge-1.20.1-47.2.0-universal.jar'), '1.20.1');
   assert.equal(versionFromJarName('neoforge-1.21-21.0.167-installer.jar'), '1.21');
   assert.equal(versionFromJarName('server.jar'), null);
+});
+
+test('an installer is never offered as a runnable server jar', () => {
+  // The SkyFactory failure exactly: the installer was the only jar in the directory, so
+  // "first jar wins" ran the installer, which opened a Swing wizard and died on fonts.
+  const dir = dirWith(['forge-1.12.2-14.23.5.2860-installer.jar']);
+  assert.deepEqual(serverJarCandidates(dir), []);
+  assert.equal(findForgeInstaller(dir), 'forge-1.12.2-14.23.5.2860-installer.jar');
+});
+
+test('a universal jar is preferred over anything else present', () => {
+  const dir = dirWith([
+    'forge-1.12.2-14.23.5.2860-installer.jar',
+    'forge-1.12.2-14.23.5.2860-universal.jar',
+    'someLibrary.jar',
+  ]);
+  assert.equal(serverJarCandidates(dir)[0], 'forge-1.12.2-14.23.5.2860-universal.jar');
+});
+
+test('sources and javadoc jars are not servers either', () => {
+  const dir = dirWith(['thing-sources.jar', 'thing-javadoc.jar', 'thing-client.jar']);
+  assert.deepEqual(serverJarCandidates(dir), []);
+});
+
+test('the caller can exclude a name it handles itself', () => {
+  // The launcher checks server.jar separately before falling back to this.
+  const dir = dirWith(['server.jar', 'fabric-server-launch.jar']);
+  assert.deepEqual(serverJarCandidates(dir, ['server.jar']), ['fabric-server-launch.jar']);
+});
+
+test('a directory with no installer says so rather than throwing', () => {
+  assert.equal(findForgeInstaller(dirWith(['server.jar'])), null);
+  assert.equal(findForgeInstaller(path.join(os.tmpdir(), 'not-here-4c81')), null);
 });

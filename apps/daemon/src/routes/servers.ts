@@ -75,6 +75,7 @@ import {
   requiredDependencies,
   dependencyInstalled,
 } from '../services/network/bluemap';
+import { findForgeInstaller, runForgeInstaller, serverJarCandidates } from '../services/runtime/server-type';
 
 const router = Router();
 const config = loadConfig();
@@ -359,62 +360,6 @@ function describeExecFailure(e: any): string {
   return parts.join(' | ');
 }
 
-/**
- * Jar names that are never the server, however alone they are in the directory.
- *
- * An installer is the trap this exists for. Forge and NeoForge ship one, it is often the
- * only jar a server pack contains before first boot, and running it with no arguments
- * opens a Swing wizard — which in a container with no display and no fonts dies inside
- * FontManagerFactory with an InternalError that says nothing about Forge at all.
- */
-const NON_SERVER_JAR = /(installer|sources|javadoc|serverpackcreator|-slim|-extra|-client)\.?[^/]*\.jar$/i;
-
-/** The jars in a directory that could plausibly be run as a server, best first. */
-function serverJarCandidates(dir: string): string[] {
-  try {
-    return fs
-      .readdirSync(dir)
-      .filter((f: string) => f.toLowerCase().endsWith('.jar'))
-      .filter((f: string) => !NON_SERVER_JAR.test(f))
-      // A universal/server jar is the real thing; anything else is a guess.
-      .sort((a: string, b: string) => Number(/universal|server/i.test(b)) - Number(/universal|server/i.test(a)));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Turns a Forge/NeoForge installer into an actual server, the way the installer is meant
- * to be used.
- *
- * `--installServer` is what makes it headless: without it the jar assumes a desktop and
- * opens its wizard. `-Djava.awt.headless=true` is belt and braces, so that if a future
- * installer still reaches for the toolkit it fails with something legible instead of a
- * font stack trace.
- *
- * Failure is not fatal here. The caller falls back to whatever else it can find, and a
- * pack that cannot be installed should say so through the ordinary "no server jar" path
- * rather than through an exception raised in the middle of an upload.
- */
-function runForgeInstaller(serverDir: string, installerJar: string): boolean {
-  console.log(`[Daemon Extractor] ${installerJar} is an installer, not a server. Running it with --installServer...`);
-  try {
-    execSync(`java -Djava.awt.headless=true -jar "${installerJar}" --installServer`, {
-      cwd: serverDir,
-      // Forge downloads its whole library tree here; on a cold cache this is minutes,
-      // not seconds.
-      timeout: 10 * 60 * 1000,
-      maxBuffer: 32 * 1024 * 1024,
-      stdio: 'pipe',
-    });
-    console.log(`[Daemon Extractor] Installer finished. Directory now: ${fs.readdirSync(serverDir).join(', ')}`);
-    return true;
-  } catch (e: any) {
-    console.warn(`[Daemon Extractor] Forge installer failed: ${describeExecFailure(e)}`);
-    return false;
-  }
-}
-
 async function processAndExtractServerpack(serverId: string, archivePath: string, res: Response) {
   const serverDir = path.join(config.dataDir, serverId);
   let mrpackResult: MrpackBuildResult | null = null;
@@ -641,9 +586,7 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
      * crash this guards against.
      */
     if (rootJars.length === 0) {
-      const installer = fs
-        .readdirSync(serverDir)
-        .find((f: string) => /^(neo)?forge-.*installer.*\.jar$/i.test(f));
+      const installer = findForgeInstaller(serverDir);
       if (installer && runForgeInstaller(serverDir, installer)) {
         // Modern Forge installs a run.sh rather than a jar; take it if it appeared.
         const runSh = path.join(serverDir, 'run.sh');
