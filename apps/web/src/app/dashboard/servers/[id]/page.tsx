@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useUIPrefs } from '@/context/UIPrefsContext';
 import { useToast } from '@/context/ToastContext';
 import { useConfirm } from '@/context/ConfirmContext';
+import PreflightPanel, { PreflightDialogBody, usePreflight } from '@/components/servers/PreflightPanel';
 import AdvancedModeToggle, { AdvancedBadge, AdvancedOnly } from '@/components/common/AdvancedModeToggle';
 import { ConsoleViewer } from '@/components/servers/ConsoleViewer';
 import { FileExplorer } from '@/components/servers/FileExplorer';
@@ -362,6 +363,14 @@ export default function ServerConsolePage() {
   }, [server, activeTab, supportedTabs]);
 
   const canManage = user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'OPERATOR' || userRole === 'ADMIN';
+
+  /*
+   * Why this server will not work, checked before anyone presses Start.
+   *
+   * Only for people who could act on it: a viewer shown "the loader is wrong" has no way
+   * to change it and no reason to be told.
+   */
+  const preflight = usePreflight(serverId, canManage);
   const canDeleteServer = user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER';
   const canRenameServer = user?.globalRole === 'GLOBAL_ADMIN' || userRole === 'OWNER' || userRole === 'ADMIN';
 
@@ -652,6 +661,25 @@ export default function ServerConsolePage() {
   };
 
   const handleAction = async (action: string) => {
+    /*
+     * A start that would succeed into the wrong thing is stopped here.
+     *
+     * Not a hard refusal: detection can be wrong, and somebody who knows their own pack
+     * better than the detector does must still be able to run it. But it is deliberate —
+     * "Start anyway" is the danger button, not the default one.
+     */
+    if (action === 'start' && preflight.report?.blocked) {
+      const startAnyway = await confirm({
+        title: 'This server is not set up correctly',
+        message: <PreflightDialogBody serverId={serverId} />,
+        confirmLabel: 'Start anyway',
+        cancelLabel: 'Close',
+        danger: true,
+      });
+      await preflight.refresh();
+      if (!startAnyway) return;
+    }
+
     if (action === 'kill') {
       const ok = await confirm({
         title: 'Force stop the server?',
@@ -677,6 +705,9 @@ export default function ServerConsolePage() {
       if (res.ok) {
         toast.toast('success', wording.done, undefined, { id: toastId });
         await fetchServerDetails();
+        // A start or a stop can change what the directory holds, so the findings are
+        // re-read rather than left showing what was true a minute ago.
+        void preflight.refresh();
       } else {
         toast.toast('error', `Could not ${action} the server`, data.details ? `${data.error}: ${data.details}` : data.error, { id: toastId });
       }
@@ -1098,6 +1129,16 @@ export default function ServerConsolePage() {
             <AnalyticsWidget serverId={server.id} memoryLimitMb={server.memoryMb} />
 
             {/* Broadcast */}
+            {canManage && preflight.report && preflight.report.findings.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <PreflightPanel
+                  serverId={server.id}
+                  findings={preflight.report.findings}
+                  onFixed={() => { void preflight.refresh(); void fetchServerDetails(); }}
+                />
+              </div>
+            )}
+
             <BroadcastBar serverId={server.id} canManage={canManage} />
 
             {/* Console */}

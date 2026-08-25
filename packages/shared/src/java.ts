@@ -52,3 +52,49 @@ export function javaSupportViolation(
     `on that node first, or pick a destination that already has it.`
   );
 }
+
+
+/**
+ * The *newest* Java a server can run on, or null when nothing stops it.
+ *
+ * requiredJavaMajor above is a floor: a jar built for Java 21 will not load on 17. That
+ * model is right for vanilla, where a newer JVM always runs an older jar, and wrong for
+ * old Forge, where the opposite is true — Forge up to 1.16 uses LaunchWrapper, which
+ * relies on internals that Java 9 removed. Give it Java 17 and it dies at startup with a
+ * reflection error that names neither Java nor Forge.
+ *
+ * So old Forge has a ceiling as well as a floor, and the two meet: it needs Java 8 and
+ * only Java 8. The ceiling is loader-dependent, which is why it takes a loader — vanilla
+ * or Paper on 1.12.2 runs happily on a modern JVM and must not be caught by this.
+ */
+export function maxJavaMajor(mcVersion?: string, loader?: string): number | null {
+  if ((loader || '').toUpperCase() !== 'FORGE') return null;
+
+  const match = /^1\.(\d+)/.exec(mcVersion || '');
+  if (!match) return null;
+
+  // 1.16 and older: LaunchWrapper, Java 8 only. 1.17 onward Forge moved to the module
+  // system and tracks the version's own requirement, so the floor alone governs.
+  return parseInt(match[1], 10) <= 16 ? 8 : null;
+}
+
+/**
+ * Whether the JVM available is too new for this server, as a message or null.
+ *
+ * `available` is the JDK that would actually be used. Null means it could not be
+ * determined, which passes — an unknown is not evidence of a problem.
+ */
+export function javaTooNewViolation(
+  mcVersion: string | undefined,
+  loader: string | undefined,
+  available: number | null | undefined
+): string | null {
+  const ceiling = maxJavaMajor(mcVersion, loader);
+  if (ceiling === null || available == null || available <= ceiling) return null;
+
+  return (
+    `Minecraft ${mcVersion} on Forge needs Java ${ceiling} and cannot run on anything newer, ` +
+    `but this node would use Java ${available}. Forge of this era uses LaunchWrapper, which ` +
+    `Java ${available} removed the internals for — the server would fail at startup.`
+  );
+}

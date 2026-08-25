@@ -76,6 +76,8 @@ import {
   dependencyInstalled,
 } from '../services/network/bluemap';
 import { findForgeInstaller, runForgeInstaller, serverJarCandidates } from '../services/runtime/server-type';
+import { blocks, hasGeneratedWorld, preflight } from '../services/runtime/preflight';
+import { detectBestJavaMajor } from '../services/runtime/java-version';
 
 const router = Router();
 const config = loadConfig();
@@ -785,6 +787,96 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
 }
 
 // POST /api/v1/servers/:serverId/upload-pack
+/*
+ * GET /:serverId/preflight — why this server will not work, before it is started.
+ *
+ * The daemon answers rather than the panel because the answers are in the files: which
+ * loader the directory actually holds, whether a world has been generated, what Java is
+ * reachable here. The panel supplies what it believes (serverType, mcVersion) as query
+ * parameters and gets back findings that compare the two.
+ */
+router.get('/:serverId/preflight', async (req: Request, res: Response) => {
+  const serverId = bareServerId(req.params.serverId);
+  const serverDir = getSafeServerPath(serverId);
+  if (!serverDir) return res.status(400).json({ error: 'Invalid server id' });
+
+  // The panel's view wins when it sends one; meta.json is the fallback for callers that
+  // do not, and for a node reasoning about itself.
+  let meta: any = {};
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(serverDir, 'craftcontrol-meta.json'), 'utf8'));
+  } catch { /* absent is fine; the query parameters may carry everything needed */ }
+
+  const serverType = (req.query.serverType as string) || meta.serverType;
+  const mcVersion = (req.query.mcVersion as string) || meta.mcVersion;
+
+  const dockerMode = meta.executionMode !== ExecutionMode.PROCESS;
+  const availableJava = dockerMode ? null : await detectBestJavaMajor();
+
+  const findings = preflight({ serverDir, serverType, mcVersion, availableJava, dockerMode });
+
+  res.json({
+    findings,
+    blocked: blocks(findings),
+    // Echoed so the panel can show what was actually examined when a finding looks wrong.
+    inspected: { serverType, mcVersion, availableJava, dockerMode },
+  });
+});
+
+/*
+ * POST /:serverId/rescue-world — moves the current world aside, without deleting it.
+ *
+ * Renamed rather than removed, always. This is somebody's world, the reason for moving it
+ * is a guess about what the pack intends to generate, and a guess is not grounds for
+ * destroying the one thing here that cannot be downloaded again.
+ */
+router.post('/:serverId/rescue-world', (req: Request, res: Response) => {
+  const serverId = bareServerId(req.params.serverId);
+  const serverDir = getSafeServerPath(serverId);
+  if (!serverDir) return res.status(400).json({ error: 'Invalid server id' });
+
+  if (!hasGeneratedWorld(serverDir)) {
+    return res.status(400).json({ error: 'There is no generated world here to set aside.' });
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const rescueDir = path.join(serverDir, '.world_rescue', stamp);
+  const moved: string[] = [];
+
+  try {
+    fs.mkdirSync(rescueDir, { recursive: true });
+    // The nether and end are separate directories and part of the same world; leaving
+    // them behind would have the pack generate an overworld that disagrees with them.
+    for (const name of ['world', 'world_nether', 'world_the_end']) {
+      const src = path.join(serverDir, name);
+      if (!fs.existsSync(src)) continue;
+      const dest = path.join(rescueDir, name);
+      try {
+        fs.renameSync(src, dest);
+      } catch {
+        // Cross-device, or a file still held open: copy then remove, so a failure
+        // partway leaves the original rather than nothing.
+        fs.cpSync(src, dest, { recursive: true });
+        fs.rmSync(src, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      }
+      moved.push(name);
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: `Could not move the world aside: ${err.message}` });
+  }
+
+  console.log(`[Daemon] Moved ${moved.join(', ')} for '${serverId}' into ${rescueDir}`);
+  res.json({
+    success: true,
+    moved,
+    rescueDir,
+    message:
+      moved.length > 0
+        ? `Moved ${moved.join(', ')} into .world_rescue/${stamp}. The pack will generate a new world on the next start; the old one is still there if you want it back.`
+        : 'There was nothing to move.',
+  });
+});
+
 router.post('/:serverId/upload-pack', async (req: Request, res: Response) => {
   try {
     const { serverId } = req.params;
