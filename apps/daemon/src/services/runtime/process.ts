@@ -16,6 +16,7 @@ import {
   explainClassVersionError,
 } from './java-version';
 import { findForgeInstaller, loaderMismatch, runForgeInstaller, serverJarCandidates } from './server-type';
+import { installForgeServer, resolveVanillaJarUrl } from './forge-install';
 
 export interface ManagedProcess {
   serverId: string;
@@ -216,6 +217,28 @@ class ProcessManager extends EventEmitter {
     // Option C: Download from API once and save into central persistent cache
     console.log(`[ProcessManager Cache Miss] Pre-downloading server executable for ${serverType} (${mcVersion})...`);
 
+    /*
+     * Forge and NeoForge are installed, not downloaded.
+     *
+     * Handled before the URL table below because there is no single jar to fetch: the
+     * installer has to run and build the server out of a libraries tree.
+     */
+    if (serverType === 'FORGE' || serverType === 'NEOFORGE') {
+      const target = await installForgeServer(serverDir, serverType, mcVersion);
+      if (!target) {
+        // Deliberately fatal. Falling through from here is exactly what used to happen,
+        // and it installed Fabric over a Forge modpack without a word.
+        throw new Error(
+          `Could not install ${serverType} for Minecraft ${mcVersion} on this node. ` +
+            `Check that ${serverType} publishes a build for ${mcVersion}, and that this node can reach ` +
+            `the internet.`
+        );
+      }
+      meta.installedVersion = mcVersion;
+      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+      return target;
+    }
+
     try {
       let downloadUrl = '';
       if (serverType === 'FABRIC') {
@@ -243,8 +266,23 @@ class ProcessManager extends EventEmitter {
         downloadUrl = `https://api.purpurmc.org/v2/purpur/${mcVersion}/latest/download`;
       }
 
-      if (!downloadUrl) {
-        downloadUrl = `https://meta.fabricmc.net/v2/versions/loader/${mcVersion}/0.19.3/1.0.1/server/jar`;
+      if (serverType === 'VANILLA' || !downloadUrl) {
+        /*
+         * Vanilla, and anything else with no branch above.
+         *
+         * This line used to fetch a Fabric jar for every type it did not recognise, which
+         * is how a Forge server came to be running Fabric. Vanilla now resolves properly
+         * through Mojang's manifest, and an unrecognised type fails loudly instead of
+         * quietly becoming a different server than the one that was asked for.
+         */
+        const vanillaUrl = await resolveVanillaJarUrl(mcVersion);
+        if (!vanillaUrl) {
+          throw new Error(
+            `No download is known for a ${serverType} server on Minecraft ${mcVersion}. ` +
+              `Check the version is spelled as Mojang publishes it.`
+          );
+        }
+        downloadUrl = vanillaUrl;
       }
 
       const res = await fetch(downloadUrl);
@@ -263,8 +301,15 @@ class ProcessManager extends EventEmitter {
 
       return 'server.jar';
     } catch (err: any) {
-      console.warn(`[ProcessManager Warning] Automatic jar download failed: ${err.message}. Using fallback server.jar path.`);
-      return 'server.jar';
+      /*
+       * Rethrown rather than swallowed.
+       *
+       * Returning 'server.jar' here meant a failed download launched whatever jar happened
+       * to be lying around — or nothing at all — and the failure surfaced as a crash
+       * minutes later, if at all. The start request should carry the reason.
+       */
+      console.error(`[ProcessManager] Could not obtain a server jar: ${err.message}`);
+      throw new Error(`Could not download the ${serverType} server for Minecraft ${mcVersion}: ${err.message}`);
     }
   }
 
