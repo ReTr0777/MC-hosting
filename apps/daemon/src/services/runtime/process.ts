@@ -143,8 +143,22 @@ class ProcessManager extends EventEmitter {
         existingMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       } catch (e) {}
     }
-    const recordedVersion = existingMeta.installedVersion || existingMeta.mcVersion;
-    const recordedLoader = String(existingMeta.installedLoader || existingMeta.serverType || '').toUpperCase();
+    /*
+     * Only what was actually installed counts as a record. Never mcVersion or serverType.
+     *
+     * Those two are the *request*, copied into craftcontrol-meta.json from the DTO, and a
+     * request is not evidence of anything being on disk. Falling back to them compared
+     * "LATEST" against the resolved "26.2" and found a difference on every start of every
+     * server left on LATEST — so the rescue fired every time, moved the world and the jar
+     * aside, re-downloaded, and did it again on the next start. A crash loop that also
+     * displaced the world each time round.
+     *
+     * installedVersion and installedLoader are written only where an install succeeds, so
+     * their absence means "nothing here yet", which is exactly when there is nothing stale
+     * to rescue.
+     */
+    const recordedVersion: string | undefined = existingMeta.installedVersion;
+    const recordedLoader = String(existingMeta.installedLoader || '').toUpperCase();
 
     // Always preserve / write metadata to ensure version is never lost on restart
     /*
