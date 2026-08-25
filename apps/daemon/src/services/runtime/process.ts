@@ -43,6 +43,23 @@ export interface ManagedProcess {
   stopCommand?: string;
 }
 
+/**
+ * The agent's own version, for the line it prints when starting a server.
+ *
+ * Read at load rather than imported, because the compiled agent sits at a different depth
+ * from the source and a broken lookup must not stop a server starting over a log line.
+ */
+const AGENT_VERSION: string = (() => {
+  for (const rel of ['../../../package.json', '../../package.json']) {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(__dirname, rel), 'utf8')).version || 'unknown';
+    } catch {
+      /* try the next */
+    }
+  }
+  return 'unknown';
+})();
+
 export function resolveJavaCmd(mcVersion?: string, loader?: string): string {
   /*
    * An explicit JAVA_BIN wins over everything below.
@@ -266,9 +283,19 @@ class ProcessManager extends EventEmitter {
         return 'server.jar';
       }
       const wrongLoader = jarLoader(targetJarPath);
-      console.log(
-        `[ProcessManager] server.jar is a ${wrongLoader} jar but this server is ${serverType}; ` +
-          `setting it aside and installing ${serverType}.`
+      /*
+       * Reported to the server's own console, not just the daemon's stdout.
+       *
+       * console.log here goes to the container log, which is not where anybody debugging a
+       * server is looking — so every explanation this code produced was invisible to the
+       * person who needed it, and a fix that worked looked identical to one that had not
+       * been deployed.
+       */
+      provisioningManager.emitLog(
+        dto.serverId,
+        'daemon',
+        `[CraftControl] server.jar is a ${wrongLoader} jar but this server is ${serverType}. ` +
+          `Setting it aside and installing ${serverType}.`
       );
       try {
         fs.renameSync(targetJarPath, path.join(serverDir, `.stale-${wrongLoader?.toLowerCase() || 'unknown'}-server.jar`));
@@ -279,7 +306,7 @@ class ProcessManager extends EventEmitter {
 
     // Check if any other jar file exists in the root (e.g., fabric-server.jar, forge.jar, etc.)
     if (!fs.existsSync(targetJarPath)) {
-      let rootJars = serverJarCandidates(serverDir, ['server.jar']);
+      let rootJars = serverJarCandidates(serverDir, ['server.jar'], serverType);
 
       /*
        * Nothing runnable, but an installer sitting there.
@@ -300,7 +327,7 @@ class ProcessManager extends EventEmitter {
             console.log(`[ProcessManager] Installer produced run.sh, using it`);
             return 'run.sh';
           }
-          rootJars = serverJarCandidates(serverDir, ['server.jar']);
+          rootJars = serverJarCandidates(serverDir, ['server.jar'], serverType);
         }
       }
 
@@ -557,6 +584,23 @@ class ProcessManager extends EventEmitter {
     }
 
     const jarOrArgs = await this.ensureServerJar(serverDir, dto);
+
+    /*
+     * What is about to be launched, said out loud in the server's own console.
+     *
+     * Every diagnosis in this area has turned on one question — which artefact actually
+     * ran — and the answer was only ever in the daemon's stdout, where nobody debugging a
+     * server looks. Without it, a node running old code and a fix that did not work are
+     * indistinguishable from the console; with it, the next crash names its own cause.
+     * The agent version is here for the same reason: it says whether the node is running
+     * what its operator thinks it is.
+     */
+    provisioningManager.emitLog(
+      dto.serverId,
+      'daemon',
+      `[CraftControl] Agent ${AGENT_VERSION} starting ${dto.serverType} ${dto.mcVersion || 'LATEST'} ` +
+        `via ${jarOrArgs}`
+    );
 
     // Forcefully clear any stray process holding the port on host immediately prior to spawn
     try {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { jarLoader, jarSuitsLoader } from './server-type';
+import { jarLoader, jarSuitsLoader, serverJarCandidates } from './server-type';
 
 /*
  * Tested against jars the real services actually serve.
@@ -92,4 +92,29 @@ test('a non-loader server type accepts whatever is there', () => {
   fs.writeFileSync(jar, 'whatever');
   assert.equal(jarSuitsLoader(jar, 'PAPER'), true);
   assert.equal(jarSuitsLoader(jar, undefined), true);
+});
+
+test('the fallback scan will not offer a Fabric jar to a Forge server', async (t) => {
+  /*
+   * The hole left by the previous fix. Gating the *named* checks stopped
+   * fabric-server-launch.jar being chosen directly, and then the fallback scan — which had
+   * no idea what loader was wanted — offered the very same file. Same wrong server,
+   * reached one branch later.
+   */
+  const dir = tmp();
+  const meta = await fetch('https://meta.fabricmc.net/v2/versions/loader/1.21.1').catch(() => null);
+  if (!meta?.ok) return t.skip('no network');
+  const loaderVer = (await meta.json())[0]?.loader?.version;
+  const installer = await (await fetch('https://meta.fabricmc.net/v2/versions/installer')).json();
+
+  const ok = await fetchTo(
+    `https://meta.fabricmc.net/v2/versions/loader/1.21.1/${loaderVer}/${installer[0].version}/server/jar`,
+    path.join(dir, 'fabric-server-launch.jar')
+  );
+  if (!ok) return t.skip('could not fetch the Fabric jar');
+
+  assert.deepEqual(serverJarCandidates(dir, [], 'FORGE'), [], 'a Forge server was offered a Fabric jar');
+  assert.deepEqual(serverJarCandidates(dir, [], 'FABRIC'), ['fabric-server-launch.jar']);
+  // With no loader named, the old permissive behaviour stands.
+  assert.deepEqual(serverJarCandidates(dir), ['fabric-server-launch.jar']);
 });

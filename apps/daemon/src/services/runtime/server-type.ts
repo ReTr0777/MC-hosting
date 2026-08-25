@@ -134,8 +134,15 @@ function jarRank(name: string): number {
   return 1;
 }
 
-/** The jars in a directory that could plausibly be run as a server, best first. */
-export function serverJarCandidates(dir: string, exclude: string[] = []): string[] {
+/**
+ * The jars in a directory that could plausibly be run as a server, best first.
+ *
+ * `serverType` matters. Without it this is loader-blind, and a directory holding both a
+ * Forge build and a leftover Fabric launcher happily offers the Fabric one to a Forge
+ * server — the same substitution, arrived at through the fallback instead of through the
+ * named checks. Each candidate is asked what it is before it is offered.
+ */
+export function serverJarCandidates(dir: string, exclude: string[] = [], serverType?: string): string[] {
   const skip = new Set(exclude.map((n) => n.toLowerCase()));
   try {
     return fs
@@ -143,6 +150,7 @@ export function serverJarCandidates(dir: string, exclude: string[] = []): string
       .filter((f: string) => f.toLowerCase().endsWith('.jar'))
       .filter((f: string) => !skip.has(f.toLowerCase()))
       .filter((f: string) => !NON_SERVER_JAR.test(f))
+      .filter((f: string) => jarSuitsLoader(path.join(dir, f), serverType))
       .sort((a: string, b: string) => jarRank(b) - jarRank(a));
   } catch {
     return [];
