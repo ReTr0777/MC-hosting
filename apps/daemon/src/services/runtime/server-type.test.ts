@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { detectServerType, findForgeInstaller, serverJarCandidates, versionFromJarName } from './server-type';
+import {
+  detectServerType,
+  findForgeInstaller,
+  loaderMismatch,
+  serverJarCandidates,
+  versionFromJarName,
+} from './server-type';
 
 /** Builds a throwaway server directory containing exactly the given entries. */
 function dirWith(entries: string[]): string {
@@ -131,4 +137,53 @@ test('the caller can exclude a name it handles itself', () => {
 test('a directory with no installer says so rather than throwing', () => {
   assert.equal(findForgeInstaller(dirWith(['server.jar'])), null);
   assert.equal(findForgeInstaller(path.join(os.tmpdir(), 'not-here-4c81')), null);
+});
+
+test('a Forge modpack configured as Fabric is refused, in words that name the fix', () => {
+  /*
+   * The quiet failure. Fabric boots, ignores every Forge mod, and generates an ordinary
+   * Minecraft world — so the panel says running, the port answers, players join, and the
+   * pack is simply absent. Nothing in the log says why.
+   */
+  const dir = dirWith([
+    'forge-1.12.2-14.23.5.2860-installer.jar',
+    'ServerStart.sh',
+    'settings.sh',
+    'mods/a.jar',
+    'mods/b.jar',
+  ]);
+  const problem = loaderMismatch(dir, 'FABRIC');
+  assert.ok(problem, 'expected a refusal');
+  assert.match(problem!, /set to FABRIC/);
+  assert.match(problem!, /FORGE 1\.12\.2/);
+  assert.match(problem!, /2 mods/);
+  assert.match(problem!, /Update Centre/);
+});
+
+test('a correctly configured server is not refused', () => {
+  const dir = dirWith(['fabric-server-launch.jar', 'mods/a.jar']);
+  assert.equal(loaderMismatch(dir, 'FABRIC'), null);
+});
+
+test('an empty mods folder means this is not a modpack, so no opinion', () => {
+  // A bare server someone intends to add mods to later must still be allowed to start.
+  const dir = dirWith(['forge-1.12.2-14.23.5.2860-installer.jar', 'mods/']);
+  assert.equal(loaderMismatch(dir, 'FABRIC'), null);
+});
+
+test('no mods folder at all is not a mismatch', () => {
+  assert.equal(loaderMismatch(dirWith(['forge-1.12.2-14.23.5.2860-installer.jar']), 'FABRIC'), null);
+});
+
+test('a non-loader server type is left alone', () => {
+  // Paper and Vanilla have no loader to contradict; mods/ there means plugins or nothing.
+  const dir = dirWith(['forge-1.12.2-14.23.5.2860-installer.jar', 'mods/a.jar']);
+  assert.equal(loaderMismatch(dir, 'PAPER'), null);
+  assert.equal(loaderMismatch(dir, 'VANILLA'), null);
+  assert.equal(loaderMismatch(dir, undefined), null);
+});
+
+test('a directory offering no evidence is not refused', () => {
+  const dir = dirWith(['mods/a.jar', 'server.properties']);
+  assert.equal(loaderMismatch(dir, 'FABRIC'), null);
 });

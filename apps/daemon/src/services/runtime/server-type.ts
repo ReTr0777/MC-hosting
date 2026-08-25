@@ -167,3 +167,44 @@ export function runForgeInstaller(dir: string, installerJar: string): boolean {
     return false;
   }
 }
+
+
+/**
+ * Whether a directory's contents contradict the loader the panel thinks it has.
+ *
+ * The failure this catches is the quiet one. A Forge modpack started as a Fabric server
+ * does not crash — Fabric boots, finds no Fabric mods, ignores the Forge ones entirely,
+ * and generates an ordinary Minecraft world. The panel says running, the port answers,
+ * players join, and the pack is simply not there. Nothing in a log says why, because from
+ * the server's point of view nothing went wrong.
+ *
+ * So a mismatch is worth refusing to start for. A server that will not boot sends someone
+ * looking; a vanilla world pretending to be SkyFactory does not.
+ *
+ * Deliberately narrow. It fires only when the directory holds a populated mods folder —
+ * i.e. this really is a modpack, not a bare server someone will add mods to later — and
+ * only when the evidence names a different loader. No evidence means no opinion.
+ */
+export function loaderMismatch(serverDir: string, serverType?: string): string | null {
+  const configured = (serverType || '').toUpperCase();
+  if (!['FABRIC', 'FORGE', 'NEOFORGE', 'QUILT'].includes(configured)) return null;
+
+  let modCount = 0;
+  try {
+    modCount = fs.readdirSync(path.join(serverDir, 'mods')).filter((f) => f.toLowerCase().endsWith('.jar')).length;
+  } catch {
+    return null;
+  }
+  if (modCount === 0) return null;
+
+  const detected = detectServerType(serverDir);
+  if (!detected.loader || detected.loader === configured) return null;
+
+  return (
+    `This server is set to ${configured}, but its files are ${detected.loader}` +
+    `${detected.version ? ` ${detected.version}` : ''} — found ${detected.evidence}, alongside ` +
+    `${modCount} mods. Starting it as ${configured} would load none of them and generate an ordinary ` +
+    `Minecraft world. Set this server to ${detected.loader}` +
+    `${detected.version ? ` ${detected.version}` : ''} in the panel (Update Centre), then start it again.`
+  );
+}

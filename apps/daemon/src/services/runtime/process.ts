@@ -15,7 +15,7 @@ import {
   javaVersionProblem,
   explainClassVersionError,
 } from './java-version';
-import { findForgeInstaller, runForgeInstaller, serverJarCandidates } from './server-type';
+import { findForgeInstaller, loaderMismatch, runForgeInstaller, serverJarCandidates } from './server-type';
 
 export interface ManagedProcess {
   serverId: string;
@@ -277,6 +277,22 @@ class ProcessManager extends EventEmitter {
    * an UnsupportedClassVersionError stack trace — which reads as a crash, not as a
    * node that was never able to run this.
    */
+  /**
+   * Refuses to start a modpack under the wrong loader.
+   *
+   * Reported through the same channel as the Java check, because it is the same kind of
+   * problem: knowable before launch, and invisible afterwards. See loaderMismatch for why
+   * this one is worse than a crash.
+   */
+  private assertLoaderMatches(serverId: string, serverDir: string, serverType?: string): void {
+    const problem = loaderMismatch(serverDir, serverType);
+    if (!problem) return;
+
+    console.error(`[ProcessManager] Cannot start '${serverId}': ${problem}`);
+    provisioningManager.emit('status', { serverId, status: STATUS.FAILED, error: problem });
+    throw new Error(problem);
+  }
+
   private async assertJavaCanRun(serverId: string, javaCmd: string, mcVersion?: string): Promise<void> {
     const problem = await javaVersionProblem(javaCmd, mcVersion);
     if (!problem) return;
@@ -412,6 +428,7 @@ class ProcessManager extends EventEmitter {
         } catch (e) {}
       }
       const resolvedJavaCmd = resolveJavaCmd(scriptMcVersion);
+      this.assertLoaderMatches(dto.serverId, serverDir, dto.serverType);
       await this.assertJavaCanRun(dto.serverId, resolvedJavaCmd, scriptMcVersion);
       const javaDir = path.dirname(resolvedJavaCmd);
       const javaHome = path.dirname(javaDir); // e.g. /opt/java/openjdk-21
@@ -459,6 +476,7 @@ class ProcessManager extends EventEmitter {
       }
 
       const javaCmd = resolveJavaCmd(effectiveMcVersion);
+      this.assertLoaderMatches(dto.serverId, serverDir, dto.serverType);
       await this.assertJavaCanRun(dto.serverId, javaCmd, effectiveMcVersion);
       console.log(`[ProcessManager] Spawning standalone Java process using '${javaCmd}' for server ${dto.serverId} in '${serverDir}': ${javaCmd} ${javaArgs.join(' ')}`);
 
