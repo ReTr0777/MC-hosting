@@ -187,3 +187,28 @@ test('a directory offering no evidence is not refused', () => {
   const dir = dirWith(['mods/a.jar', 'server.properties']);
   assert.equal(loaderMismatch(dir, 'FABRIC'), null);
 });
+
+test('vanilla\'s jar never outranks the loader jar beside it', () => {
+  /*
+   * What the Forge installer actually leaves behind. minecraft_server.1.12.2.jar is a
+   * dependency Forge loads, not the thing to start — running it gives a plain vanilla
+   * server that boots cleanly, loads no mods, and generates an ordinary world. The old
+   * ranking matched /server/ and put it first.
+   */
+  const dir = dirWith([
+    'minecraft_server.1.12.2.jar',
+    'forge-1.12.2-14.23.5.2859-universal.jar',
+  ]);
+  assert.equal(serverJarCandidates(dir)[0], 'forge-1.12.2-14.23.5.2859-universal.jar');
+});
+
+test('a genuinely vanilla directory still gets vanilla\'s jar', () => {
+  // Demoted, not excluded: with nothing else present it is the right answer.
+  const dir = dirWith(['minecraft_server.1.12.2.jar']);
+  assert.deepEqual(serverJarCandidates(dir), ['minecraft_server.1.12.2.jar']);
+});
+
+test('a universal jar beats a plain loader jar of the same name', () => {
+  const dir = dirWith(['forge-1.12.2-14.23.5.2859.jar', 'forge-1.12.2-14.23.5.2859-universal.jar']);
+  assert.equal(serverJarCandidates(dir)[0], 'forge-1.12.2-14.23.5.2859-universal.jar');
+});

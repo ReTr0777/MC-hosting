@@ -16,7 +16,7 @@ import {
   explainClassVersionError,
 } from './java-version';
 import { findForgeInstaller, loaderMismatch, runForgeInstaller, serverJarCandidates } from './server-type';
-import { installForgeServer, resolveVanillaJarUrl } from './forge-install';
+import { installForgeServer, resolveConcreteVersion, resolveVanillaJarUrl } from './forge-install';
 
 export interface ManagedProcess {
   serverId: string;
@@ -89,7 +89,17 @@ class ProcessManager extends EventEmitter {
   public async ensureServerJar(serverDir: string, dto: CreateServerContainerDto): Promise<string> {
     flattenServerDir(serverDir);
 
-    const mcVersion = dto.mcVersion || '26.2';
+    /*
+     * LATEST resolved here, once, rather than in each download branch.
+     *
+     * Every API downstream wants a real version number: Fabric's meta answers HTTP 400 for
+     * "LATEST", and the Forge promotions file has no such key. Resolving it at the single
+     * point where the version is read means no branch can forget to.
+     *
+     * A failed lookup falls back to the string as given, so an offline node with a cached
+     * jar still starts instead of being blocked by a manifest it did not need.
+     */
+    const mcVersion = (await resolveConcreteVersion(dto.mcVersion)) || dto.mcVersion || 'LATEST';
     const serverType = (dto.serverType || 'FABRIC').toUpperCase();
     const metaPath = path.join(serverDir, 'craftcontrol-meta.json');
     const targetJarPath = path.join(serverDir, 'server.jar');

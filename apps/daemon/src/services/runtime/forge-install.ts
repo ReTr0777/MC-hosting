@@ -163,3 +163,26 @@ export async function resolveVanillaJarUrl(mcVersion: string): Promise<string | 
     return null;
   }
 }
+
+/**
+ * Turns "LATEST" into a version number every downstream API will accept.
+ *
+ * Nothing else resolves it. LATEST was passed verbatim to Fabric's meta API, which answered
+ * HTTP 400, and to the Forge promotions lookup, which simply found no such key — so a
+ * server left on LATEST could not be installed at all, whatever loader it was set to.
+ *
+ * Mojang's manifest is the authority on what "latest" currently means, rather than a
+ * constant in this repository that is wrong the day after it is written.
+ */
+export async function resolveConcreteVersion(mcVersion?: string): Promise<string | null> {
+  if (mcVersion && mcVersion !== 'LATEST') return mcVersion;
+
+  try {
+    const res = await fetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
+    if (!res.ok) return null;
+    const manifest = (await res.json()) as { latest: { release: string } };
+    return manifest.latest.release || null;
+  } catch {
+    return null;
+  }
+}

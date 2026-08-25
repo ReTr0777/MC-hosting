@@ -115,6 +115,25 @@ export function detectServerType(serverDir: string): TypeDetection {
  */
 export const NON_SERVER_JAR = /(installer|sources|javadoc|serverpackcreator|-slim|-extra|-client)\.?[^/]*\.jar$/i;
 
+/**
+ * How good a candidate a jar is, highest first.
+ *
+ * The ranking matters more than it looks. A Forge install leaves `minecraft_server.1.12.2.jar`
+ * in the directory — Forge needs vanilla's jar alongside its own — and that file is a
+ * dependency, never the thing to launch. Ranking it top, which a plain /server/ match does,
+ * starts a plain vanilla server: it boots, says "Starting minecraft server version 1.12.2",
+ * loads no mods, and generates an ordinary world. Indistinguishable from the loader being
+ * wrong, and reached by a completely different route.
+ */
+function jarRank(name: string): number {
+  // Vanilla's jar sitting beside a loader's. Last resort, and only when nothing else is
+  // here at all — for a genuinely vanilla directory it is still the right answer.
+  if (/^minecraft_server[._-]/i.test(name)) return 0;
+  // A loader's own launch jar, named for the loader that produced it.
+  if (/^(forge|neoforge|fabric|quilt)[-_]/i.test(name)) return /universal/i.test(name) ? 3 : 2;
+  return 1;
+}
+
 /** The jars in a directory that could plausibly be run as a server, best first. */
 export function serverJarCandidates(dir: string, exclude: string[] = []): string[] {
   const skip = new Set(exclude.map((n) => n.toLowerCase()));
@@ -124,8 +143,7 @@ export function serverJarCandidates(dir: string, exclude: string[] = []): string
       .filter((f: string) => f.toLowerCase().endsWith('.jar'))
       .filter((f: string) => !skip.has(f.toLowerCase()))
       .filter((f: string) => !NON_SERVER_JAR.test(f))
-      // A universal or server jar is the real thing; anything else is a guess.
-      .sort((a: string, b: string) => Number(/universal|server/i.test(b)) - Number(/universal|server/i.test(a)));
+      .sort((a: string, b: string) => jarRank(b) - jarRank(a));
   } catch {
     return [];
   }

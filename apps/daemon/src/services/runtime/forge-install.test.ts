@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveForgeBuild, resolveNeoForgeBuild, resolveVanillaJarUrl } from './forge-install';
+import {
+  resolveConcreteVersion,
+  resolveForgeBuild,
+  resolveNeoForgeBuild,
+  resolveVanillaJarUrl,
+} from './forge-install';
 
 /*
  * These call the real Forge, NeoForge and Mojang endpoints.
@@ -75,4 +80,24 @@ test('NeoForge does not exist for old versions, and says so', async (t) => {
   if (!(await online())) return t.skip('no network');
   // NeoForge forked at 1.20.2; there has never been a 1.12.2 build.
   assert.equal(await resolveNeoForgeBuild('1.12.2'), null);
+});
+
+test('LATEST resolves to a real version before it reaches any loader API', async (t) => {
+  if (!(await online())) return t.skip('no network');
+
+  const resolved = await resolveConcreteVersion('LATEST');
+  assert.ok(resolved, 'LATEST did not resolve');
+  assert.notEqual(resolved, 'LATEST');
+
+  // The failure this fixes: Fabric's meta API answers 400 for the literal string, so a
+  // server left on LATEST could not be installed at all.
+  const res = await fetch(`https://meta.fabricmc.net/v2/versions/loader/${resolved}`, {
+    signal: AbortSignal.timeout(15000),
+  });
+  assert.equal(res.status, 200, `Fabric rejected the resolved version ${resolved}`);
+});
+
+test('a concrete version is passed through untouched', async () => {
+  // No network call for a version that is already a version.
+  assert.equal(await resolveConcreteVersion('1.12.2'), '1.12.2');
 });
