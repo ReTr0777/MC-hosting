@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { requiredJavaMajor } from '@mc-manager/shared';
+import { maxJavaMajor, requiredJavaMajor } from '@mc-manager/shared';
 
 /*
  * What Java a server needs, and what Java this node actually has.
@@ -24,7 +24,7 @@ const CLASS_FILE_BASE = 44;
  * before migrating a server onto a node. Re-exported so callers here need not know
  * where it lives.
  */
-export { requiredJavaMajor };
+export { requiredJavaMajor, maxJavaMajor };
 
 /**
  * Which JDKs to try for a given requirement, best first.
@@ -48,6 +48,15 @@ export const JAVA_PREFERENCE: Record<number, number[]> = {
   25: [25],
   21: [21, 25],
   17: [17],
+  /*
+   * Java 8 alone, with no upward fallback.
+   *
+   * Everywhere else here a newer JVM is an acceptable substitute. For old Forge it is the
+   * failure: LaunchWrapper needs internals Java 9 removed, so falling back to 17 would
+   * pick a JVM guaranteed not to work. Better to end up on `java` and have the preflight
+   * say what is missing.
+   */
+  8: [8],
 };
 
 /**
@@ -152,9 +161,43 @@ export function detectBestJavaMajor(): Promise<number | null> {
  * `found === null` means the probe could not read a version, and passes. Refusing to
  * start on a failed probe would break working nodes to prevent an error message.
  */
-export function evaluateJava(javaCmd: string, mcVersion: string | undefined, found: number | null): string | null {
+export function evaluateJava(
+  javaCmd: string,
+  mcVersion: string | undefined,
+  found: number | null,
+  loader?: string
+): string | null {
+  if (found === null) return null;
+
+  /*
+   * Too new is checked first, and is a different failure from too old.
+   *
+   * Forge up to 1.16 needs Java 8 and nothing above it. Checking only the floor passed
+   * such a server on Java 17 — which then died inside LaunchWrapper with a reflection
+   * error naming neither Java nor Forge.
+   */
+  /*
+   * A ceiling is not a second constraint alongside the floor — it replaces it.
+   *
+   * requiredJavaMajor answers "what is the oldest modern JVM this version runs on" and
+   * bottoms out at 17, which is a sensible default for a version nobody caps. Where a
+   * ceiling exists it is because that loader needs one exact JVM: Forge up to 1.16 needs
+   * Java 8, not "17 or newer, but also no newer than 8", which is satisfiable by nothing.
+   * Consulting both rejected Java 8 for 1.12.2 as too old moments after requiring it.
+   */
+  const ceiling = maxJavaMajor(mcVersion, loader);
+  if (ceiling !== null) {
+    if (found === ceiling) return null;
+    return found > ceiling
+      ? `${loader || 'This loader'} on Minecraft ${mcVersion || 'this version'} needs Java ${ceiling} and ` +
+        `cannot run on anything newer, but this node would use Java ${found} (${javaCmd}). Install Java ` +
+        `${ceiling} on the node, or point JAVA_BIN at it if it is already installed elsewhere.`
+      : `${loader || 'This loader'} on Minecraft ${mcVersion || 'this version'} needs Java ${ceiling}, but ` +
+        `this node would use Java ${found} (${javaCmd}). Install Java ${ceiling} on the node.`;
+  }
+
   const required = requiredJavaMajor(mcVersion);
-  if (found === null || found >= required) return null;
+  if (found >= required) return null;
 
   return (
     `Minecraft ${mcVersion || 'this version'} requires Java ${required}, but this node has Java ${found} ` +
@@ -164,8 +207,12 @@ export function evaluateJava(javaCmd: string, mcVersion: string | undefined, fou
 }
 
 /** The check as the launcher uses it: probe this JDK, then judge it. */
-export async function javaVersionProblem(javaCmd: string, mcVersion?: string): Promise<string | null> {
-  return evaluateJava(javaCmd, mcVersion, await detectJavaMajor(javaCmd));
+export async function javaVersionProblem(
+  javaCmd: string,
+  mcVersion?: string,
+  loader?: string
+): Promise<string | null> {
+  return evaluateJava(javaCmd, mcVersion, await detectJavaMajor(javaCmd), loader);
 }
 
 /**

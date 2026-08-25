@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { javaTooNewViolation, requiredJavaMajor } from '@mc-manager/shared';
+import { javaTooNewViolation, maxJavaMajor, requiredJavaMajor } from '@mc-manager/shared';
 import { detectServerType } from './server-type';
 
 /**
@@ -40,7 +40,13 @@ export interface PreflightInput {
   /** What the panel believes, which is the thing being checked. */
   serverType?: string;
   mcVersion?: string;
-  /** Newest JDK this node can reach, or null when it could not be determined. */
+  /**
+   * The JDK this server would actually be launched with, or null when unknown.
+   *
+   * Deliberately not the newest one the node has: with Java 8 through 25 installed, the
+   * newest is 25, and an old Forge pack would be reported as having a JVM too new for it
+   * on the very node holding the Java 8 it needs.
+   */
   availableJava?: number | null;
   /**
    * True when servers run as containers here. The image tag carries the JDK, so Docker
@@ -132,13 +138,22 @@ export function preflight(input: PreflightInput): PreflightFinding[] {
         // version to suit the JVM would be the wrong way round.
         title: `This node's Java is too new for ${effectiveLoader} ${effectiveVersion}`,
         detail:
-          `${tooNew} Install Java ${8} on this node, point JAVA_BIN at it, or host this server on a ` +
-          `node that runs its servers as Docker containers — those pick the JDK from the version.`,
+          `${tooNew} The node image ships Java 8 for exactly this, so a node on a current build ` +
+          `picks it automatically — this one is likely running an older image. Update the node, or ` +
+          `point JAVA_BIN at a Java 8 installation.`,
       });
     }
 
+    /*
+     * The floor only applies where there is no ceiling.
+     *
+     * requiredJavaMajor bottoms out at 17 for anything not otherwise capped, so running
+     * both rules over Forge 1.12.2 demanded Java 8 and then reported Java 8 as too old for
+     * needing 17. Where a loader pins an exact JVM, that is the whole requirement.
+     */
+    const ceiling = maxJavaMajor(effectiveVersion, effectiveLoader);
     const required = requiredJavaMajor(effectiveVersion);
-    if (!tooNew && availableJava < required) {
+    if (!tooNew && ceiling === null && availableJava < required) {
       findings.push({
         id: 'java-too-old',
         severity: 'block',

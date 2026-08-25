@@ -68,7 +68,12 @@ RUN set -eux; \
     fi; \
     unrar 2>&1 | head -n 1
 
-# Download & Install Java 17, Java 21, and Java 25 runtimes for complete Minecraft compatibility
+# Download & Install Java 8, 17, 21 and 25 for complete Minecraft compatibility.
+#
+# Java 8 is here for old Forge, not for old Minecraft. Forge up to 1.16 uses LaunchWrapper,
+# which needs JVM internals Java 9 removed — so those packs run on 8 and on nothing else,
+# however modern the rest of the node is. Without it a 1.12.2 pack cannot start here at all,
+# which is what sent SkyFactory 4 through a week of misdiagnosis.
 # Adoptium names the architectures x64 and aarch64, neither of which matches
 # TARGETARCH. -f matters here: without it curl writes the HTML error page into the
 # tarball, and a bad download surfaces later as an unreadable archive instead.
@@ -78,7 +83,7 @@ RUN set -eux; \
         arm64) jdk_arch=aarch64 ;; \
         *) echo "no JDK mapping for TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    for spec in "17 ga eclipse" "21 ga eclipse" "25 ea adoptium"; do \
+    for spec in "8 ga eclipse" "17 ga eclipse" "21 ga eclipse" "25 ea adoptium"; do \
         set -- $spec; ver=$1; rel=$2; vendor=$3; \
         mkdir -p "/opt/java/openjdk-$ver"; \
         curl -sSLf "https://api.adoptium.net/v3/binary/latest/$ver/$rel/linux/$jdk_arch/jdk/hotspot/normal/$vendor" -o /tmp/jdk.tar.gz; \

@@ -166,3 +166,31 @@ test('a bare server with no mods yet is never blocked on its loader', () => {
   });
   assert.equal(find(findings, 'loader-mismatch'), undefined);
 });
+
+test('a node with Java 8 available is clean for an old Forge pack', () => {
+  /*
+   * The whole point of shipping Java 8 in the node image. This is the state the SkyFactory
+   * server should reach once it is set up correctly: nothing left to report.
+   *
+   * It also guards the floor-versus-ceiling bug — requiredJavaMajor bottoms out at 17, so
+   * running both rules here reported Java 8 as too old for a pack that needs exactly 8.
+   */
+  const findings = preflight({
+    serverDir: dirWith(['forge-1.12.2-14.23.5.2859-universal.jar', 'mods/a.jar']),
+    serverType: 'FORGE',
+    mcVersion: '1.12.2',
+    availableJava: 8,
+  });
+  assert.deepEqual(findings, []);
+});
+
+test('an old Forge pack on a node with only Java 17 is still blocked', () => {
+  const findings = preflight({
+    serverDir: dirWith(['forge-1.12.2-14.23.5.2859-universal.jar', 'mods/a.jar']),
+    serverType: 'FORGE',
+    mcVersion: '1.12.2',
+    availableJava: 17,
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].id, 'java-too-new');
+});

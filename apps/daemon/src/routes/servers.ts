@@ -77,7 +77,8 @@ import {
 } from '../services/network/bluemap';
 import { findForgeInstaller, runForgeInstaller, serverJarCandidates } from '../services/runtime/server-type';
 import { blocks, hasGeneratedWorld, preflight } from '../services/runtime/preflight';
-import { detectBestJavaMajor } from '../services/runtime/java-version';
+import { detectJavaMajor } from '../services/runtime/java-version';
+import { resolveJavaCmd } from '../services/runtime/process';
 
 const router = Router();
 const config = loadConfig();
@@ -811,7 +812,16 @@ router.get('/:serverId/preflight', async (req: Request, res: Response) => {
   const mcVersion = (req.query.mcVersion as string) || meta.mcVersion;
 
   const dockerMode = meta.executionMode !== ExecutionMode.PROCESS;
-  const availableJava = dockerMode ? null : await detectBestJavaMajor();
+
+  /*
+   * The JDK this server would actually get, not the newest one on the node.
+   *
+   * detectBestJavaMajor answers a capability question — "what is the highest version this
+   * machine could run" — and on a node with Java 8 through 25 installed it answers 25. Ask
+   * that here and an old Forge pack is reported as having a JVM too new for it, on the very
+   * node that has the Java 8 it needs and would have picked it.
+   */
+  const availableJava = dockerMode ? null : await detectJavaMajor(resolveJavaCmd(mcVersion, serverType));
 
   const findings = preflight({ serverDir, serverType, mcVersion, availableJava, dockerMode });
 

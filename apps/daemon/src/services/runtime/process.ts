@@ -2,7 +2,7 @@ import { spawn, execSync, ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { EventEmitter } from 'events';
-import { CreateServerContainerDto } from '@mc-manager/shared';
+import { CreateServerContainerDto, maxJavaMajor } from '@mc-manager/shared';
 import { getConfig } from '../../config';
 import { provisioningManager, STATUS } from '../content/provisioning';
 import { tunnelManager } from '../network/frpc';
@@ -36,7 +36,7 @@ export interface ManagedProcess {
   stopCommand?: string;
 }
 
-export function resolveJavaCmd(mcVersion?: string): string {
+export function resolveJavaCmd(mcVersion?: string, loader?: string): string {
   /*
    * An explicit JAVA_BIN wins over everything below.
    *
@@ -52,7 +52,20 @@ export function resolveJavaCmd(mcVersion?: string): string {
    * check and this cannot disagree about it. Picking one binary and then vetting it
    * against a different rule would be worse than not checking at all.
    */
-  for (const major of JAVA_PREFERENCE[requiredJavaMajor(mcVersion)]) {
+  /*
+   * Which Java this version needs is decided in java-version.ts, so the preflight
+   * check and this cannot disagree about it. Picking one binary and then vetting it
+   * against a different rule would be worse than not checking at all.
+   *
+   * The ceiling has to be applied first. requiredJavaMajor is a floor — "at least 17" —
+   * and for Forge up to 1.16 the floor is not the binding constraint: those need Java 8
+   * and cannot use anything newer. Consulting only the floor picked Java 17 for every
+   * 1.12.2 pack, which is a JVM they can never run on.
+   */
+  const ceiling = maxJavaMajor(mcVersion, loader);
+  const wanted = ceiling ?? requiredJavaMajor(mcVersion);
+
+  for (const major of JAVA_PREFERENCE[wanted] ?? [wanted]) {
     const candidate = `/opt/java/openjdk-${major}/bin/java`;
     if (fs.existsSync(candidate)) return candidate;
   }
@@ -338,8 +351,13 @@ class ProcessManager extends EventEmitter {
     throw new Error(problem);
   }
 
-  private async assertJavaCanRun(serverId: string, javaCmd: string, mcVersion?: string): Promise<void> {
-    const problem = await javaVersionProblem(javaCmd, mcVersion);
+  private async assertJavaCanRun(
+    serverId: string,
+    javaCmd: string,
+    mcVersion?: string,
+    loader?: string
+  ): Promise<void> {
+    const problem = await javaVersionProblem(javaCmd, mcVersion, loader);
     if (!problem) return;
 
     const message = `Cannot start '${serverId}': ${problem}`;
@@ -472,9 +490,9 @@ class ProcessManager extends EventEmitter {
           scriptMcVersion = meta.installedVersion || meta.mcVersion || scriptMcVersion;
         } catch (e) {}
       }
-      const resolvedJavaCmd = resolveJavaCmd(scriptMcVersion);
+      const resolvedJavaCmd = resolveJavaCmd(scriptMcVersion, dto.serverType);
       this.assertLoaderMatches(dto.serverId, serverDir, dto.serverType);
-      await this.assertJavaCanRun(dto.serverId, resolvedJavaCmd, scriptMcVersion);
+      await this.assertJavaCanRun(dto.serverId, resolvedJavaCmd, scriptMcVersion, dto.serverType);
       const javaDir = path.dirname(resolvedJavaCmd);
       const javaHome = path.dirname(javaDir); // e.g. /opt/java/openjdk-21
       const augmentedPath = `${javaDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`;
@@ -520,9 +538,9 @@ class ProcessManager extends EventEmitter {
         } catch (e) {}
       }
 
-      const javaCmd = resolveJavaCmd(effectiveMcVersion);
+      const javaCmd = resolveJavaCmd(effectiveMcVersion, dto.serverType);
       this.assertLoaderMatches(dto.serverId, serverDir, dto.serverType);
-      await this.assertJavaCanRun(dto.serverId, javaCmd, effectiveMcVersion);
+      await this.assertJavaCanRun(dto.serverId, javaCmd, effectiveMcVersion, dto.serverType);
       console.log(`[ProcessManager] Spawning standalone Java process using '${javaCmd}' for server ${dto.serverId} in '${serverDir}': ${javaCmd} ${javaArgs.join(' ')}`);
 
       child = spawn(javaCmd, javaArgs, {

@@ -156,3 +156,52 @@ test('a JDK that cannot be run at all does not block the launch', async () => {
   const problem = await javaVersionProblem('definitely-not-a-real-java-binary', '26.2');
   assert.equal(problem, null);
 });
+
+test('old Forge is refused a JVM that is too new, not just one too old', () => {
+  /*
+   * The SkyFactory failure in one assertion. Java 17 clears the floor for 1.12.2 and was
+   * therefore accepted, then died inside LaunchWrapper — which needs internals Java 9
+   * removed. The floor was never the binding constraint here.
+   */
+  const problem = evaluateJava('/opt/java/openjdk-17/bin/java', '1.12.2', 17, 'FORGE');
+  assert.ok(problem, 'expected Java 17 to be refused for Forge 1.12.2');
+  assert.match(problem!, /needs Java 8/);
+});
+
+test('old Forge on Java 8 is fine', () => {
+  assert.equal(evaluateJava('/opt/java/openjdk-8/bin/java', '1.12.2', 8, 'FORGE'), null);
+});
+
+test('vanilla on an old version is not caught by the Forge ceiling', () => {
+  // 1.12.2 vanilla runs happily on a modern JVM. The ceiling is a loader problem, not an
+  // age problem, and catching this would refuse a working server.
+  assert.equal(evaluateJava('/opt/java/openjdk-21/bin/java', '1.12.2', 21, 'VANILLA'), null);
+  assert.equal(evaluateJava('/opt/java/openjdk-21/bin/java', '1.12.2', 21, undefined), null);
+});
+
+test('modern Forge has no ceiling, only the version floor', () => {
+  // Forge moved to the module system at 1.17 and tracks the version's own requirement.
+  assert.equal(evaluateJava('/opt/java/openjdk-21/bin/java', '1.20.1', 21, 'FORGE'), null);
+});
+
+test('a JVM too old is still reported, with the loader in play', () => {
+  const problem = evaluateJava('/opt/java/openjdk-17/bin/java', '26.2', 17, 'FABRIC');
+  assert.ok(problem);
+  assert.match(problem!, /requires Java 25/);
+});
+
+test('a ceiling replaces the floor rather than adding to it', () => {
+  /*
+   * The bug this caught. requiredJavaMajor bottoms out at 17 for anything not otherwise
+   * capped, so consulting both rules made Forge 1.12.2 need "17 or newer, but no newer
+   * than 8" — satisfiable by nothing, and it rejected the very JVM it had just demanded.
+   */
+  assert.equal(evaluateJava('/opt/java/openjdk-8/bin/java', '1.12.2', 8, 'FORGE'), null);
+  assert.equal(evaluateJava('/opt/java/openjdk-8/bin/java', '1.7.10', 8, 'FORGE'), null);
+
+  // Java 7 really is too old for it, and says so without mentioning 17.
+  const tooOld = evaluateJava('/usr/bin/java', '1.12.2', 7, 'FORGE');
+  assert.ok(tooOld);
+  assert.match(tooOld!, /needs Java 8/);
+  assert.doesNotMatch(tooOld!, /17/);
+});
