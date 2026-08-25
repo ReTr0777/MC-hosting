@@ -226,3 +226,60 @@ export function loaderMismatch(serverDir: string, serverType?: string): string |
     `${detected.version ? ` ${detected.version}` : ''} in the panel (Update Centre), then start it again.`
   );
 }
+
+/**
+ * What a jar actually is, read from its own manifest.
+ *
+ * Filenames lie and metadata rots. A Fabric server download is saved as `server.jar`, so a
+ * directory that once ran Fabric keeps a `server.jar` that is a Fabric launcher — and the
+ * launcher check "if server.jar exists, use it" happily started it for a Forge server. The
+ * name carried no information, and craftcontrol-meta.json had already been overwritten to
+ * claim Forge, so neither source could tell the truth.
+ *
+ * The manifest can. Main-Class names the loader that built the jar, and nothing rewrites it.
+ */
+export function jarLoader(jarPath: string): DetectedLoader | 'VANILLA' | null {
+  let mainClass = '';
+  try {
+    // Lazily required so this module stays importable where adm-zip is not needed.
+    const AdmZip = require('adm-zip');
+    const entry = new AdmZip(jarPath).getEntry('META-INF/MANIFEST.MF');
+    if (!entry) return null;
+    const manifest = entry.getData().toString('utf8');
+    // Manifest lines wrap at 72 bytes with a leading space on continuations.
+    const unwrapped = manifest.replace(/\r?\n /g, '');
+    mainClass = /Main-Class:\s*(\S+)/.exec(unwrapped)?.[1] || '';
+  } catch {
+    // Unreadable, not a zip, or missing. No opinion — the caller keeps its previous belief.
+    return null;
+  }
+
+  if (!mainClass) return null;
+  if (/fabric/i.test(mainClass)) return 'FABRIC';
+  if (/quilt/i.test(mainClass)) return 'QUILT';
+  if (/neoforge/i.test(mainClass)) return 'NEOFORGE';
+  if (/(minecraftforge|forge)/i.test(mainClass)) return 'FORGE';
+  if (/net\.minecraft\./i.test(mainClass)) return 'VANILLA';
+  return null;
+}
+
+/**
+ * Whether an existing server.jar can be reused for the loader now configured.
+ *
+ * Only refuses on positive evidence of a different loader. An unreadable jar, or one whose
+ * manifest names nothing recognisable, is left alone: re-downloading a server because a
+ * manifest could not be parsed would be a worse failure than the one being prevented.
+ */
+export function jarSuitsLoader(jarPath: string, serverType?: string): boolean {
+  const configured = (serverType || '').toUpperCase();
+  if (!LOADER_TYPES.includes(configured)) return true;
+
+  const actual = jarLoader(jarPath);
+  if (actual === null) return true;
+
+  // A Forge server legitimately keeps vanilla's jar around as a dependency, but it is
+  // never what server.jar should be for one.
+  return actual === configured;
+}
+
+const LOADER_TYPES = ['FABRIC', 'FORGE', 'NEOFORGE', 'QUILT'];

@@ -15,7 +15,14 @@ import {
   javaVersionProblem,
   explainClassVersionError,
 } from './java-version';
-import { findForgeInstaller, loaderMismatch, runForgeInstaller, serverJarCandidates } from './server-type';
+import {
+  findForgeInstaller,
+  jarLoader,
+  jarSuitsLoader,
+  loaderMismatch,
+  runForgeInstaller,
+  serverJarCandidates,
+} from './server-type';
 import { installForgeServer, resolveConcreteVersion, resolveVanillaJarUrl } from './forge-install';
 
 export interface ManagedProcess {
@@ -123,11 +130,19 @@ class ProcessManager extends EventEmitter {
     const recordedLoader = String(existingMeta.installedLoader || existingMeta.serverType || '').toUpperCase();
 
     // Always preserve / write metadata to ensure version is never lost on restart
+    /*
+     * installedVersion is deliberately absent here.
+     *
+     * It used to be set to the requested version up front, before anything had been
+     * installed, and written to disk by the rescue below. So a run that asked for Forge
+     * 1.12.2 and then failed still left metadata claiming Forge 1.12.2 was installed —
+     * and the next run saw nothing stale in a directory still full of Fabric. It is now
+     * written only where an install actually succeeds.
+     */
     const meta: any = {
       ...existingMeta,
       mcVersion,
       serverType,
-      installedVersion: mcVersion,
       serverPort: dto.serverPort,
     };
 
@@ -189,6 +204,11 @@ class ProcessManager extends EventEmitter {
         }
       }
 
+      /*
+       * Nothing is installed now — the build was just moved away — so the record says so.
+       * Claiming the requested version here is what made the previous failure invisible.
+       */
+      delete meta.installedVersion;
       meta.installedLoader = serverType;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
     }
@@ -232,9 +252,29 @@ class ProcessManager extends EventEmitter {
       }
     }
 
-    // If server.jar already exists in the server folder and version matches, use it immediately
+    /*
+     * An existing server.jar, but only if it is the right kind of server.
+     *
+     * The name says nothing about what is inside. A Fabric download is written here as
+     * server.jar, so a directory that once ran Fabric keeps a Fabric launcher under that
+     * name — and this check, which used to be unconditional, started it for a Forge server.
+     * The metadata could not catch it either, having already been rewritten to say Forge.
+     * So the jar's own manifest is asked instead.
+     */
     if (fs.existsSync(targetJarPath) && !(dto as any).forceRedownload) {
-      return 'server.jar';
+      if (jarSuitsLoader(targetJarPath, serverType)) {
+        return 'server.jar';
+      }
+      const wrongLoader = jarLoader(targetJarPath);
+      console.log(
+        `[ProcessManager] server.jar is a ${wrongLoader} jar but this server is ${serverType}; ` +
+          `setting it aside and installing ${serverType}.`
+      );
+      try {
+        fs.renameSync(targetJarPath, path.join(serverDir, `.stale-${wrongLoader?.toLowerCase() || 'unknown'}-server.jar`));
+      } catch {
+        fs.rmSync(targetJarPath, { force: true });
+      }
     }
 
     // Check if any other jar file exists in the root (e.g., fabric-server.jar, forge.jar, etc.)
@@ -286,6 +326,7 @@ class ProcessManager extends EventEmitter {
       console.log(`[ProcessManager Cache Hit] Copying cached executable '${cacheFileName}' to server directory...`);
       fs.copyFileSync(cachedJarPath, targetJarPath);
       meta.installedVersion = mcVersion;
+      meta.installedLoader = serverType;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
       return 'server.jar';
     }
@@ -296,6 +337,7 @@ class ProcessManager extends EventEmitter {
       fs.copyFileSync(bundledJarPath, targetJarPath);
       fs.copyFileSync(bundledJarPath, cachedJarPath);
       meta.installedVersion = mcVersion;
+      meta.installedLoader = serverType;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
       return 'server.jar';
     }
@@ -321,6 +363,7 @@ class ProcessManager extends EventEmitter {
         );
       }
       meta.installedVersion = mcVersion;
+      meta.installedLoader = serverType;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
       return target;
     }
@@ -333,7 +376,19 @@ class ProcessManager extends EventEmitter {
           if (fRes.ok) {
             const fData = await fRes.json();
             const loaderVer = fData[0]?.loader?.version || '0.19.3';
-            const installerVer = fData[0]?.installer?.version || '1.0.1';
+            /*
+             * The installer version comes from its own endpoint.
+             *
+             * fData[0].installer does not exist — the loader response carries only loader,
+             * intermediary and launcherMeta — so this always fell back to the hardcoded
+             * 1.0.1 while the current installer is 1.1.2. It happened to keep working, which
+             * is why nobody noticed a version pinned years ago.
+             */
+            let installerVer = '1.1.2';
+            try {
+              const iRes = await fetch('https://meta.fabricmc.net/v2/versions/installer');
+              if (iRes.ok) installerVer = (await iRes.json())[0]?.version || installerVer;
+            } catch { /* the pinned default is a reasonable last resort */ }
             downloadUrl = `https://meta.fabricmc.net/v2/versions/loader/${mcVersion}/${loaderVer}/${installerVer}/server/jar`;
           } else {
             downloadUrl = `https://meta.fabricmc.net/v2/versions/loader/${mcVersion}/0.19.3/1.0.1/server/jar`;
@@ -383,6 +438,7 @@ class ProcessManager extends EventEmitter {
       console.log(`[ProcessManager] Cached and installed server jar successfully (${buffer.length} bytes).`);
 
       meta.installedVersion = mcVersion;
+      meta.installedLoader = serverType;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
 
       return 'server.jar';
