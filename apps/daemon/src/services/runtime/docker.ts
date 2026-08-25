@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { CreateServerContainerDto } from '@mc-manager/shared';
 import { getConfig } from '../../config';
 import { allowanceRefusal } from '../allowance';
+import { detectServerType } from './server-type';
 import { sanitizeMrpack, DENYLIST_PATH_SUBSTRINGS } from '../content/modrinth';
 import { readInstalledModpack } from '../content/modrinth-provision';
 import { buildServerWithServerPackCreator } from '../content/serverpackcreator';
@@ -336,6 +337,32 @@ export async function syncContainerFileToHost(serverId: string, fileName: string
   }
 }
 
+/**
+ * What loader a pre-built directory holds, with the reasoning written to the log.
+ *
+ * Falls back to FABRIC only when the directory offers no evidence at all, which is what
+ * this code did unconditionally before — and is why every Forge pack older than 1.17
+ * came up as Fabric and crashed. The log line matters: when the guess is wrong, the
+ * evidence that produced it is the difference between a five-minute fix and an afternoon.
+ */
+function describeDetection(serverDir: string, serverType: string): { type: string; version: string | null } {
+  const detected = detectServerType(serverDir);
+
+  if (!detected.loader) {
+    console.warn(
+      `[Daemon] Could not tell which loader ${serverDir} holds — no Fabric, Forge or NeoForge ` +
+        'artefacts found. Falling back to FABRIC; if this pack is Forge, set its engine in the panel.'
+    );
+    return { type: 'FABRIC', version: null };
+  }
+
+  console.log(
+    `[Daemon] Detected ${detected.loader}${detected.version ? ` ${detected.version}` : ''} ` +
+      `for a ${serverType} server, from ${detected.evidence}.`
+  );
+  return { type: detected.loader, version: detected.version };
+}
+
 export async function createServerContainer(dto: CreateServerContainerDto): Promise<string> {
   if (!dto.eulaAccepted) {
     throw new Error('EULA must be accepted before creating or running server container.');
@@ -445,14 +472,10 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
       }
     } else {
       console.log(`[Daemon] Migration mode: preserving pre-built server files for Modrinth server.`);
-      let detectedType = 'FABRIC';
-      if (fs.existsSync(path.join(serverDir, 'user_args.txt')) || fs.existsSync(path.join(serverDir, 'unix_args.txt'))) {
-        detectedType = 'FORGE';
-      }
-      envVars.push(`TYPE=${detectedType}`);
-      if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
-        envVars.push(`VERSION=${dto.mcVersion}`);
-      }
+      const detected = describeDetection(serverDir, dto.serverType);
+      envVars.push(`TYPE=${detected.type}`);
+      const version = dto.mcVersion && dto.mcVersion !== 'LATEST' ? dto.mcVersion : detected.version;
+      if (version) envVars.push(`VERSION=${version}`);
     }
   } else if (dto.serverType === 'CURSEFORGE') {
     if (!dto.isMigration) {
@@ -502,18 +525,16 @@ export async function createServerContainer(dto: CreateServerContainerDto): Prom
       console.log(`[Daemon] Migration mode: preserving pre-built server files for CurseForge server.`);
     }
 
+    let detectedVersion: string | null = null;
     if (dto.isMigration) {
-      let detectedType = 'FABRIC';
-      if (fs.existsSync(path.join(serverDir, 'user_args.txt')) || fs.existsSync(path.join(serverDir, 'unix_args.txt'))) {
-        detectedType = 'FORGE';
-      }
-      envVars.push(`TYPE=${detectedType}`);
+      const detected = describeDetection(serverDir, dto.serverType);
+      envVars.push(`TYPE=${detected.type}`);
+      detectedVersion = detected.version;
     } else {
       envVars.push(`TYPE=CURSEFORGE`);
     }
-    if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
-      envVars.push(`VERSION=${dto.mcVersion}`);
-    }
+    const cfVersion = dto.mcVersion && dto.mcVersion !== 'LATEST' ? dto.mcVersion : detectedVersion;
+    if (cfVersion) envVars.push(`VERSION=${cfVersion}`);
   } else {
     envVars.push(`TYPE=${dto.serverType}`);
     if (dto.mcVersion && dto.mcVersion !== 'LATEST') {
