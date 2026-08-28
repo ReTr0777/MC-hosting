@@ -32,6 +32,7 @@ import type { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
 import { dirStats } from '../utils/dir-stats';
 import { freeSpaceMb } from '../utils/disk';
+import { runExtractors } from '../utils/archive-extract';
 
 /**
  * Free space below which a server still kept in a Docker volume will not be exported.
@@ -339,30 +340,6 @@ router.post('/create', async (req: Request, res: Response) => {
 });
 
 // Helper function for processing and extracting serverpack archives
-// execSync buffers a child's entire stdout/stderr in memory and defaults to only 1MB. Extraction
-// tools print a line per extracted file, so a large modpack (thousands of entries) overflows that
-// buffer, gets SIGTERM'd with ENOBUFS partway through, and looks to us like a failed extraction —
-// sending us on to a weaker fallback tool on top of a half-extracted directory. 512MB of headroom
-// plus the quiet flags below means output size can never decide whether an extraction succeeds.
-const EXTRACT_EXEC_OPTS = {
-  stdio: 'pipe' as const,
-  encoding: 'utf8' as const,
-  maxBuffer: 512 * 1024 * 1024,
-};
-
-/** Renders why an extraction command failed, including the details execSync hides on the error object. */
-function describeExecFailure(e: any): string {
-  const parts = [`exit=${e.status ?? 'n/a'}`];
-  if (e.signal) parts.push(`signal=${e.signal}`);
-  if (e.code) parts.push(`code=${e.code}`);
-  const stderr = String(e.stderr || '').trim();
-  const stdout = String(e.stdout || '').trim();
-  if (stderr) parts.push(`stderr: ${stderr.slice(-2000)}`);
-  else if (stdout) parts.push(`stdout: ${stdout.slice(-2000)}`);
-  else parts.push(e.message);
-  return parts.join(' | ');
-}
-
 async function processAndExtractServerpack(serverId: string, archivePath: string, res: Response) {
   const serverDir = path.join(config.dataDir, serverId);
   let mrpackResult: MrpackBuildResult | null = null;
@@ -380,39 +357,26 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
 
   // Count files before extraction to verify something was extracted
   const filesBefore = fs.readdirSync(serverDir).length;
+  // Why each tool that did not work did not work, so a failure names the missing tool instead of
+  // only reporting that the directory is still empty.
+  const attempts: string[] = [];
 
   if (isRar) {
-    let extracted = false;
     // `-idq` (unrar) and `-bso0 -bsp0` (7z) suppress the per-file "Extracting ..." chatter while
     // leaving real errors on stderr. Combined with EXTRACT_EXEC_OPTS' large maxBuffer, this keeps a
     // multi-thousand-file modpack from overflowing execSync's output buffer mid-extraction.
-    const commands = [
-      `unrar x -o+ -idq "${archivePath}" "${serverDir}/"`,
-      `7z x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
-      `7za x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
-      `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
-    ];
-
-    for (const cmd of commands) {
-      try {
-        const output = execSync(cmd, EXTRACT_EXEC_OPTS);
-        console.log(`[Daemon Archive Extractor] Extracted RAR using: ${cmd.split(' ')[0]}`);
-        extracted = true;
-        break;
-      } catch (e: any) {
-        // unrar exit code 1 means "non-fatal warning(s)" — e.g. failing to restore file
-        // ownership/timestamps when running as a non-root container user. The archive's actual
-        // file data still gets extracted correctly, unlike a real failure (exit code >= 2).
-        // Treating this warning as fatal was sending every extraction straight to 7z/7za's
-        // much weaker RAR5 decoder instead, which is what was actually corrupting uploads.
-        if (cmd.startsWith('unrar') && e.status === 1) {
-          console.log(`[Daemon Archive Extractor] Extracted RAR using: unrar (non-fatal warnings, exit code 1 — ignoring)`);
-          extracted = true;
-          break;
-        }
-        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${describeExecFailure(e)}`);
-      }
-    }
+    const extracted = runExtractors(
+      [
+        `unrar x -o+ -idq "${archivePath}" "${serverDir}/"`,
+        `7z x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
+        `7za x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
+        `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
+      ],
+      serverDir,
+      filesBefore,
+      'RAR',
+      attempts
+    );
 
     if (!extracted) {
       console.log(`[Daemon Archive Extractor] Running node-unrar-js WASM fallback...`);
@@ -433,48 +397,35 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
           }
         }
         console.log(`[Daemon Archive Extractor] WASM fallback extracted ${filesExtracted} files`);
-        extracted = true;
       } catch (e: any) {
         console.error(`[Daemon Archive Extractor] WASM fallback failed: ${e.message}`);
-        throw new Error(`All RAR extraction methods failed: ${e.message}`);
+        throw new Error(`All RAR extraction methods failed: ${e.message}. Tools tried — ${attempts.join('; ')}`);
       }
     }
   } else {
-    let extracted = false;
-    const commands = [
-      `unzip -q -o "${archivePath}" -d "${serverDir}"`,
-      `7z x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
-      `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
-      `tar -xf "${archivePath}" -C "${serverDir}"`,
-    ];
-
-    for (const cmd of commands) {
-      try {
-        const output = execSync(cmd, EXTRACT_EXEC_OPTS);
-        console.log(`[Daemon Archive Extractor] Extracted ZIP using: ${cmd.split(' ')[0]}`);
-        extracted = true;
-        break;
-      } catch (e: any) {
-        // unzip exit code 1 is "completed successfully but with warnings" — same non-fatal
-        // semantics as unrar's, and equally not a reason to fall through to another tool.
-        if (cmd.startsWith('unzip') && e.status === 1) {
-          console.log(`[Daemon Archive Extractor] Extracted ZIP using: unzip (non-fatal warnings, exit code 1 — ignoring)`);
-          extracted = true;
-          break;
-        }
-        console.log(`[Daemon Archive Extractor] Failed with ${cmd.split(' ')[0]}: ${describeExecFailure(e)}`);
-      }
-    }
+    const extracted = runExtractors(
+      [
+        `unzip -q -o "${archivePath}" -d "${serverDir}"`,
+        `7z x "${archivePath}" -o"${serverDir}" -y -bso0 -bsp0`,
+        `bsdtar -xf "${archivePath}" -C "${serverDir}"`,
+        // Windows ships bsdtar as plain `tar`, which reads ZIPs; it is the only archive tool a
+        // desktop node is guaranteed to have before the in-process fallback below.
+        `tar -xf "${archivePath}" -C "${serverDir}"`,
+      ],
+      serverDir,
+      filesBefore,
+      'ZIP',
+      attempts
+    );
 
     if (!extracted) {
       console.log(`[Daemon Archive Extractor] Running AdmZip fallback...`);
       try {
         const zip = new AdmZip(archivePath);
         zip.extractAllTo(serverDir, true);
-        extracted = true;
       } catch (e: any) {
         console.error(`[Daemon Archive Extractor] AdmZip fallback failed: ${e.message}`);
-        throw new Error(`All ZIP extraction methods failed: ${e.message}`);
+        throw new Error(`All ZIP extraction methods failed: ${e.message}. Tools tried — ${attempts.join('; ')}`);
       }
     }
   }
@@ -483,7 +434,11 @@ async function processAndExtractServerpack(serverId: string, archivePath: string
   const filesAfter = fs.readdirSync(serverDir).length;
   if (filesAfter <= filesBefore) {
     const allFiles = fs.readdirSync(serverDir);
-    throw new Error(`Archive extraction failed: no files were extracted from the archive. Files before: ${filesBefore}, after: ${filesAfter}. Current files: ${allFiles.join(', ')}`);
+    throw new Error(
+      `Archive extraction failed: no files were extracted from the archive. Files before: ${filesBefore}, ` +
+      `after: ${filesAfter}. Current files: ${allFiles.join(', ')}. Tools tried — ` +
+      `${attempts.length ? attempts.join('; ') : 'none'}`
+    );
   }
   console.log(`[Daemon Archive Extractor] Extraction verified: ${filesAfter - filesBefore} new files created (before: ${filesBefore}, after: ${filesAfter})`);
   console.log(`[Daemon Archive Extractor] Files in directory after extraction: ${fs.readdirSync(serverDir).join(', ')}`);
