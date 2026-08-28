@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 
 const IGNORE_FILES = new Set(['craftcontrol-meta.json', 'eula.txt', 'serverpack_uploaded.tmp', '.tmp_uploads', 'no-autopause']);
 const MAX_DEPTH = 6;
@@ -32,7 +31,11 @@ function moveContentsUp(fromDir: string, toDir: string): void {
     const src = path.join(fromDir, item);
     const dest = path.join(toDir, item);
     if (fs.existsSync(dest) && fs.statSync(dest).isDirectory() && fs.statSync(src).isDirectory()) {
-      try { execSync(`cp -rf "${src}"/* "${dest}/" 2>/dev/null || true`); } catch (e) {}
+      // Merging two directories, not replacing one. Done in-process rather than by shelling out:
+      // the `cp -rf ... 2>/dev/null || true` this used to run is POSIX shell that cmd.exe cannot
+      // parse at all, so on a desktop node hosting natively on Windows the merge silently did
+      // nothing and the pack's mods/ or config/ was dropped on the floor.
+      try { fs.cpSync(src, dest, { recursive: true, force: true }); } catch (e) {}
     } else {
       // An empty stub (e.g. leftover 0-byte run.sh) at the destination must not block
       // the real file from taking its place.
