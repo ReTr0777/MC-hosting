@@ -109,6 +109,23 @@ function smallestCap(perServer: number | null | undefined, total: number | null 
   return caps.length ? Math.min(...caps) : undefined;
 }
 
+/** The largest figure any candidate node offers, or undefined when none of them says. */
+function bestNodeCap(nodes: NodeItem[], read: (n: NodeItem) => number | null | undefined): number | undefined {
+  const offered = nodes.map(read).filter((v): v is number => typeof v === 'number' && v > 0);
+  return offered.length ? Math.max(...offered) : undefined;
+}
+
+/** The tighter of two ceilings, either of which may be unset. */
+function tightestCap(a: number | undefined, b: number | undefined): number | undefined {
+  const caps = [a, b].filter((v): v is number => v != null);
+  return caps.length ? Math.min(...caps) : undefined;
+}
+
+/** Megabytes as the wizard says them: gigabytes once there are enough of them to be worth it. */
+function formatMb(mb: number): string {
+  return mb >= 1024 ? `${Math.round((mb / 1024) * 10) / 10} GB` : `${mb} MB`;
+}
+
 interface ModpackHit {
   project_id: string;
   slug: string;
@@ -667,17 +684,6 @@ function Dashboard() {
     return () => { active = false; };
   }, [showServerModal]);
 
-  // A new server is capped by the per-server ceiling and by whatever is left of the total.
-  const ramCap = smallestCap(quota?.maxServerMemoryMb, quota?.maxMemoryMb, quota?.usedMemoryMb);
-  const cpuCap = smallestCap(quota?.maxServerCpu, quota?.maxCpu, quota?.usedCpu);
-
-  // The wizard's defaults (8 GB / 1 core) can sit above a tight quota, so pull them down to the
-  // largest allowed preset once the quota is known.
-  useEffect(() => {
-    if (ramCap != null) setMemoryMb((mb) => (mb > ramCap ? [16384, 8192, 4096, 2048, 1024].find((p) => p <= ramCap) ?? 1024 : mb));
-    if (cpuCap != null) setCpuLimit((c) => (c > cpuCap ? [8, 4, 2, 1].find((p) => p <= cpuCap) ?? 1 : c));
-  }, [ramCap, cpuCap]);
-
   // Live Modrinth Search in Wizard with Pagination
   const [modpackQuery, setModpackQuery] = useState('');
   const [modpackHits, setModpackHits] = useState<ModpackHit[]>([]);
@@ -725,6 +731,40 @@ function Dashboard() {
       setSelectedNodeId('AUTO');
     }
   }, [gameCapableNodes, selectedNodeId]);
+
+  /*
+   * What one new server may be sized to. Two ceilings apply, and they answer different questions:
+   * the account's quota says what this user is allowed to ask for, and the target node says what
+   * the machine can actually give. Without the second the wizard offers 8 cores on a 2-core box,
+   * and the refusal only arrives from the daemon once the pack has finished uploading.
+   *
+   * RAM and CPU read the node differently, for the reason lib/servers/node-capacity.ts sets out: a
+   * heap is close to reserved once the JVM grows into it, so memory is capped by what is genuinely
+   * free; cpuLimit is only a ceiling on a burst and is budgeted at an overcommit ratio, so cores
+   * are capped by the cores the node has rather than by that inflated budget.
+   */
+  const sizingNodes = useMemo(() => {
+    const usable = gameCapableNodes.filter((n) => n.isOnline);
+    // On Auto-Select the scheduler does the choosing, so the ceiling is the roomiest candidate's.
+    return selectedNodeId === 'AUTO' ? usable : usable.filter((n) => n.id === selectedNodeId);
+  }, [gameCapableNodes, selectedNodeId]);
+
+  const nodeRamCap = bestNodeCap(sizingNodes, (n) => n.capacity?.freeMemoryMb);
+  const nodeCpuCap = bestNodeCap(sizingNodes, (n) => n.totalCpu);
+
+  // A new server is capped by the per-server ceiling and by whatever is left of the total.
+  const quotaRamCap = smallestCap(quota?.maxServerMemoryMb, quota?.maxMemoryMb, quota?.usedMemoryMb);
+  const quotaCpuCap = smallestCap(quota?.maxServerCpu, quota?.maxCpu, quota?.usedCpu);
+
+  const ramCap = tightestCap(quotaRamCap, nodeRamCap);
+  const cpuCap = tightestCap(quotaCpuCap, nodeCpuCap);
+
+  // The wizard's defaults (8 GB / 1 core) can sit above a tight quota or a small node, so pull
+  // them down to the largest allowed preset once both are known — and again if the node changes.
+  useEffect(() => {
+    if (ramCap != null) setMemoryMb((mb) => (mb > ramCap ? [16384, 8192, 4096, 2048, 1024].find((p) => p <= ramCap) ?? 1024 : mb));
+    if (cpuCap != null) setCpuLimit((c) => (c > cpuCap ? [8, 4, 2, 1].find((p) => p <= cpuCap) ?? 1 : c));
+  }, [ramCap, cpuCap]);
 
   // ── Dashboard game filter ──
   /*
@@ -1795,14 +1835,23 @@ function Dashboard() {
                         { mb: 4096, note: 'plugins or a small modpack' },
                         { mb: 8192, note: 'most modpacks' },
                         { mb: 16384, note: 'large or heavily modded packs' },
-                      ].map(({ mb, note }) => (
-                        <option key={mb} value={mb} disabled={ramCap != null && mb > ramCap}>
-                          {mb / 1024} GB — {ramCap != null && mb > ramCap ? 'over your quota' : note}
-                        </option>
-                      ))}
+                      ].map(({ mb, note }) => {
+                        const overQuota = quotaRamCap != null && mb > quotaRamCap;
+                        const overNode = nodeRamCap != null && mb > nodeRamCap;
+                        return (
+                          <option key={mb} value={mb} disabled={overQuota || overNode}>
+                            {mb / 1024} GB — {overQuota ? 'over your quota' : overNode ? 'more than the node has free' : note}
+                          </option>
+                        );
+                      })}
                     </select>
-                    {ramCap != null && (
-                      <p className="cc-section-sub">Your quota allows up to {ramCap >= 1024 ? `${Math.round((ramCap / 1024) * 10) / 10} GB` : `${ramCap} MB`} for this server.</p>
+                    {quotaRamCap != null && (
+                      <p className="cc-section-sub">Your quota allows up to {formatMb(quotaRamCap)} for this server.</p>
+                    )}
+                    {nodeRamCap != null && (
+                      <p className="cc-section-sub">
+                        {selectedNodeId === 'AUTO' ? 'The roomiest available node has' : 'This node has'} {formatMb(nodeRamCap)} free.
+                      </p>
                     )}
                     {!advanced && (
                       <p className="cc-section-sub">
@@ -1814,13 +1863,23 @@ function Dashboard() {
                     <div>
                       <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '5px', fontWeight: 600 }}>CPU Cores <AdvancedBadge /></label>
                       <select value={cpuLimit} onChange={e => setCpuLimit(parseFloat(e.target.value))} className="cc-input">
-                        {[1, 2, 4, 8].map((cores) => (
-                          <option key={cores} value={cores} disabled={cpuCap != null && cores > cpuCap}>
-                            {cores} Core{cores === 1 ? '' : 's'}{cpuCap != null && cores > cpuCap ? ' — over your quota' : ''}
-                          </option>
-                        ))}
+                        {[1, 2, 4, 8].map((cores) => {
+                          const overQuota = quotaCpuCap != null && cores > quotaCpuCap;
+                          const overNode = nodeCpuCap != null && cores > nodeCpuCap;
+                          return (
+                            <option key={cores} value={cores} disabled={overQuota || overNode}>
+                              {cores} Core{cores === 1 ? '' : 's'}
+                              {overQuota ? ' — over your quota' : overNode ? ' — more than the node has' : ''}
+                            </option>
+                          );
+                        })}
                       </select>
-                      {cpuCap != null && <p className="cc-section-sub">Your quota allows up to {cpuCap} core(s) for this server.</p>}
+                      {quotaCpuCap != null && <p className="cc-section-sub">Your quota allows up to {quotaCpuCap} core(s) for this server.</p>}
+                      {nodeCpuCap != null && (
+                        <p className="cc-section-sub">
+                          {selectedNodeId === 'AUTO' ? 'The largest available node has' : 'This node has'} {nodeCpuCap} core(s).
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
