@@ -400,6 +400,16 @@ model Server {
   backupRetentionDays  Int?           // Delete backups older than N days
   backupMaxTotalMb     Int?           // Delete oldest until the set fits in N MB
 
+  // Whether this server's backups are copied to the node's off-site storage, and only
+  // meaningful on a node that has such storage configured. Granted by the host: the API
+  // restricts changes to GLOBAL_ADMIN, since off-site storage is the operator's to pay for.
+  //
+  // Defaults true so `prisma db push` leaves every existing row doing exactly what it does
+  // today — they were all being uploaded — while the create path sets it to false outright,
+  // so a new server is local-only until it is granted. The default is therefore about
+  // existing rows, not about new ones.
+  offsiteBackups       Boolean         @default(true)
+
   // Crash auto-restart
   autoRestartEnabled   Boolean         @default(false)
   crashCount           Int             @default(0)    // Crashes seen within the current crashWindowStartedAt window

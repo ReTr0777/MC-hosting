@@ -30,6 +30,17 @@ export interface CreateServerContainerDto {
   memoryMb: number;
   cpuLimit: number;
   eulaAccepted: boolean;
+  /**
+   * Whether this server's backups are copied to the node's off-site storage.
+   *
+   * Optional, and absent means **on**. Every server that existed before this field had its
+   * backups uploaded whenever the node had off-site storage configured, and a saved
+   * craftcontrol-meta.json written before it must keep meaning exactly that — reading
+   * absent as "off" would quietly stop backups leaving the node for every one of them.
+   * New servers are created with the field set explicitly, so only pre-existing servers
+   * ever fall back to the default.
+   */
+  offsiteBackups?: boolean;
   isMigration?: boolean;
   executionMode?: ExecutionMode;
 }

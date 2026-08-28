@@ -56,6 +56,56 @@ function gameOfBackupZip(zipPath: string): Game {
   }
 }
 
+
+/**
+ * Whether a server's backups may be copied off the node, from its recorded metadata.
+ *
+ * Absent means **yes**, for the same reason `gameFromMeta` reads an absent game as
+ * Minecraft: every server that predates this field was uploaded whenever the node had
+ * off-site storage configured, and treating those as opted out would turn a new control
+ * into a silent loss of off-site backups for every existing server.
+ *
+ * Read from the metadata rather than passed in by the caller because only one of the four
+ * things that take a backup is the panel. A pre-update backup, a pre-mod-install backup and
+ * a scheduled backup are all started inside the daemon with nobody to ask, so a flag that
+ * travelled with the request would be honoured a quarter of the time.
+ */
+export function offsiteEnabledInMeta(raw: string | undefined): boolean {
+  if (!raw) return true;
+  try {
+    const value = JSON.parse(raw).offsiteBackups;
+    return value === undefined ? true : !!value;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether this server's backups may leave the node. See offsiteEnabledInMeta. */
+export function offsiteEnabledForServer(serverId: string): boolean {
+  const metaPath = path.join(getConfig().dataDir, serverId, META_FILE);
+  if (!fs.existsSync(metaPath)) return true;
+  try {
+    return offsiteEnabledInMeta(fs.readFileSync(metaPath, 'utf8'));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Records whether this server's backups may leave the node.
+ *
+ * Written into craftcontrol-meta.json, which is the server's own record on the node and is
+ * already what every backup path reads. Returns false when there is no metadata to write to.
+ */
+export function setOffsiteEnabledForServer(serverId: string, enabled: boolean): boolean {
+  const metaPath = path.join(getConfig().dataDir, serverId, META_FILE);
+  if (!fs.existsSync(metaPath)) return false;
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  meta.offsiteBackups = enabled;
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  return true;
+}
+
 /** Never worth archiving: derived, huge, or the backups themselves. */
 /**
  * Backups currently being written, by server id.
@@ -294,6 +344,13 @@ export class BackupManager {
     if (!isS3Configured()) {
       console.log(
         `[BackupManager] '${fileName}' stays local: no off-site storage is configured on this node.`
+      );
+    } else if (!offsiteEnabledForServer(serverId)) {
+      // Said plainly, and on the same footing as the two lines above it. A server opted out
+      // of off-site storage and one whose upload failed both end up local-only, and the log
+      // is where anyone works out which of the two happened.
+      console.log(
+        `[BackupManager] '${fileName}' stays local: off-site backups are turned off for this server.`
       );
     } else {
       const startedAt = Date.now();

@@ -24,6 +24,64 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   const user = await getUserFromRequest(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+  const body = await request.json();
+
+  /*
+   * Off-site storage is granted, not chosen. The bucket and the bill are the operator's, so
+   * this one field is theirs to set even though everything else on this endpoint belongs to
+   * the server's own admins — a server OWNER can shape their retention policy all they like
+   * and still not decide that their world starts costing somebody else money.
+   */
+  if (body.offsiteBackups !== undefined) {
+    if (user.globalRole !== 'GLOBAL_ADMIN') {
+      return NextResponse.json(
+        { error: 'Forbidden: only the host can decide which servers get off-site backups' },
+        { status: 403 }
+      );
+    }
+
+    const enabled = !!body.offsiteBackups;
+    const server = await prisma.server.findUnique({
+      where: { id: params.id },
+      include: { node: true },
+    });
+    if (!server) return NextResponse.json({ error: 'Server not found' }, { status: 404 });
+
+    const daemonClient = new DaemonClient({
+      host: server.node.host,
+      port: server.node.port,
+      apiKey: server.node.apiKey,
+    });
+    const target = server.containerId || `process-${server.id}`;
+
+    /*
+     * The node is written first and the column second. Every backup path reads the node's
+     * copy, so a panel row saying "off" over a node still uploading would be a promise the
+     * product does not keep — and the reverse, silently, is a server paying for nothing.
+     * If the node cannot be reached, nothing is recorded anywhere.
+     */
+    try {
+      await daemonClient.setServerOffsiteBackups(target, enabled);
+    } catch (err: any) {
+      return NextResponse.json(
+        {
+          error: `The node could not record the setting, so nothing was changed: ${err.message}`,
+        },
+        { status: 502 }
+      );
+    }
+
+    await prisma.server.update({ where: { id: params.id }, data: { offsiteBackups: enabled } });
+
+    await writeAudit({
+      userId: user.userId,
+      action: 'BACKUP_OFFSITE_UPDATE',
+      details: { serverId: server.id, serverName: server.name, enabled },
+    });
+
+    return NextResponse.json({ offsite: { enabled, canChange: true } });
+  }
+
   const role = await roleOn(params.id, user.userId, user.globalRole);
   if (role !== 'OWNER' && role !== 'ADMIN') {
     return NextResponse.json(
@@ -31,8 +89,6 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       { status: 403 }
     );
   }
-
-  const body = await request.json();
 
   // null or '' clears a rule; undefined leaves it as it was.
   const rule = (raw: any, label: string, max: number): number | null | undefined => {
@@ -106,9 +162,23 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     });
 
     const targetContainerId = server.containerId || `process-${server.id}`;
-    const data = await daemonClient.request<{ backups: any[] }>(`/servers/${targetContainerId}/backups`);
+    const data = await daemonClient.request<{ backups: any[]; offsite?: { configured: boolean; enabled: boolean } }>(
+      `/servers/${targetContainerId}/backups`
+    );
+
+    /*
+     * The node is the authority on both halves of this. It knows whether it has off-site
+     * storage configured, and its craftcontrol-meta.json is what every backup path actually
+     * reads — the column below is the panel's copy, kept so the UI has something to render
+     * when the node is unreachable. Where they disagree, the node wins.
+     */
     return NextResponse.json({
       ...data,
+      offsite: {
+        configured: data.offsite?.configured ?? false,
+        enabled: data.offsite?.enabled ?? server.offsiteBackups,
+        canChange: user.globalRole === 'GLOBAL_ADMIN',
+      },
       retention: {
         count: server.backupRetentionCount,
         days: server.backupRetentionDays,

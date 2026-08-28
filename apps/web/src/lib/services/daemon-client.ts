@@ -316,6 +316,14 @@ export class DaemonClient {
       body: JSON.stringify(config),
     });
   }
+
+  /** Records whether one server's backups may be copied to this node's off-site storage. */
+  async setServerOffsiteBackups(target: string, enabled: boolean): Promise<{ success: boolean; offsite: { configured: boolean; enabled: boolean } }> {
+    return this.request<{ success: boolean; offsite: { configured: boolean; enabled: boolean } }>(
+      `/servers/${target}/backups/offsite`,
+      { method: 'PATCH', body: JSON.stringify({ enabled }) }
+    );
+  }
 }
 
 export interface BackupStorageConfig {

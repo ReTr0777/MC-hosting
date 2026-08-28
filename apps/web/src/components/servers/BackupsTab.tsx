@@ -29,14 +29,28 @@ interface BackupJob {
   error?: string;
 }
 
+/**
+ * Off-site storage as it applies to this one server.
+ *
+ * `configured` is the node's — whether it has anywhere to send backups at all. `enabled` is
+ * this server's. `canChange` is the caller's: off-site storage is granted by the host, so
+ * everyone can see where their backups go and only a global admin can move them.
+ */
+interface Offsite {
+  configured: boolean;
+  enabled: boolean;
+  canChange: boolean;
+}
+
 interface BackupsPayload {
   backups: Backup[];
   job: BackupJob | null;
   retention: Retention;
+  offsite: Offsite;
 }
 
 /** Module-level so the polling hook's fallback identity is stable between renders. */
-const EMPTY_PAYLOAD: BackupsPayload = { backups: [], job: null, retention: { count: null, days: null, maxTotalMb: null } };
+const EMPTY_PAYLOAD: BackupsPayload = { backups: [], job: null, retention: { count: null, days: null, maxTotalMb: null }, offsite: { configured: false, enabled: false, canChange: false } };
 
 type RetentionForm = { count: string; days: string; maxTotalMb: string };
 
@@ -61,6 +75,7 @@ export default function BackupsTab({ serverId, canManage = true }: { serverId: s
         backups: raw?.backups ?? [],
         job: raw?.job ?? null,
         retention: { count: raw?.retention?.count ?? null, days: raw?.retention?.days ?? null, maxTotalMb: raw?.retention?.maxTotalMb ?? null },
+        offsite: { configured: !!raw?.offsite?.configured, enabled: !!raw?.offsite?.enabled, canChange: !!raw?.offsite?.canChange },
       }),
     }
   );
@@ -106,6 +121,31 @@ export default function BackupsTab({ serverId, canManage = true }: { serverId: s
       toast.error('Could not save the retention policy', errorMessage(err));
     } finally {
       setSavingRetention(false);
+    }
+  };
+
+  const offsite = data.offsite;
+  const [savingOffsite, setSavingOffsite] = useState(false);
+
+  const handleSaveOffsite = async (enabled: boolean) => {
+    setSavingOffsite(true);
+    try {
+      await apiRequest(`/api/servers/${serverId}/backups`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offsiteBackups: enabled }),
+      });
+      toast.success(
+        enabled ? 'Off-site backups turned on' : 'Off-site backups turned off',
+        enabled
+          ? 'New backups of this server will be copied off the node.'
+          : 'New backups stay on the node. Copies already off-site are left where they are.'
+      );
+      await refresh();
+    } catch (err) {
+      toast.error('Could not change off-site backups', errorMessage(err));
+    } finally {
+      setSavingOffsite(false);
     }
   };
 
@@ -202,6 +242,43 @@ export default function BackupsTab({ serverId, canManage = true }: { serverId: s
       />
 
       {error && <InlineError message={error} onRetry={refresh} />}
+
+      {/*
+        Only on a node that has somewhere to send backups. On one that does not, this would
+        be a switch wired to nothing, and "off" would read as a choice somebody made rather
+        than as the absence of any storage to choose.
+      */}
+      {offsite.configured && (
+        <div className="cc-panel" style={{ display: 'grid', gap: '12px' }}>
+          <div className="cc-section-title">Off-site copies</div>
+          <p className="cc-help" style={{ margin: 0 }}>
+            {offsite.enabled
+              ? 'Every backup of this server is copied to the node’s off-site storage after it is written. Snapshots taken while this was off stayed on the node.'
+              : 'Backups of this server stay on the node. Its off-site storage is configured, but this server is not set to use it.'}
+          </p>
+
+          {offsite.canChange ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+              <label className="cc-label" htmlFor="offsite-toggle" style={{ margin: 0 }}>
+                <input
+                  id="offsite-toggle"
+                  type="checkbox"
+                  checked={offsite.enabled}
+                  disabled={savingOffsite}
+                  onChange={(e) => handleSaveOffsite(e.target.checked)}
+                  style={{ marginRight: '8px' }}
+                />
+                Send this server’s backups off-site
+              </label>
+              {savingOffsite && <span className="cc-help">Saving…</span>}
+            </div>
+          ) : (
+            <p className="cc-help" style={{ margin: 0 }}>
+              Off-site storage is provided by your host. Ask them if you need this changed.
+            </p>
+          )}
+        </div>
+      )}
 
       {canManage && (
         <form onSubmit={handleCreate} className="cc-panel" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>

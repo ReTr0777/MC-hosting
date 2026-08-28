@@ -25,7 +25,8 @@ import {
 } from '../services/runtime/docker';
 import { provisioningManager } from '../services/content/provisioning';
 import { processManager } from '../services/runtime/process';
-import { backupManager, backupJobFor, clearBackupJob, gameOfServerDir } from '../services/backup/backup';
+import { backupManager, backupJobFor, clearBackupJob, gameOfServerDir, offsiteEnabledForServer, setOffsiteEnabledForServer } from '../services/backup/backup';
+import { isS3Configured } from '../services/backup/s3-backup';
 import { CreateServerContainerDto, ExecutionMode, Game, GAME_CAPABILITIES, isGame } from '@mc-manager/shared';
 import { getGame, isNonMinecraftGame } from '../games';
 import type { PrismaClient } from '@prisma/client';
@@ -2560,9 +2561,48 @@ router.get('/:serverId/backups', async (req: Request, res: Response) => {
      */
     const job = backupJobFor(targetId);
     if (job?.state === 'failed') clearBackupJob(targetId);
-    res.json({ backups, job });
+    /*
+     * Both halves of the off-site picture, because the panel cannot work either out on its
+     * own: whether this node has storage to send backups to at all, and whether this server
+     * is set to use it. A control offered on a node with no storage configured would be a
+     * switch wired to nothing.
+     */
+    res.json({
+      backups,
+      job,
+      offsite: { configured: isS3Configured(), enabled: offsiteEnabledForServer(targetId) },
+    });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to list backups', details: err.message });
+  }
+});
+
+/*
+ * PATCH /api/v1/servers/:serverId/backups/offsite
+ *
+ * Records whether this server's backups may leave the node. The panel decides who is
+ * allowed to ask — the daemon trusts its API key, as it does for every other route here.
+ */
+router.patch('/:serverId/backups/offsite', (req: Request, res: Response) => {
+  const { serverId } = req.params;
+  const targetId = serverId.replace('process-', '');
+  const { enabled } = req.body || {};
+
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'Missing or non-boolean "enabled"' });
+  }
+
+  try {
+    if (!setOffsiteEnabledForServer(targetId, enabled)) {
+      return res.status(404).json({
+        error: 'Cannot record the off-site setting',
+        details: 'craftcontrol-meta.json is missing for this server, so there is nothing to write it to.',
+      });
+    }
+    console.log(`[Backups] Off-site backups ${enabled ? 'enabled' : 'disabled'} for '${targetId}'.`);
+    res.json({ success: true, offsite: { configured: isS3Configured(), enabled } });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to save the off-site setting', details: err.message });
   }
 });
 

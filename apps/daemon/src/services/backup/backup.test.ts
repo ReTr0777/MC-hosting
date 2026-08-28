@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 import { Game } from '@mc-manager/shared';
 import AdmZip from 'adm-zip';
-import { gameOfServerDir, archiveDirectory, EXCLUDED_FROM_BACKUP } from './backup';
+import { gameOfServerDir, archiveDirectory, EXCLUDED_FROM_BACKUP, offsiteEnabledInMeta } from './backup';
 
 /*
  * The cross-game restore guard has two failure modes and they pull in opposite
@@ -111,4 +111,27 @@ test('archiving a path that does not exist fails loudly and leaves nothing behin
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(target, { force: true });
   }
+});
+/*
+ * The off-site opt-out has the same shape of danger as the guard above, and it points the
+ * same way: a server whose metadata predates the field was having its backups uploaded, so
+ * reading absent as "opted out" would stop off-site backups for every existing server at
+ * once — and stop them silently, since a local-only backup looks like a successful one.
+ */
+
+test('metadata with no off-site field means off-site backups stay on', () => {
+  assert.equal(offsiteEnabledInMeta(undefined), true);
+  assert.equal(offsiteEnabledInMeta('{}'), true);
+  assert.equal(offsiteEnabledInMeta(JSON.stringify({ game: Game.MINECRAFT })), true);
+});
+
+test('unreadable metadata means off-site backups stay on', () => {
+  // Failing open matters more than failing closed here: a truncated meta file should not
+  // quietly downgrade a server that was paying for off-site storage yesterday.
+  assert.equal(offsiteEnabledInMeta('{ not json'), true);
+});
+
+test('an explicit choice is honoured in both directions', () => {
+  assert.equal(offsiteEnabledInMeta(JSON.stringify({ offsiteBackups: false })), false);
+  assert.equal(offsiteEnabledInMeta(JSON.stringify({ offsiteBackups: true })), true);
 });

@@ -410,6 +410,14 @@ export async function POST(req: NextRequest) {
           eulaAccepted: true,
           memoryMb: reqMemoryMb,
           cpuLimit: parseFloat(cpuLimit),
+          /*
+           * Local-only until the host grants otherwise, whatever the node has configured.
+           * Off-site storage is the operator's bucket and the operator's bill, so a server
+           * cannot arrive already spending it — a global admin turns this on per server from
+           * the Backups tab. Note this is the opposite of the column default, which exists
+           * to leave servers that predate the field doing what they already did.
+           */
+          offsiteBackups: false,
           status: 'OFFLINE',
           permissions: {
             create: {
@@ -453,6 +461,7 @@ export async function POST(req: NextRequest) {
         serverPort: server.serverPort,
         memoryMb: server.memoryMb,
         cpuLimit: server.cpuLimit,
+        offsiteBackups: server.offsiteBackups,
         eulaAccepted: true,
       });
 
