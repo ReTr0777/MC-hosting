@@ -23,7 +23,7 @@
  */
 
 /** The escape Java's properties parser turns into `§`, whatever encoding the file is in. */
-const SECTION_ESCAPE = '\u00A7';
+const SECTION_ESCAPE = String.raw`\u00A7`;
 
 /** The section sign itself, for input that already contains one. */
 const SECTION = '\u00A7';
@@ -112,9 +112,10 @@ export function encodeMotd(value: string): string {
  */
 export function decodeMotd(value: string): string {
   return value
-    .replace(/&/g, '&&')
-    .replace(/\u00a7/gi, '&')
-    .replace(new RegExp(SECTION, 'g'), '&');
+    .split('&').join('&&')
+    .split(SECTION_ESCAPE).join('&')
+    .split(SECTION_ESCAPE.toLowerCase()).join('&')
+    .split(SECTION).join('&');
 }
 /** Something a MOTD does that is not quite what was typed, and what it will do instead. */
 export interface MotdNote {
