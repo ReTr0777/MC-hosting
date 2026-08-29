@@ -30,14 +30,31 @@ const SECTION = '\u00A7';
 
 /**
  * Codes Java Edition understands: colours 0-9 and a-f, styles k-o, and r to reset.
- *
- * Deliberately not the Bedrock set. Offering `&u` on a Java server would produce a code the
- * client discards, which is a worse outcome than leaving it as the text somebody typed.
  */
 const JAVA_CODES = '0123456789abcdefklmnor';
 
-export function isJavaFormattingCode(ch: string): boolean {
-  return ch.length === 1 && JAVA_CODES.includes(ch.toLowerCase());
+/**
+ * Codes MOTD generators emit that the client has no equivalent letter for, mapped to the
+ * letter it does understand.
+ *
+ * `&u` for underline is the one that matters. Generators emit it, people paste it in, and the
+ * client's own underline is `§n` — so written through untouched it produces `§u`, which on
+ * Java Edition is nothing at all (it is a Bedrock material colour). Mapping it is safe
+ * precisely because of that: there is no competing meaning for `§u` on a Java server to
+ * break, so the choice is between underline and silence.
+ */
+const CODE_ALIASES: Record<string, string> = { u: 'n' };
+
+/**
+ * The code letter to write for what somebody typed, or null if it is not a code at all.
+ * Case is preserved for real codes — the client accepts either — and normalised for aliases,
+ * since there is no original to preserve.
+ */
+export function resolveFormattingCode(ch: string): string | null {
+  if (ch.length !== 1) return null;
+  const lower = ch.toLowerCase();
+  if (lower in CODE_ALIASES) return CODE_ALIASES[lower];
+  return JAVA_CODES.includes(lower) ? ch : null;
 }
 
 /**
@@ -68,8 +85,8 @@ export function encodeMotd(value: string): string {
     if (next === '&') {
       out += '&';
       i++;
-    } else if (next !== undefined && isJavaFormattingCode(next)) {
-      out += SECTION_ESCAPE + next;
+    } else if (next !== undefined && resolveFormattingCode(next)) {
+      out += SECTION_ESCAPE + resolveFormattingCode(next);
       i++;
     } else {
       out += '&';

@@ -211,13 +211,12 @@ export default function PropertiesTab({ serverId, canManage = true }: Properties
             htmlFor="p-motd"
             help={
               <>
-                Shown under the server name in the multiplayer list. Colours and styles use <Mono>&amp;</Mono> —{' '}
-                <Mono>&amp;a</Mono> green, <Mono>&amp;c</Mono> red, <Mono>&amp;l</Mono> bold, <Mono>&amp;n</Mono>{' '}
-                underline, <Mono>&amp;k</Mono> obfuscated, <Mono>&amp;r</Mono> to reset. Colours are{' '}
-                <Mono>&amp;0</Mono>–<Mono>&amp;9</Mono> and <Mono>&amp;a</Mono>–<Mono>&amp;f</Mono>; styles are{' '}
-                <Mono>&amp;k</Mono>–<Mono>&amp;o</Mono>. Any other letter is left as text, so <Mono>&amp;u</Mono>{' '}
-                does nothing here — it is a Bedrock colour, and this is a Java server. Write{' '}
-                <Mono>&amp;&amp;</Mono> for a literal ampersand.
+                Shown under the server name in the multiplayer list. Colours are{' '}
+                <Mono>&amp;0</Mono>–<Mono>&amp;9</Mono> and <Mono>&amp;a</Mono>–<Mono>&amp;f</Mono>{' '}
+                (<Mono>&amp;a</Mono> green, <Mono>&amp;c</Mono> red, <Mono>&amp;f</Mono> white). Styles are{' '}
+                <Mono>&amp;l</Mono> bold, <Mono>&amp;o</Mono> italic, <Mono>&amp;u</Mono> underline,{' '}
+                <Mono>&amp;m</Mono> strikethrough and <Mono>&amp;k</Mono> obfuscated, with{' '}
+                <Mono>&amp;r</Mono> to reset. Write <Mono>&amp;&amp;</Mono> for a literal ampersand.
               </>
             }
           >

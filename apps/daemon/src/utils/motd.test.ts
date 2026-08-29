@@ -24,11 +24,19 @@ test('every Java code is recognised and nothing else is', () => {
   assert.equal(encodeMotd('&C&L'), '\u00A7C\u00A7L');
 });
 
-test('&u is left as text, because on Java it is not a colour', () => {
-  // §u is a Bedrock material colour. Translating it would produce a code a Java client
-  // discards, which is a worse answer than showing the person what they actually typed.
-  assert.equal(encodeMotd('&uDumbfoolery'), '&uDumbfoolery');
-  assert.equal(encodeMotd('&z&g&y'), '&z&g&y');
+test('&u underlines, because that is what people paste in expecting', () => {
+  // Generators emit &u for underline; the client's underline is §n. Written through
+  // untouched it becomes §u, which on Java Edition is nothing at all — it is a Bedrock
+  // material colour. That is exactly why translating it is safe: there is no competing
+  // meaning to break, so the choice is between underline and silence.
+  assert.equal(encodeMotd('&uDumbfoolery'), '\u00A7nDumbfoolery');
+  assert.equal(encodeMotd('&U'), '\u00A7n');
+  // The client's own letter keeps working, and both land on the same thing.
+  assert.equal(encodeMotd('&nDumbfoolery'), '\u00A7nDumbfoolery');
+});
+
+test('a letter that is a code on neither edition stays text', () => {
+  assert.equal(encodeMotd('&z&y&q'), '&z&y&q');
 });
 
 test('prose containing an ampersand is not turned into colours', () => {
@@ -58,9 +66,10 @@ test('editing a MOTD twice does not mangle it', () => {
 });
 
 test('the reported MOTD, once fixed', () => {
-  // &u stays literal — it is not a Java code, and saying so is more useful than pretending.
+  // White underlined "Dumbfoolery", reset, red "Aɴᴅ", then red obfuscated digits — which is
+  // the render that was expected and the one the server list now produces.
   assert.equal(
     encodeMotd('&f&uDumbfoolery&r&cAɴᴅ&k01101110'),
-    '\u00A7f&uDumbfoolery\u00A7r\u00A7cAɴᴅ\u00A7k01101110'
+    '\u00A7f\u00A7nDumbfoolery\u00A7r\u00A7cAɴᴅ\u00A7k01101110'
   );
 });
