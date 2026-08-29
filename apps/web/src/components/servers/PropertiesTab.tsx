@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiPost, apiRequest, errorMessage } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
 import { Chip, InlineError, LoadingLine, Mono, PanelHeader } from '@/components/ui';
+import { motdNotes } from '@mc-manager/shared';
 
 interface PropertiesTabProps {
   serverId: string;
@@ -211,12 +212,14 @@ export default function PropertiesTab({ serverId, canManage = true }: Properties
             htmlFor="p-motd"
             help={
               <>
-                Shown under the server name in the multiplayer list. Colours are{' '}
-                <Mono>&amp;0</Mono>–<Mono>&amp;9</Mono> and <Mono>&amp;a</Mono>–<Mono>&amp;f</Mono>{' '}
-                (<Mono>&amp;a</Mono> green, <Mono>&amp;c</Mono> red, <Mono>&amp;f</Mono> white). Styles are{' '}
-                <Mono>&amp;l</Mono> bold, <Mono>&amp;o</Mono> italic, <Mono>&amp;u</Mono> underline,{' '}
-                <Mono>&amp;m</Mono> strikethrough and <Mono>&amp;k</Mono> obfuscated, with{' '}
-                <Mono>&amp;r</Mono> to reset. Write <Mono>&amp;&amp;</Mono> for a literal ampersand.
+                Shown under the server name in the multiplayer list. Codes from a MOTD
+                generator work as pasted: colours <Mono>&amp;0</Mono>–<Mono>&amp;9</Mono> and{' '}
+                <Mono>&amp;a</Mono>–<Mono>&amp;f</Mono>, and <Mono>&amp;u</Mono> underline,{' '}
+                <Mono>&amp;l</Mono> bold, <Mono>&amp;o</Mono> italic, <Mono>&amp;m</Mono> strikethrough,{' '}
+                <Mono>&amp;k</Mono> obfuscated, <Mono>&amp;r</Mono> reset. <Mono>&amp;g</Mono> is a
+                Bedrock colour with no Java equivalent, so it is shown as the nearest one, yellow.
+                Write <Mono>&amp;&amp;</Mono> for a literal ampersand. Restart the server for a
+                change here to reach the server list.
               </>
             }
           >
@@ -228,6 +231,12 @@ export default function PropertiesTab({ serverId, canManage = true }: Properties
               placeholder="A Minecraft Server"
               disabled={!canManage}
             />
+            {motdNotes(properties['motd'] ?? '').map((note) => (
+              <p key={note.typed} className="cc-help" style={{ marginTop: '6px' }}>
+                <Mono>{note.typed}</Mono>
+                {note.becomes ? <> → <Mono>{note.becomes}</Mono></> : <> stays as text</>} — {note.explanation}
+              </p>
+            ))}
           </Field>
 
           <Field label="Default game mode" htmlFor="p-gamemode">

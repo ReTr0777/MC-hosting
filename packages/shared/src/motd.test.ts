@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeMotd, decodeMotd } from './motd';
+import { encodeMotd, decodeMotd, motdNotes } from './motd';
 
 /*
  * The reported symptom: a MOTD typed as "&f&uDumbfoolery&r&cAɴᴅ&k01101110" arrived in the
@@ -36,7 +36,7 @@ test('&u underlines, because that is what people paste in expecting', () => {
 });
 
 test('a letter that is a code on neither edition stays text', () => {
-  assert.equal(encodeMotd('&z&y&q'), '&z&y&q');
+  assert.equal(encodeMotd('&z&y&8x'), '&z&y\u00A78x');
 });
 
 test('prose containing an ampersand is not turned into colours', () => {
@@ -72,4 +72,78 @@ test('the reported MOTD, once fixed', () => {
     encodeMotd('&f&uDumbfoolery&r&cAɴᴅ&k01101110'),
     '\u00A7f\u00A7nDumbfoolery\u00A7r\u00A7cAɴᴅ\u00A7k01101110'
   );
+});
+/*
+ * The generator people are pasting from offers sixteen colours, &g, and six format buttons.
+ * These walk that palette button by button, because "make sure these work" is only answerable
+ * against the actual set of them.
+ */
+
+test('every colour button on the generator produces a colour', () => {
+  for (const code of '0123456789abcdef') {
+    assert.equal(encodeMotd(`&${code}`), `\u00A7${code}`);
+  }
+});
+
+test('every format button on the generator produces a format', () => {
+  // &u is the generator's underline; the rest are the client's own letters.
+  assert.equal(encodeMotd('&u'), '\u00A7n');
+  assert.equal(encodeMotd('&l'), '\u00A7l');
+  assert.equal(encodeMotd('&o'), '\u00A7o');
+  assert.equal(encodeMotd('&m'), '\u00A7m');
+  assert.equal(encodeMotd('&k'), '\u00A7k');
+  assert.equal(encodeMotd('&r'), '\u00A7r');
+});
+
+test('&g becomes yellow, the nearest colour Java actually has', () => {
+  // §g is Minecoin Gold and Bedrock-only. Java has §0-§f and no hex in server.properties, so
+  // the choice is the nearest colour or the literal text "&g" in the MOTD.
+  assert.equal(encodeMotd('&gCoins'), '\u00A7eCoins');
+});
+
+test('&m and &n keep their Java meanings, not their Bedrock ones', () => {
+  // On Bedrock these two are material colours; on Java they are strikethrough and underline,
+  // and this writes server.properties for a Java server. Remapping them would break the two
+  // format buttons that were already working.
+  assert.equal(encodeMotd('&mGone'), '\u00A7mGone');
+  assert.equal(encodeMotd('&nUnder'), '\u00A7nUnder');
+});
+/*
+ * The notes are the difference between finding out at the field and finding out from the
+ * server list after a restart. They must fire on exactly the surprises and stay quiet
+ * otherwise — a MOTD that does what it looks like should say nothing at all.
+ */
+
+test('an ordinary MOTD raises nothing', () => {
+  assert.deepEqual(motdNotes('&aWelcome &lhome'), []);
+  assert.deepEqual(motdNotes('Bob && Alice'), []);
+  assert.deepEqual(motdNotes('A Minecraft Server'), []);
+});
+
+test('&u is reported as the harmless rewrite it is', () => {
+  const [note] = motdNotes('&uUnderlined');
+  assert.equal(note.typed, '&u');
+  assert.equal(note.becomes, '&n');
+});
+
+test('&g says what it becomes and what to use for real gold', () => {
+  const [note] = motdNotes('&gCoins');
+  assert.equal(note.typed, '&g');
+  assert.equal(note.becomes, '&e');
+  assert.match(note.explanation, /&6/);
+});
+
+test('a letter that is no code at all is called out as text', () => {
+  const [note] = motdNotes('&zNope');
+  assert.equal(note.typed, '&z');
+  assert.equal(note.becomes, null);
+});
+
+test('each code is reported once, however often it appears', () => {
+  assert.equal(motdNotes('&g&g&g').length, 1);
+});
+
+test('an escaped ampersand is not read as the code after it', () => {
+  // "&&g" is a literal & followed by the letter g, not the &g colour.
+  assert.deepEqual(motdNotes('&&g'), []);
 });
