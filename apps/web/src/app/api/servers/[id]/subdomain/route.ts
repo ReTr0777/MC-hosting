@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { joinAddress } from '@/lib/servers/join-address';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { DaemonClient } from '@/lib/services/daemon-client';
@@ -28,7 +29,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     const subdomain = server.subdomain || '';
     const domain = server.domain || defaultDomain || 'retr0net.nl';
-    const fullAddress = subdomain ? `${subdomain}.${domain}` : `${server.node.host}:${server.serverPort}`;
+    // One definition of what a player types, shared with the console header and the proxy.
+    const fullAddress = joinAddress(server, defaultDomain);
     const srvRecord = `_minecraft._tcp.${subdomain || 'survival'}.${domain} SRV 0 5 ${server.serverPort} ${server.node.host}.`;
 
     return NextResponse.json({

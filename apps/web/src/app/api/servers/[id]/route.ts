@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { joinAddress } from '@/lib/servers/join-address';
+import { defaultDomain } from '@/lib/servers/proxy-sync';
 import { prisma } from '@/lib/prisma';
 import { getUserFromRequest } from '@/lib/auth';
 import { hostingHistory } from '@/lib/servers/hosting-history';
@@ -38,8 +40,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
    */
   const hosting = await hostingHistory(server.id);
 
+  /*
+   * Resolved here rather than in the browser: the fallback domain is a system setting, and
+   * the rule for turning a subdomain into an address belongs next to the proxy that has to
+   * honour it, not copied into a component.
+   */
+  const address = joinAddress(server, await defaultDomain());
+
   return NextResponse.json({
-    server,
+    server: { ...server, joinAddress: address },
     hosting,
     role: isGlobalAdmin ? 'GLOBAL_ADMIN' : userRole,
   });

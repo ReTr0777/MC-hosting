@@ -58,6 +58,8 @@ interface ServerDetail {
   eulaAccepted: boolean;
   suspendedAt?: string | null;
   suspendedReason?: string | null;
+  /** What a player types to reach this server — the domain when it has one. Absent on an older panel build. */
+  joinAddress?: string;
   node: {
     name: string;
     host: string;
@@ -518,7 +520,9 @@ export default function ServerConsolePage() {
     }
   }, [server?.status]);
 
-  const connectAddress = server ? `${server.node.host}:${server.serverPort}` : '';
+  // The domain when one is set, since that is what players are given. Host and port is the
+  // fallback for a server with no subdomain, and for a response from a panel that predates it.
+  const connectAddress = server ? server.joinAddress || `${server.node.host}:${server.serverPort}` : '';
 
   const copyAddress = async () => {
     try {

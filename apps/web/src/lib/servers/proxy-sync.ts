@@ -46,7 +46,8 @@ export function proxyHostnames(
   return [`${subdomain}.${domain}`];
 }
 
-async function defaultDomain(): Promise<string> {
+/** The domain a server falls back to when it has not been given one of its own. */
+export async function defaultDomain(): Promise<string> {
   const setting = await prisma.systemSetting.findUnique({ where: { key: 'DEFAULT_DOMAIN' } }).catch(() => null);
   return setting?.value || DEFAULT_DOMAIN_FALLBACK;
 }
