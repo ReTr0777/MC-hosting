@@ -31,6 +31,7 @@ import { CreateServerContainerDto, ExecutionMode, Game, GAME_CAPABILITIES, isGam
 import { getGame, isNonMinecraftGame } from '../games';
 import type { PrismaClient } from '@prisma/client';
 import { flattenServerDir } from '../utils/flatten';
+import { encodeMotd, decodeMotd } from '../utils/motd';
 import { dirStats } from '../utils/dir-stats';
 import { freeSpaceMb } from '../utils/disk';
 import { runExtractors } from '../utils/archive-extract';
@@ -2159,13 +2160,25 @@ router.get('/:serverId/properties', (req: Request, res: Response) => {
       const idx = line.indexOf('=');
       const key = line.substring(0, idx).trim();
       const val = line.substring(idx + 1).trim();
-      properties[key] = val;
+      // Stored as § escapes; the editor shows the & form that was typed in.
+      properties[key] = key === 'motd' ? decodeMotd(val) : val;
     }
     res.json({ properties });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to read server.properties', details: err.message });
   }
 });
+
+/**
+ * One property as it should appear on disk.
+ *
+ * Only the MOTD is touched. It is the one value in this file where a colour code means
+ * anything, and rewriting ampersands anywhere else would corrupt a world seed or an RCON
+ * password that happened to contain one.
+ */
+function propertyValue(key: string, value: any): string {
+  return key === 'motd' ? encodeMotd(String(value)) : String(value);
+}
 
 // Merges the given key/value pairs into server.properties, preserving comments and ordering
 function applyServerProperties(targetId: string, properties: Record<string, any>): void {
@@ -2184,14 +2197,14 @@ function applyServerProperties(targetId: string, properties: Record<string, any>
     const key = line.substring(0, idx).trim();
     if (key in properties) {
       updatedKeys.add(key);
-      return `${key}=${properties[key]}`;
+      return `${key}=${propertyValue(key, properties[key])}`;
     }
     return line;
   });
 
   for (const [k, v] of Object.entries(properties)) {
     if (!updatedKeys.has(k)) {
-      newLines.push(`${k}=${v}`);
+      newLines.push(`${k}=${propertyValue(k, v)}`);
     }
   }
 

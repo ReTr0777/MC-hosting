@@ -206,7 +206,21 @@ export default function PropertiesTab({ serverId, canManage = true }: Properties
       <section className="cc-panel">
         <h3 className="cc-section-title" style={{ marginBottom: '14px' }}>General &amp; gameplay</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
-          <Field label="Message of the day" htmlFor="p-motd" help="Shown under the server name in the multiplayer list.">
+          <Field
+            label="Message of the day"
+            htmlFor="p-motd"
+            help={
+              <>
+                Shown under the server name in the multiplayer list. Colours and styles use <Mono>&amp;</Mono> —{' '}
+                <Mono>&amp;a</Mono> green, <Mono>&amp;c</Mono> red, <Mono>&amp;l</Mono> bold, <Mono>&amp;n</Mono>{' '}
+                underline, <Mono>&amp;k</Mono> obfuscated, <Mono>&amp;r</Mono> to reset. Colours are{' '}
+                <Mono>&amp;0</Mono>–<Mono>&amp;9</Mono> and <Mono>&amp;a</Mono>–<Mono>&amp;f</Mono>; styles are{' '}
+                <Mono>&amp;k</Mono>–<Mono>&amp;o</Mono>. Any other letter is left as text, so <Mono>&amp;u</Mono>{' '}
+                does nothing here — it is a Bedrock colour, and this is a Java server. Write{' '}
+                <Mono>&amp;&amp;</Mono> for a literal ampersand.
+              </>
+            }
+          >
             <input
               id="p-motd"
               className="cc-input"
@@ -326,7 +340,8 @@ export default function PropertiesTab({ serverId, canManage = true }: Properties
 
 function Field({
   label, htmlFor, help, children,
-}: { label: string; htmlFor: string; help?: string; children: React.ReactNode }) {
+  // ReactNode rather than string: the MOTD's help has to show the codes as code.
+}: { label: string; htmlFor: string; help?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <label className="cc-label" htmlFor={htmlFor}>{label}</label>
